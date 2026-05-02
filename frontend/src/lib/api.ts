@@ -85,19 +85,36 @@ export async function getSetupStatus(): Promise<SetupStatus | null> {
 // API functions
 // ---------------------------------------------------------------------------
 
-export async function fetchModels(): Promise<ModelInfo[]> {
-  if (isTauri()) {
+export async function fetchModels(retries = 3, delayMs = 2000): Promise<ModelInfo[]> {
+  for (let attempt = 0; attempt < retries; attempt++) {
     try {
-      const result = await tauriInvoke<{ data?: ModelInfo[] }>('fetch_models');
-      return result?.data || [];
+      if (isTauri()) {
+        try {
+          const result = await tauriInvoke<{ data?: ModelInfo[] }>('fetch_models');
+          const models = result?.data || [];
+          if (models.length > 0) return models;
+        } catch {
+          // Fall through to fetch
+        }
+      }
+      const base = getBase();
+      if (!base) {
+        if (attempt < retries - 1) { await new Promise(r => setTimeout(r, delayMs)); continue; }
+        return [];
+      }
+      const res = await fetch(`${base}/v1/models`);
+      if (!res.ok) throw new Error(`Failed to fetch models: ${res.status}`);
+      const data = await res.json();
+      const models = data.data || [];
+      if (models.length > 0) return models;
+      if (attempt < retries - 1) { await new Promise(r => setTimeout(r, delayMs)); continue; }
+      return models;
     } catch {
-      // Fall through to fetch
+      if (attempt < retries - 1) { await new Promise(r => setTimeout(r, delayMs)); continue; }
+      return [];
     }
   }
-  const res = await fetch(`${getBase()}/v1/models`);
-  if (!res.ok) throw new Error(`Failed to fetch models: ${res.status}`);
-  const data = await res.json();
-  return data.data || [];
+  return [];
 }
 
 export async function fetchRecommendedModel(): Promise<{ model: string; reason: string }> {

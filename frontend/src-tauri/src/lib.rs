@@ -1582,6 +1582,59 @@ async fn hide_overlay() -> Result<(), String> {
     Ok(())
 }
 
+// Voice mode - launch external Python voice assistant
+#[tauri::command]
+async fn launch_voice_assistant() -> Result<(), String> {
+    let exe_path = std::env::current_exe().map_err(|e| e.to_string())?;
+    let exe_dir = exe_path.parent().ok_or("Could not get exe dir")?;
+
+    // In dev mode: exe is at frontend/src-tauri/target/debug/openjarvis-desktop.exe
+    // Path: debug -> target -> src-tauri -> frontend -> project_root (jarvis/)
+    // In production: exe is typically next to the bundled resources
+    let project_root = if exe_dir.file_name() == Some(std::ffi::OsStr::new("debug"))
+        || exe_dir.file_name() == Some(std::ffi::OsStr::new("release"))
+    {
+        exe_dir
+            .parent() // target
+            .and_then(|p| p.parent()) // src-tauri
+            .and_then(|p| p.parent()) // frontend
+            .and_then(|p| p.parent()) // project root (jarvis/)
+            .ok_or("Could not find project root from dev mode")?
+    } else {
+        exe_dir
+    };
+
+    let voice_script = project_root.join("voice-assistant.py");
+
+    if !voice_script.exists() {
+        return Err(format!(
+            "voice-assistant.py not found at: {:?} (exe_dir: {:?})",
+            voice_script, exe_dir
+        ));
+    }
+
+    // Use batch file launcher - run in new window with log file
+    let batch_script = project_root.join("voice-assistant.bat");
+    let log_file = project_root.join("voice-assistant.log");
+    
+    // Run batch in new window, redirect output to log file
+    let result = std::process::Command::new("cmd")
+        .args([
+            "/c",
+            "start",
+            "Jarvis Voice Assistant",
+            "cmd",
+            "/k",
+            batch_script.to_str().unwrap(),
+            "2>&1"
+        ])
+        .current_dir(project_root)
+        .spawn();
+
+    result.map_err(|e| format!("Failed to launch voice assistant: {}", e))?;
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // App entry point
 // ---------------------------------------------------------------------------
@@ -1707,6 +1760,7 @@ pub fn run() {
             toggle_overlay,
             hide_overlay,
             get_overlay_conversation,
+            launch_voice_assistant,
         ])
         .build(tauri::generate_context!())
         .expect("error while building OpenJarvis Desktop")
