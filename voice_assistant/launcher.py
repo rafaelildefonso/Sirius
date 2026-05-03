@@ -62,7 +62,7 @@ def main():
 
     # Create selection UI
     root = tk.Tk()
-    root.title("OpenJarvis Launcher")
+    root.title("OpenSirius Launcher")
     root.geometry("400x350")
     root.configure(bg="#0a0a0a")
 
@@ -73,7 +73,7 @@ def main():
     # Title
     tk.Label(
         root,
-        text="OpenJarvis",
+        text="OpenSirius",
         font=("Segoe UI", 28, "bold"),
         bg="#0a0a0a",
         fg="#00a8ff",

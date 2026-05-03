@@ -8,10 +8,10 @@ The Learning system is a **cross-cutting concern** that connects all five primit
 
 The learning system defines a hierarchy of learning policy ABCs. The base `LearningPolicy` ABC is specialized into two sub-ABCs corresponding to the two learnable concerns:
 
-| ABC | Concern | Description |
-|-----|---------|-------------|
-| `IntelligenceLearningPolicy` | Model routing | Determines which model handles a query (replaces the legacy `RouterPolicy`) |
-| `AgentLearningPolicy` | Agent behavior | Advises on agent strategy (e.g., ICL examples, tool selection, turn limits) |
+| ABC                          | Concern        | Description                                                                 |
+| ---------------------------- | -------------- | --------------------------------------------------------------------------- |
+| `IntelligenceLearningPolicy` | Model routing  | Determines which model handles a query (replaces the legacy `RouterPolicy`) |
+| `AgentLearningPolicy`        | Agent behavior | Advises on agent strategy (e.g., ICL examples, tool selection, turn limits) |
 
 All learning policies are registered in the `LearningRegistry` (in `core/registry.py`).
 
@@ -33,7 +33,7 @@ class QueryAnalyzer(ABC):
 ```
 
 !!! note "Backward compatibility"
-    The canonical locations are now `openjarvis.learning._stubs` (for `RouterPolicy` and `QueryAnalyzer`) and `openjarvis.core.types` (for `RoutingContext`). The old `openjarvis.intelligence._stubs` import path still works via a backward-compatibility shim, but new code should import from `openjarvis.learning._stubs`.
+The canonical locations are now `openjarvis.learning._stubs` (for `RouterPolicy` and `QueryAnalyzer`) and `openjarvis.core.types` (for `RoutingContext`). The old `openjarvis.intelligence._stubs` import path still works via a backward-compatibility shim, but new code should import from `openjarvis.learning._stubs`.
 
 ### RoutingContext
 
@@ -60,19 +60,19 @@ Router policies are registered in the `RouterPolicyRegistry` and selected at run
 
 The system ships with these router policies:
 
-| Registry Key | Policy Class | Status | Description |
-|-------------|-------------|--------|-------------|
-| `heuristic` | `HeuristicRouter` | Active | Rule-based routing with 6 priority rules |
-| `learned` | `TraceDrivenPolicy` | Active | Learns from trace outcomes |
-| `grpo` | `GRPORouterPolicy` | Stub | Placeholder for future RL training |
-| `sft` | `SFTRouterPolicy` | Active | Trace-driven routing policy (learns query→model mapping); `SFTPolicy` is a backward-compat alias |
+| Registry Key | Policy Class        | Status | Description                                                                                      |
+| ------------ | ------------------- | ------ | ------------------------------------------------------------------------------------------------ |
+| `heuristic`  | `HeuristicRouter`   | Active | Rule-based routing with 6 priority rules                                                         |
+| `learned`    | `TraceDrivenPolicy` | Active | Learns from trace outcomes                                                                       |
+| `grpo`       | `GRPORouterPolicy`  | Stub   | Placeholder for future RL training                                                               |
+| `sft`        | `SFTRouterPolicy`   | Active | Trace-driven routing policy (learns query→model mapping); `SFTPolicy` is a backward-compat alias |
 
 And these additional learning policies (registered in `LearningRegistry`):
 
-| Registry Key | Policy Class | Taxonomy | Description |
-|-------------|-------------|----------|-------------|
-| `agent_advisor` | `AgentAdvisorPolicy` | `AgentLearningPolicy` | Advises on agent strategy based on trace patterns |
-| `icl_updater` | `ICLUpdaterPolicy` | `AgentLearningPolicy` | In-context learning updater — discovers ICL examples and multi-tool skills from traces |
+| Registry Key    | Policy Class         | Taxonomy              | Description                                                                            |
+| --------------- | -------------------- | --------------------- | -------------------------------------------------------------------------------------- |
+| `agent_advisor` | `AgentAdvisorPolicy` | `AgentLearningPolicy` | Advises on agent strategy based on trace patterns                                      |
+| `icl_updater`   | `ICLUpdaterPolicy`   | `AgentLearningPolicy` | In-context learning updater — discovers ICL examples and multi-tool skills from traces |
 
 Users select a policy via `config.toml` or the `--router` CLI flag:
 
@@ -108,17 +108,17 @@ The `HeuristicRouter` is the default routing policy. It is defined in `learning/
 
 ### Routing Rules
 
-| Priority | Rule | Condition | Action |
-|----------|------|-----------|--------|
-| 1 | Code detection | Query contains code patterns (backticks, `def`, `class`, `import`, `function`, `=>`, etc.) | Prefer model with "code" or "coder" in name; fall back to largest model |
-| 2 | Math detection | Query contains math keywords (`solve`, `integral`, `equation`, `calculate`, `compute`, etc.) | Select the largest available model |
-| 3 | Short query | Query length < 50 characters, no code/math | Select the smallest available model (faster response) |
-| 4 | Long/complex query | Query length > 500 characters OR contains reasoning keywords (`explain`, `analyze`, `compare`, `step-by-step`, etc.) | Select the largest available model |
-| 5 | High urgency | `urgency > 0.8` | Override to smallest model (fastest response) |
-| 6 | Default fallback | None of the above match | Use `default_model`, then `fallback_model`, then first available |
+| Priority | Rule               | Condition                                                                                                            | Action                                                                  |
+| -------- | ------------------ | -------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| 1        | Code detection     | Query contains code patterns (backticks, `def`, `class`, `import`, `function`, `=>`, etc.)                           | Prefer model with "code" or "coder" in name; fall back to largest model |
+| 2        | Math detection     | Query contains math keywords (`solve`, `integral`, `equation`, `calculate`, `compute`, etc.)                         | Select the largest available model                                      |
+| 3        | Short query        | Query length < 50 characters, no code/math                                                                           | Select the smallest available model (faster response)                   |
+| 4        | Long/complex query | Query length > 500 characters OR contains reasoning keywords (`explain`, `analyze`, `compare`, `step-by-step`, etc.) | Select the largest available model                                      |
+| 5        | High urgency       | `urgency > 0.8`                                                                                                      | Override to smallest model (fastest response)                           |
+| 6        | Default fallback   | None of the above match                                                                                              | Use `default_model`, then `fallback_model`, then first available        |
 
 !!! note "Priority 5 overrides all others"
-    The urgency check (rule 5) is evaluated **first** in the code — if urgency exceeds 0.8, the router immediately returns the smallest model regardless of query content.
+The urgency check (rule 5) is evaluated **first** in the code — if urgency exceeds 0.8, the router immediately returns the smallest model regardless of query content.
 
 ### Usage
 
@@ -139,7 +139,7 @@ model = router.select_model(ctx)  # Returns "deepseek-coder-v2:16b" (has "coder"
 
 The `build_routing_context()` function (in `learning/router.py`) analyzes a raw query string and produces a `RoutingContext` dataclass:
 
-```python
+````python
 from openjarvis.learning.router import build_routing_context
 
 ctx = build_routing_context("Solve the integral of x^2 dx")
@@ -147,7 +147,7 @@ ctx = build_routing_context("Solve the integral of x^2 dx")
 
 ctx = build_routing_context("```python\ndef hello():\n    pass\n```")
 # ctx.has_code = True, ctx.has_math = False
-```
+````
 
 **Code detection** uses regex patterns matching:
 
@@ -183,13 +183,13 @@ The `TraceDrivenPolicy` learns from historical traces to determine which model p
 
 Queries are classified into broad categories for grouping:
 
-| Category | Condition |
-|----------|-----------|
-| `code` | Contains code patterns (backticks, `def`, `class`, `import`, `function`) |
-| `math` | Contains math keywords (`solve`, `integral`, `equation`, `calculate`, `compute`) |
-| `short` | Query length < 50 characters |
-| `long` | Query length > 500 characters |
-| `general` | None of the above |
+| Category  | Condition                                                                        |
+| --------- | -------------------------------------------------------------------------------- |
+| `code`    | Contains code patterns (backticks, `def`, `class`, `import`, `function`)         |
+| `math`    | Contains math keywords (`solve`, `integral`, `equation`, `calculate`, `compute`) |
+| `short`   | Query length < 50 characters                                                     |
+| `long`    | Query length > 500 characters                                                    |
+| `general` | None of the above                                                                |
 
 ### Model Selection
 
@@ -226,8 +226,8 @@ The update algorithm:
 1. Fetches all traces (optionally filtered by time range)
 2. Groups traces by query classification
 3. For each query class, scores each model using a **composite score**:
-    - 60% success rate (fraction of traces with `outcome="success"`)
-    - 40% average feedback score (user quality ratings)
+   - 60% success rate (fraction of traces with `outcome="success"`)
+   - 40% average feedback score (user quality ratings)
 4. Selects the model with the highest composite score for each query class
 5. Returns a summary of changes
 
@@ -316,11 +316,11 @@ class RewardFunction(ABC):
 
 The built-in reward function computes a weighted combination of three factors:
 
-| Factor | Weight (default) | Normalization | Score Range |
-|--------|-----------------|---------------|-------------|
-| **Latency** | 0.4 | `1 - (latency / max_latency)` | 0 = 30s+, 1 = instant |
-| **Cost** | 0.3 | `1 - (cost / max_cost)` | 0 = $0.01+, 1 = free |
-| **Efficiency** | 0.3 | `completion_tokens / total_tokens` | 0 = all prompt, 1 = all completion |
+| Factor         | Weight (default) | Normalization                      | Score Range                        |
+| -------------- | ---------------- | ---------------------------------- | ---------------------------------- |
+| **Latency**    | 0.4              | `1 - (latency / max_latency)`      | 0 = 30s+, 1 = instant              |
+| **Cost**       | 0.3              | `1 - (cost / max_cost)`            | 0 = $0.01+, 1 = free               |
+| **Efficiency** | 0.3              | `completion_tokens / total_tokens` | 0 = all prompt, 1 = all completion |
 
 ```python
 from openjarvis.learning.heuristic_reward import HeuristicRewardFunction
@@ -400,9 +400,9 @@ result = collector.run("What is 2+2?")
 How it works:
 
 1. Subscribes to EventBus events before running the agent:
-    - `INFERENCE_START` / `INFERENCE_END` -- creates `GENERATE` steps
-    - `TOOL_CALL_START` / `TOOL_CALL_END` -- creates `TOOL_CALL` steps
-    - `MEMORY_RETRIEVE` -- creates `RETRIEVE` steps
+   - `INFERENCE_START` / `INFERENCE_END` -- creates `GENERATE` steps
+   - `TOOL_CALL_START` / `TOOL_CALL_END` -- creates `TOOL_CALL` steps
+   - `MEMORY_RETRIEVE` -- creates `RETRIEVE` steps
 2. Runs the wrapped agent's `run()` method
 3. Unsubscribes from events
 4. Adds a final `RESPOND` step
@@ -439,11 +439,11 @@ exported = analyzer.export_traces(limit=1000)
 
 **Computed statistics:**
 
-| Dataclass | Fields |
-|-----------|--------|
+| Dataclass      | Fields                                                                                                        |
+| -------------- | ------------------------------------------------------------------------------------------------------------- |
 | `TraceSummary` | total_traces, total_steps, avg_steps_per_trace, avg_latency, avg_tokens, success_rate, step_type_distribution |
-| `RouteStats` | model, agent, count, avg_latency, avg_tokens, success_rate, avg_feedback |
-| `ToolStats` | tool_name, call_count, avg_latency, success_rate |
+| `RouteStats`   | model, agent, count, avg_latency, avg_tokens, success_rate, avg_feedback                                      |
+| `ToolStats`    | tool_name, call_count, avg_latency, success_rate                                                              |
 
 ---
 
@@ -516,31 +516,31 @@ Trace
 
 **Step types:**
 
-| StepType | Description | Created By |
-|----------|-------------|------------|
-| `ROUTE` | Model selection decision | Router policy |
-| `RETRIEVE` | Memory search | Memory backend |
-| `GENERATE` | LLM inference call | Engine |
-| `TOOL_CALL` | Tool execution | ToolExecutor |
-| `RESPOND` | Final response | TraceCollector |
+| StepType    | Description              | Created By     |
+| ----------- | ------------------------ | -------------- |
+| `ROUTE`     | Model selection decision | Router policy  |
+| `RETRIEVE`  | Memory search            | Memory backend |
+| `GENERATE`  | LLM inference call       | Engine         |
+| `TOOL_CALL` | Tool execution           | ToolExecutor   |
+| `RESPOND`   | Final response           | TraceCollector |
 
 ---
 
 ## Optimization Framework
 
 The optimization subsystem (`learning/optimize/`) provides LLM-guided search
-over OpenJarvis's 5-primitive configuration space. It automates finding optimal
+over OpenSirius's 5-primitive configuration space. It automates finding optimal
 configurations for accuracy, latency, cost, and energy consumption.
 
 ### Components
 
-| Component | Description |
-|-----------|-------------|
-| `SearchSpace` | Defines tunable dimensions across all 5 primitives |
-| `LLMOptimizer` | Proposes configurations using an LLM backend |
-| `OptimizationEngine` | Orchestrates the propose-evaluate-analyze loop |
-| `OptimizationStore` | SQLite-backed persistence for trials and runs |
-| `TrialRunner` | Evaluates proposed configurations against benchmarks |
+| Component            | Description                                          |
+| -------------------- | ---------------------------------------------------- |
+| `SearchSpace`        | Defines tunable dimensions across all 5 primitives   |
+| `LLMOptimizer`       | Proposes configurations using an LLM backend         |
+| `OptimizationEngine` | Orchestrates the propose-evaluate-analyze loop       |
+| `OptimizationStore`  | SQLite-backed persistence for trials and runs        |
+| `TrialRunner`        | Evaluates proposed configurations against benchmarks |
 
 ### Pareto Frontier
 
@@ -577,36 +577,36 @@ Trigger → Diagnose → Plan → Execute → Record
 
 ### Key components
 
-| Component | Module | Purpose |
-|-----------|--------|---------|
-| `DistillationOrchestrator` | `orchestrator.py` | Top-level session driver |
-| `TeacherAgent` | `diagnose/teacher_agent.py` | Frontier model tool-calling loop |
-| `DiagnosisRunner` | `diagnose/runner.py` | Phase 1 orchestration |
-| `LearningPlanner` | `plan/planner.py` | Diagnosis → typed LearningPlan |
-| `EditApplier` + registry | `execute/base.py` | Abstract applier interface |
-| `BenchmarkGate` | `gate/benchmark_gate.py` | Benchmark-based accept/reject |
-| `CheckpointStore` | `checkpoint/store.py` | Git-backed config rollback |
-| `SessionStore` | `storage/session_store.py` | SQLite session persistence |
+| Component                  | Module                      | Purpose                          |
+| -------------------------- | --------------------------- | -------------------------------- |
+| `DistillationOrchestrator` | `orchestrator.py`           | Top-level session driver         |
+| `TeacherAgent`             | `diagnose/teacher_agent.py` | Frontier model tool-calling loop |
+| `DiagnosisRunner`          | `diagnose/runner.py`        | Phase 1 orchestration            |
+| `LearningPlanner`          | `plan/planner.py`           | Diagnosis → typed LearningPlan   |
+| `EditApplier` + registry   | `execute/base.py`           | Abstract applier interface       |
+| `BenchmarkGate`            | `gate/benchmark_gate.py`    | Benchmark-based accept/reject    |
+| `CheckpointStore`          | `checkpoint/store.py`       | Git-backed config rollback       |
+| `SessionStore`             | `storage/session_store.py`  | SQLite session persistence       |
 
 ### Relationship to existing subsystems
 
-| Existing | Relationship |
-|----------|-------------|
-| `LearningOrchestrator` | Sibling — stays untouched |
-| `LLMOptimizer` / `OptimizationStore` | Sibling — grid-search vs root-cause |
-| `LearnedRouterPolicy` | Reused — routing edits update it |
-| `TraceJudge` | Reused — benchmark scoring |
-| `PersonalBenchmarkSynthesizer` | Extended — auto-refresh, gold answers |
-| `TraceStore` | Reused — read-only access from diagnostic tools |
+| Existing                             | Relationship                                    |
+| ------------------------------------ | ----------------------------------------------- |
+| `LearningOrchestrator`               | Sibling — stays untouched                       |
+| `LLMOptimizer` / `OptimizationStore` | Sibling — grid-search vs root-cause             |
+| `LearnedRouterPolicy`                | Reused — routing edits update it                |
+| `TraceJudge`                         | Reused — benchmark scoring                      |
+| `PersonalBenchmarkSynthesizer`       | Extended — auto-refresh, gold answers           |
+| `TraceStore`                         | Reused — read-only access from diagnostic tools |
 
 ### Risk tier system
 
 Every edit is assigned a tier from a deterministic lookup table:
 
-| Tier | Ops | Behavior |
-|------|-----|----------|
-| `auto` | Model routing/params, tool add/remove/description, agent params | Apply if gate passes |
-| `review` | System prompt edits, agent class, few-shot exemplars | Queue for user approval |
-| `manual` | LoRA fine-tuning (v2) | Never auto-apply |
+| Tier     | Ops                                                             | Behavior                |
+| -------- | --------------------------------------------------------------- | ----------------------- |
+| `auto`   | Model routing/params, tool add/remove/description, agent params | Apply if gate passes    |
+| `review` | System prompt edits, agent class, few-shot exemplars            | Queue for user approval |
+| `manual` | LoRA fine-tuning (v2)                                           | Never auto-apply        |
 
 See [Distillation user guide](../user-guide/learning-distillation.md) for CLI usage and configuration.

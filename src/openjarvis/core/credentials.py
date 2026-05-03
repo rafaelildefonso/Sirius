@@ -19,7 +19,7 @@ _LOCK = threading.Lock()
 _DEFAULT_PATH = Path.home() / ".openjarvis" / "credentials.toml"
 
 TOOL_CREDENTIALS: dict[str, list[str]] = {
-    "web_search": ["TAVILY_API_KEY"],
+    "web_search": ["TAVILY_API_KEY", "SERPAPI_API_KEY"],
     "image_generate": ["OPENAI_API_KEY"],
     "slack": ["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"],
     "telegram": ["TELEGRAM_BOT_TOKEN"],
@@ -48,6 +48,11 @@ TOOL_CREDENTIALS: dict[str, list[str]] = {
     "xmpp": ["XMPP_JID", "XMPP_PASSWORD"],
     "feishu": ["FEISHU_APP_ID", "FEISHU_APP_SECRET"],
     "nostr": ["NOSTR_PRIVATE_KEY"],
+    "openai": ["OPENAI_API_KEY"],
+    "anthropic": ["ANTHROPIC_API_KEY"],
+    "google": ["GOOGLE_API_KEY"],
+    "openrouter": ["OPENROUTER_API_KEY"],
+    "groq": ["GROQ_API_KEY"],
 }
 
 

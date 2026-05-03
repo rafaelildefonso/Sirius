@@ -1,15 +1,15 @@
 ---
 title: Architecture Overview
-description: The five-primitive architecture behind OpenJarvis — Intelligence, Engine, Agents, Tools, and Learning
+description: The five-primitive architecture behind OpenSirius — Intelligence, Engine, Agents, Tools, and Learning
 search:
   boost: 2
 ---
 
 # Architecture Overview
 
-OpenJarvis is a research framework for studying on-device AI systems. Its architecture is organized around **five core abstractions** -- Intelligence, Engine, Agentic Logic, Memory, and Learning -- that work together through trace-driven feedback.
+OpenSirius is a research framework for studying on-device AI systems. Its architecture is organized around **five core abstractions** -- Intelligence, Engine, Agentic Logic, Memory, and Learning -- that work together through trace-driven feedback.
 
-![OpenJarvis Architecture](../assets/OpenJarvis_Architecture.png)
+![OpenSirius Architecture](../assets/OpenSirius_Architecture.png)
 
 ---
 
@@ -51,7 +51,7 @@ The learning system is configured through nested sub-sections in `config.toml`: 
 
 ## The Registry Pattern
 
-All extensible components in OpenJarvis use a **decorator-based registry** for runtime discovery. The pattern is implemented in `RegistryBase[T]`, a generic base class that provides isolated storage per typed subclass.
+All extensible components in OpenSirius use a **decorator-based registry** for runtime discovery. The pattern is implemented in `RegistryBase[T]`, a generic base class that provides isolated storage per typed subclass.
 
 ```python
 from openjarvis.core.registry import EngineRegistry
@@ -63,34 +63,34 @@ class OllamaEngine(InferenceEngine):
 
 Each registry provides:
 
-| Method | Description |
-|--------|-------------|
-| `register(key)` | Decorator that registers a class under a key |
-| `register_value(key, value)` | Imperative registration |
-| `get(key)` | Retrieve by key (raises `KeyError` if missing) |
-| `create(key, *args, **kwargs)` | Look up and instantiate |
-| `items()` | All `(key, entry)` pairs |
-| `keys()` | All registered keys |
-| `contains(key)` | Check if key exists |
-| `clear()` | Remove all entries (for tests) |
+| Method                         | Description                                    |
+| ------------------------------ | ---------------------------------------------- |
+| `register(key)`                | Decorator that registers a class under a key   |
+| `register_value(key, value)`   | Imperative registration                        |
+| `get(key)`                     | Retrieve by key (raises `KeyError` if missing) |
+| `create(key, *args, **kwargs)` | Look up and instantiate                        |
+| `items()`                      | All `(key, entry)` pairs                       |
+| `keys()`                       | All registered keys                            |
+| `contains(key)`                | Check if key exists                            |
+| `clear()`                      | Remove all entries (for tests)                 |
 
 **Typed registries** in the system:
 
-| Registry | Type Parameter | Purpose |
-|----------|---------------|---------|
-| `ModelRegistry` | `Any` (ModelSpec) | Model metadata |
-| `EngineRegistry` | `Type[InferenceEngine]` | Inference backends |
-| `MemoryRegistry` | `Type[MemoryBackend]` | Memory backends |
-| `AgentRegistry` | `Type[BaseAgent]` | Agent implementations |
-| `ToolRegistry` | `Any` (BaseTool classes) | Tool implementations |
-| `RouterPolicyRegistry` | `Any` (RouterPolicy classes) | Router policies |
-| `BenchmarkRegistry` | `Any` (BaseBenchmark classes) | Benchmark implementations |
-| `ChannelRegistry` | `Any` (BaseChannel classes) | Channel implementations |
+| Registry               | Type Parameter                | Purpose                   |
+| ---------------------- | ----------------------------- | ------------------------- |
+| `ModelRegistry`        | `Any` (ModelSpec)             | Model metadata            |
+| `EngineRegistry`       | `Type[InferenceEngine]`       | Inference backends        |
+| `MemoryRegistry`       | `Type[MemoryBackend]`         | Memory backends           |
+| `AgentRegistry`        | `Type[BaseAgent]`             | Agent implementations     |
+| `ToolRegistry`         | `Any` (BaseTool classes)      | Tool implementations      |
+| `RouterPolicyRegistry` | `Any` (RouterPolicy classes)  | Router policies           |
+| `BenchmarkRegistry`    | `Any` (BaseBenchmark classes) | Benchmark implementations |
+| `ChannelRegistry`      | `Any` (BaseChannel classes)   | Channel implementations   |
 
 !!! info "Adding a new component"
-    To add a new backend, implement the appropriate ABC and decorate it with
-    the corresponding registry decorator. No factory modifications are needed --
-    the component becomes automatically discoverable at runtime.
+To add a new backend, implement the appropriate ABC and decorate it with
+the corresponding registry decorator. No factory modifications are needed --
+the component becomes automatically discoverable at runtime.
 
 ---
 
@@ -101,7 +101,7 @@ src/openjarvis/
     core/               Core infrastructure shared by all primitives
         registry.py         RegistryBase[T] and typed subclass registries
         types.py            Message, ModelSpec, Trace, TelemetryRecord, etc.
-        config.py           JarvisConfig, hardware detection, TOML loading
+        config.py           SiriusConfig, hardware detection, TOML loading
         events.py           EventBus pub/sub system (EventType, Event)
 
     intelligence/       Intelligence primitive -- model definition & catalog
@@ -203,7 +203,7 @@ src/openjarvis/
         ask.py              jarvis ask -- query the assistant
         serve.py            jarvis serve -- start API server
 
-    sdk.py              Jarvis class -- high-level Python SDK
+    sdk.py              Sirius class -- high-level Python SDK
     mcp/                MCP (Model Context Protocol) layer
 ```
 
@@ -217,17 +217,17 @@ All primitives communicate through a **thread-safe pub/sub EventBus** defined in
 
 **Event types** in the system:
 
-| Event | Publisher | Purpose |
-|-------|----------|---------|
-| `INFERENCE_START` / `INFERENCE_END` | Engine / Agent | Track inference calls |
-| `TOOL_CALL_START` / `TOOL_CALL_END` | ToolExecutor | Track tool usage |
-| `MEMORY_STORE` / `MEMORY_RETRIEVE` | Memory backends | Track memory operations |
-| `AGENT_TURN_START` / `AGENT_TURN_END` | Agents | Track agent lifecycle |
-| `TELEMETRY_RECORD` | TelemetryStore | Publish telemetry records |
-| `TRACE_STEP` / `TRACE_COMPLETE` | TraceCollector | Trace lifecycle events |
-| `CHANNEL_MESSAGE_RECEIVED` / `CHANNEL_MESSAGE_SENT` | WhatsAppBaileysChannel | Track channel messaging |
-| `SECURITY_SCAN` / `SECURITY_ALERT` / `SECURITY_BLOCK` | GuardrailsEngine | Track security scanning |
-| `scheduler_task_start` / `scheduler_task_end` | TaskScheduler | Track scheduled task execution |
+| Event                                                 | Publisher              | Purpose                        |
+| ----------------------------------------------------- | ---------------------- | ------------------------------ |
+| `INFERENCE_START` / `INFERENCE_END`                   | Engine / Agent         | Track inference calls          |
+| `TOOL_CALL_START` / `TOOL_CALL_END`                   | ToolExecutor           | Track tool usage               |
+| `MEMORY_STORE` / `MEMORY_RETRIEVE`                    | Memory backends        | Track memory operations        |
+| `AGENT_TURN_START` / `AGENT_TURN_END`                 | Agents                 | Track agent lifecycle          |
+| `TELEMETRY_RECORD`                                    | TelemetryStore         | Publish telemetry records      |
+| `TRACE_STEP` / `TRACE_COMPLETE`                       | TraceCollector         | Trace lifecycle events         |
+| `CHANNEL_MESSAGE_RECEIVED` / `CHANNEL_MESSAGE_SENT`   | WhatsAppBaileysChannel | Track channel messaging        |
+| `SECURITY_SCAN` / `SECURITY_ALERT` / `SECURITY_BLOCK` | GuardrailsEngine       | Track security scanning        |
+| `scheduler_task_start` / `scheduler_task_end`         | TaskScheduler          | Track scheduled task execution |
 
 ### Dependency Flow
 

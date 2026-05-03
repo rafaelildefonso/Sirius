@@ -492,7 +492,7 @@ class TestWhatsAppBaileysChannelConfig:
     def test_defaults(self) -> None:
         wc = WhatsAppBaileysChannelConfig()
         assert wc.auth_dir == ""
-        assert wc.assistant_name == "Jarvis"
+        assert wc.assistant_name == "Sirius"
         assert wc.assistant_has_own_number is False
 
     def test_custom_values(self) -> None:

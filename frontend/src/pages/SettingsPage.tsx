@@ -18,7 +18,7 @@ import {
   Brain,
 } from 'lucide-react';
 import { useAppStore, type ThemeMode } from '../lib/store';
-import { checkHealth, fetchSpeechHealth, getMemoryStats } from '../lib/api';
+import { checkHealth, fetchSpeechHealth, getMemoryStats, saveToolCredentials } from '../lib/api';
 
 function OllamaModelList() {
   const [models, setModels] = useState<Array<{ name: string; size: number }>>([]);
@@ -42,14 +42,19 @@ function OllamaModelList() {
   );
 }
 
-function ApiKeyInput({ storageKey, placeholder }: { storageKey: string; placeholder: string }) {
+function ApiKeyInput({ storageKey, placeholder, onSave }: { storageKey: string; placeholder: string; onSave?: (v: string) => Promise<void> | void }) {
   const [value, setValue] = useState(() => {
     try { return localStorage.getItem(storageKey) || ''; } catch { return ''; }
   });
   const [saved, setSaved] = useState(false);
-  const save = (v: string) => {
+  const save = async (v: string) => {
     setValue(v);
     try { if (v) localStorage.setItem(storageKey, v); else localStorage.removeItem(storageKey); } catch {}
+    
+    if (onSave && v) {
+      try { await onSave(v); } catch (e) { console.error('Failed to sync to backend:', e); }
+    }
+
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   };
@@ -308,6 +313,7 @@ export function SettingsPage() {
                 <CloudProviderStatus label="OpenAI" storageKey="openjarvis-openai-key" />
                 <CloudProviderStatus label="Anthropic" storageKey="openjarvis-anthropic-key" />
                 <CloudProviderStatus label="Google" storageKey="openjarvis-gemini-key" />
+                <CloudProviderStatus label="Groq" storageKey="openjarvis-groq-key" />
                 <CloudProviderStatus label="OpenRouter" storageKey="openjarvis-openrouter-key" />
               </div>
             </SettingRow>
@@ -316,23 +322,28 @@ export function SettingsPage() {
           {/* API Keys */}
           <Section title="API Keys">
             <SettingRow label="OpenAI" description="GPT-4, GPT-3.5, etc.">
-              <ApiKeyInput storageKey="openjarvis-openai-key" placeholder="sk-..." />
+              <ApiKeyInput storageKey="openjarvis-openai-key" placeholder="sk-..." onSave={(v) => saveToolCredentials('openai', { OPENAI_API_KEY: v })} />
             </SettingRow>
             <SettingRow label="Anthropic" description="Claude models">
-              <ApiKeyInput storageKey="openjarvis-anthropic-key" placeholder="sk-ant-..." />
+              <ApiKeyInput storageKey="openjarvis-anthropic-key" placeholder="sk-ant-..." onSave={(v) => saveToolCredentials('anthropic', { ANTHROPIC_API_KEY: v })} />
             </SettingRow>
             <SettingRow label="Google" description="Gemini models">
-              <ApiKeyInput storageKey="openjarvis-gemini-key" placeholder="AI..." />
+              <ApiKeyInput storageKey="openjarvis-gemini-key" placeholder="AI..." onSave={(v) => saveToolCredentials('google', { GOOGLE_API_KEY: v })} />
+            </SettingRow>
+            <SettingRow label="Groq" description="Llama 3, Mixtral, etc.">
+              <ApiKeyInput storageKey="openjarvis-groq-key" placeholder="gsk_..." onSave={(v) => saveToolCredentials('groq', { GROQ_API_KEY: v })} />
             </SettingRow>
             <SettingRow label="OpenRouter" description="Multi-provider routing">
-              <ApiKeyInput storageKey="openjarvis-openrouter-key" placeholder="sk-or-..." />
+              <ApiKeyInput storageKey="openjarvis-openrouter-key" placeholder="sk-or-..." onSave={(v) => saveToolCredentials('openrouter', { OPENROUTER_API_KEY: v })} />
             </SettingRow>
           </Section>
 
-          {/* Tools */}
           <Section title="Tools">
-            <SettingRow label="Web Search" description="SerpAPI or Tavily key for web search tool">
-              <ApiKeyInput storageKey="openjarvis-search-key" placeholder="API key..." />
+            <SettingRow label="SerpApi" description="Google Search API key">
+              <ApiKeyInput storageKey="openjarvis-serpapi-key" placeholder="API key..." onSave={(v) => saveToolCredentials('web_search', { SERPAPI_API_KEY: v })} />
+            </SettingRow>
+            <SettingRow label="Tavily" description="AI-optimized search API key">
+              <ApiKeyInput storageKey="openjarvis-tavily-key" placeholder="tvly-..." onSave={(v) => saveToolCredentials('web_search', { TAVILY_API_KEY: v })} />
             </SettingRow>
           </Section>
 

@@ -1012,7 +1012,7 @@ class WhatsAppBaileysChannelConfig:
     """Per-channel config for WhatsApp via Baileys protocol."""
 
     auth_dir: str = ""  # Defaults to ~/.openjarvis/whatsapp_auth
-    assistant_name: str = "Jarvis"
+    assistant_name: str = "Sirius"
     assistant_has_own_number: bool = False
 
 
@@ -1859,7 +1859,7 @@ ssrf_protection = true
 
 # [channel.whatsapp_baileys]
 # auth_dir = ""               # Defaults to ~/.openjarvis/whatsapp_auth
-# assistant_name = "Jarvis"
+# assistant_name = "Sirius"
 # assistant_has_own_number = false
 """
     if host:

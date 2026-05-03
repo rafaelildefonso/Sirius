@@ -4,9 +4,34 @@ from __future__ import annotations
 
 import json
 import time
-from typing import Iterator, Optional
+from dataclasses import dataclass
+from typing import Any, Dict, Iterator, List, Optional
 
 import httpx
+
+
+@dataclass
+class ToolCall:
+    """Represents a tool call from the LLM."""
+
+    name: str
+    arguments: Dict[str, Any]
+
+
+@dataclass
+class ChatResponse:
+    """Response from chat with optional tool calls."""
+
+    text: str = ""
+    tool_calls: List[ToolCall] = None
+
+    def __post_init__(self):
+        if self.tool_calls is None:
+            self.tool_calls = []
+
+    @property
+    def has_tool_calls(self) -> bool:
+        return len(self.tool_calls) > 0
 
 
 class OllamaClient:
@@ -21,24 +46,55 @@ class OllamaClient:
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.system_prompt = system_prompt or (
-            "Você é Jarvis, um assistente de IA útil e conciso para conversa por voz. "
-            "REGRAS ABSOLUTAS que você DEVE seguir:\n"
+            "Você é Sirius, um assistente pessoal de IA com personalidade amigável e conversacional. "
+            "REGRAS OBRIGATÓRIAS:\n"
             "1. NUNCA use emojis - proibido completamente\n"
             "2. NUNCA use formatação markdown - proibido: **, *, _, #, ##, ###, `, ```\n"
             "3. NUNCA use listas com bullets ou números - proibido: -, *, 1., 2.\n"
             "4. NUNCA use código ou blocos de código\n"
-            "5. SEMPRE responda em texto simples e contínuo\n"
-            "6. Responda como em uma conversa natural de voz, em uma ou duas frases curtas\n"
-            "Se você usar qualquer emoji ou formatação, sua resposta será rejeitada."
+            "5. SEMPRE responda em texto simples natural, como conversa\n"
+            "6. Responda de forma amigável, como conversando com um amigo\n"
+            "7. Use expressões coloquiais brasileiras naturais (prontinho, beleza, show, etc.)\n"
+            "\n"
+            "REGRA CRÍTICA - USE FERRAMENTAS:\n"
+            "Quando o usuário perguntar sobre FATOS, DADOS, ESTATÍSTICAS, ou informações que precisam de verificação "
+            "(como 'animais mais rápidos', 'capital da França', 'preço do dólar', etc), "
+            "VOCÊ DEVE usar a ferramenta 'search_web' para buscar a informação correta. "
+            "NUNCA invente respostas. Sempre use search_web para fatos.\n"
+            "\n"
+            "FERRAMENTAS disponíveis:\n"
+            "- search_web: OBRIGATÓRIO para pesquisar fatos e dados na internet\n"
+            "- open_url: abrir sites\n"
+            "- open_application: abrir apps\n"
+            "- get_current_time: saber hora atual\n"
+            "- set_system_volume: ajustar volume\n"
+            "- youtube_search_and_play: buscar e tocar no YouTube\n"
+            "- browser_search: pesquisar em sites específicos\n"
+            "- browser_search_and_click: pesquisar e clicar no primeiro resultado\n"
+            "- focus_window: trazer janela para frente\n"
+            "- close_window: fechar aplicativo\n"
+            "- minimize_window: minimizar janela\n"
+            "- maximize_window: maximizar janela\n"
+            "- list_running_apps: listar apps abertos\n"
+            "- send_hotkey: enviar atalhos de teclado\n"
+            "\n"
+            "EXEMPLOS:\n"
+            "- Usuário: 'Quais os animais mais rápidos?' → Use: search_web\n"
+            "- Usuário: 'Que horas são?' → Use: get_current_time\n"
+            "- Usuário: 'Abre o YouTube' → Use: open_application\n"
+            "- Usuário: 'Toca música' → Use: youtube_search_and_play"
         )
-        self._client = httpx.Client(timeout=60.0)
+        # Longer timeout for slow models (qwen3.5 can take 30-60s on CPU)
+        timeout = httpx.Timeout(90.0, connect=10.0)
+        self._client = httpx.Client(timeout=timeout)
 
-    def chat(self, message: str, history: Optional[list[dict]] = None) -> str:
+    def chat(self, message: str, history: Optional[list[dict]] = None, system_prompt: Optional[str] = None) -> str:
         """Send a message and get a complete response."""
         messages = []
 
-        if self.system_prompt:
-            messages.append({"role": "system", "content": self.system_prompt})
+        active_system_prompt = system_prompt or self.system_prompt
+        if active_system_prompt:
+            messages.append({"role": "system", "content": active_system_prompt})
 
         if history:
             messages.extend(history)
@@ -68,12 +124,13 @@ class OllamaClient:
         except Exception as e:
             return f"Erro ao gerar resposta: {e}"
 
-    def chat_stream(self, message: str, history: Optional[list[dict]] = None) -> Iterator[str]:
+    def chat_stream(self, message: str, history: Optional[list[dict]] = None, system_prompt: Optional[str] = None) -> Iterator[str]:
         """Stream response tokens as they're generated."""
         messages = []
 
-        if self.system_prompt:
-            messages.append({"role": "system", "content": self.system_prompt})
+        active_system_prompt = system_prompt or self.system_prompt
+        if active_system_prompt:
+            messages.append({"role": "system", "content": active_system_prompt})
 
         if history:
             messages.extend(history)
@@ -90,7 +147,8 @@ class OllamaClient:
                     "stream": True,
                     "options": {
                         "temperature": 0.7,
-                        "num_predict": 256,
+                        "num_predict": 150,
+                        "num_ctx": 1024,
                     },
                 },
             ) as response:
@@ -114,6 +172,202 @@ class OllamaClient:
             yield "Erro: Não foi possível conectar ao Ollama."
         except Exception as e:
             yield f"Erro: {e}"
+
+    def chat_with_tools(
+        self,
+        message: str,
+        tools: List[Dict[str, Any]],
+        history: Optional[list[dict]] = None,
+        system_prompt: Optional[str] = None,
+    ) -> ChatResponse:
+        """Send a message with tool definitions and get response with possible tool calls."""
+        messages = []
+
+        active_system_prompt = system_prompt or self.system_prompt
+        if active_system_prompt:
+            messages.append({"role": "system", "content": active_system_prompt})
+
+        if history:
+            messages.extend(history)
+
+        messages.append({"role": "user", "content": message})
+
+        try:
+            response = self._client.post(
+                f"{self.base_url}/api/chat",
+                json={
+                    "model": self.model,
+                    "messages": messages,
+                    "tools": tools,
+                    "stream": False,
+                    "options": {
+                        "temperature": 0.7,
+                        "num_predict": 200,
+                        "num_ctx": 1024,
+                    },
+                },
+            )
+            response.raise_for_status()
+            data = response.json()
+            message_data = data.get("message", {})
+
+            # Check for tool calls
+            tool_calls = []
+            if "tool_calls" in message_data:
+                for call in message_data["tool_calls"]:
+                    func = call.get("function", {})
+                    if func:
+                        # arguments may be dict or JSON string
+                        args = func.get("arguments", {})
+                        if isinstance(args, str):
+                            try:
+                                args = json.loads(args)
+                            except json.JSONDecodeError:
+                                args = {}
+                        tool_calls.append(
+                            ToolCall(
+                                name=func.get("name", ""),
+                                arguments=args,
+                            )
+                        )
+
+            raw_content = message_data.get("content", "")
+            thinking = message_data.get("thinking", "")
+            if thinking:
+                print(f"[Thinking] {thinking[:200]}...")
+            content = raw_content.strip() if raw_content else ""
+            content = self._clean_response(content)
+            
+            # Only use fallback if content is empty AND there are no tool calls
+            # If there are tool calls, let main.py handle the execution
+            if not content and not tool_calls:
+                content = "Desculpe, não consegui processar essa pergunta. Pode repetir?"
+                print(f"[DEBUG LLM] Response was empty, using fallback")
+
+            return ChatResponse(text=content, tool_calls=tool_calls)
+
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 400:
+                # Model doesn't support tools - return special error for fallback
+                return ChatResponse(
+                    text="__TOOLS_NOT_SUPPORTED__",
+                    tool_calls=[],
+                )
+            return ChatResponse(
+                text=f"Erro HTTP {e.response.status_code}: {e.response.text[:100]}",
+                tool_calls=[],
+            )
+        except httpx.ConnectError:
+            return ChatResponse(
+                text="Erro: Não foi possível conectar ao Ollama. Verifique se está rodando.",
+                tool_calls=[],
+            )
+        except httpx.TimeoutException:
+            return ChatResponse(
+                text="Erro: O modelo demorou muito para responder. Tente uma pergunta mais simples.",
+                tool_calls=[],
+            )
+        except Exception as e:
+            return ChatResponse(
+                text=f"Erro ao gerar resposta: {e}",
+                tool_calls=[],
+            )
+
+    def chat_with_tools_stream(
+        self,
+        message: str,
+        tools: List[Dict[str, Any]],
+        history: Optional[list[dict]] = None,
+        system_prompt: Optional[str] = None,
+    ) -> Iterator[ChatResponse]:
+        """Stream response with tool support - yields partial ChatResponse."""
+        messages = []
+
+        active_system_prompt = system_prompt or self.system_prompt
+        if active_system_prompt:
+            messages.append({"role": "system", "content": active_system_prompt})
+
+        if history:
+            messages.extend(history)
+
+        messages.append({"role": "user", "content": message})
+
+        try:
+            with self._client.stream(
+                "POST",
+                f"{self.base_url}/api/chat",
+                json={
+                    "model": self.model,
+                    "messages": messages,
+                    "tools": tools,
+                    "stream": True,
+                    "options": {
+                        "temperature": 0.7,
+                        "num_predict": 150,
+                        "num_ctx": 1024,
+                    },
+                },
+            ) as response:
+                response.raise_for_status()
+
+                accumulated_content = []
+                tool_calls = []
+                done = False
+
+                for line in response.iter_lines():
+                    if not line:
+                        continue
+                    try:
+                        data = json.loads(line)
+
+                        # Accumulate content
+                        if "message" in data:
+                            msg = data["message"]
+                            if msg.get("content"):
+                                accumulated_content.append(msg["content"])
+
+                            # Check for tool calls in this chunk
+                            if "tool_calls" in msg:
+                                for call in msg["tool_calls"]:
+                                    if call.get("type") == "function":
+                                        func = call.get("function", {})
+                                        tool_calls.append(
+                                            ToolCall(
+                                                name=func.get("name", ""),
+                                                arguments=func.get("arguments", {}),
+                                            )
+                                        )
+
+                        if data.get("done", False):
+                            done = True
+                            break
+
+                        # Yield intermediate response
+                        if accumulated_content:
+                            partial_text = "".join(accumulated_content)
+                            yield ChatResponse(
+                                text=partial_text,
+                                tool_calls=tool_calls,
+                            )
+
+                    except json.JSONDecodeError:
+                        continue
+
+                # Yield final response
+                final_text = "".join(accumulated_content)
+                final_text = self._clean_response(final_text)
+                yield ChatResponse(text=final_text, tool_calls=tool_calls)
+
+        except httpx.ConnectError:
+            yield ChatResponse(
+                text="Erro: Não foi possível conectar ao Ollama.",
+                tool_calls=[],
+            )
+        except Exception as e:
+            yield ChatResponse(
+                text=f"Erro: {e}",
+                tool_calls=[],
+            )
 
     def _clean_response(self, text: str) -> str:
         """Remove emojis and markdown formatting from response."""

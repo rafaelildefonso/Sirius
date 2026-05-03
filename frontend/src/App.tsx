@@ -18,6 +18,8 @@ import { OptInModal } from './components/OptInModal';
 
 export default function App() {
   const [setupDone, setSetupDone] = useState(!isTauri());
+  const [backendReady, setBackendReady] = useState(false);
+  const [backendChecking, setBackendChecking] = useState(true);
   const handleSetupReady = useCallback(() => setSetupDone(true), []);
   const setModels = useAppStore((s) => s.setModels);
   const setModelsLoading = useAppStore((s) => s.setModelsLoading);
@@ -55,8 +57,48 @@ export default function App() {
     return () => clearInterval(interval);
   }, [importOverlay]);
 
-  // Fetch models on mount
+  // Check backend health periodically until ready
   useEffect(() => {
+    const checkHealth = async () => {
+      try {
+        const { checkHealth: healthCheck } = await import('./lib/api');
+        const isHealthy = await healthCheck();
+        if (isHealthy) {
+          setBackendReady(true);
+          setBackendChecking(false);
+          return true;
+        }
+      } catch {
+        // Backend not ready yet
+      }
+      return false;
+    };
+
+    // Check immediately
+    checkHealth();
+
+    // Then check every 2 seconds until ready
+    const interval = setInterval(async () => {
+      const ready = await checkHealth();
+      if (ready) clearInterval(interval);
+    }, 2000);
+
+    // Stop checking after 60 seconds
+    const timeout = setTimeout(() => {
+      clearInterval(interval);
+      setBackendChecking(false);
+    }, 60000);
+
+    return () => {
+      clearInterval(interval);
+      clearTimeout(timeout);
+    };
+  }, []);
+
+  // Fetch models on mount (after backend is ready)
+  useEffect(() => {
+    if (!backendReady) return;
+    
     fetchModels()
       .then((m) => {
         setModels(m);
@@ -64,7 +106,7 @@ export default function App() {
       })
       .catch(() => setModels([]))
       .finally(() => setModelsLoading(false));
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [backendReady]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Fetch server info
   useEffect(() => {
@@ -163,6 +205,19 @@ export default function App() {
   //     } catch {}
   //   })();
   // }, []);
+
+  // Show loading screen while backend is initializing
+  if (backendChecking && !backendReady) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background">
+        <div className="text-center space-y-4">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto"></div>
+          <p className="text-muted-foreground">Iniciando backend... (pode levar 10-30s na primeira vez)</p>
+          <p className="text-xs text-muted-foreground">Carregando modelos e dependências</p>
+        </div>
+      </div>
+    );
+  }
 
   if (!setupDone) {
     return <SetupScreen onReady={handleSetupReady} />;

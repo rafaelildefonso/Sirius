@@ -1582,23 +1582,26 @@ async fn hide_overlay() -> Result<(), String> {
     Ok(())
 }
 
-// Voice mode - launch external Python voice assistant
+// Voice mode - launch external Python voice assistant and wait for it to close
 #[tauri::command]
-async fn launch_voice_assistant() -> Result<(), String> {
+async fn launch_voice_assistant(app: tauri::AppHandle) -> Result<(), String> {
+    // Hide main window immediately
+    if let Some(main_window) = app.get_webview_window("main") {
+        let _ = main_window.hide();
+    }
+
+    // Get project root path
     let exe_path = std::env::current_exe().map_err(|e| e.to_string())?;
     let exe_dir = exe_path.parent().ok_or("Could not get exe dir")?;
 
-    // In dev mode: exe is at frontend/src-tauri/target/debug/openjarvis-desktop.exe
-    // Path: debug -> target -> src-tauri -> frontend -> project_root (jarvis/)
-    // In production: exe is typically next to the bundled resources
     let project_root = if exe_dir.file_name() == Some(std::ffi::OsStr::new("debug"))
         || exe_dir.file_name() == Some(std::ffi::OsStr::new("release"))
     {
         exe_dir
-            .parent() // target
-            .and_then(|p| p.parent()) // src-tauri
-            .and_then(|p| p.parent()) // frontend
-            .and_then(|p| p.parent()) // project root (jarvis/)
+            .parent()
+            .and_then(|p| p.parent())
+            .and_then(|p| p.parent())
+            .and_then(|p| p.parent())
             .ok_or("Could not find project root from dev mode")?
     } else {
         exe_dir
@@ -1607,32 +1610,53 @@ async fn launch_voice_assistant() -> Result<(), String> {
     let voice_script = project_root.join("voice-assistant.py");
 
     if !voice_script.exists() {
-        return Err(format!(
-            "voice-assistant.py not found at: {:?} (exe_dir: {:?})",
-            voice_script, exe_dir
-        ));
+        // Re-show main window on error
+        if let Some(main) = app.get_webview_window("main") {
+            let _ = main.show();
+        }
+        return Err("voice-assistant.py not found".to_string());
     }
 
-    // Use batch file launcher - run in new window with log file
-    let batch_script = project_root.join("voice-assistant.bat");
-    let log_file = project_root.join("voice-assistant.log");
+    // Use Python from venv directly (avoid uv run sync issues)
+    let venv_python = project_root.join(".venv").join("Scripts").join("python.exe");
     
-    // Run batch in new window, redirect output to log file
-    let result = std::process::Command::new("cmd")
-        .args([
-            "/c",
-            "start",
-            "Jarvis Voice Assistant",
-            "cmd",
-            "/k",
-            batch_script.to_str().unwrap(),
-            "2>&1"
-        ])
-        .current_dir(project_root)
+    // Check if venv python exists, fallback to system python
+    let python_cmd = if venv_python.exists() {
+        venv_python
+    } else {
+        std::path::PathBuf::from("python")
+    };
+
+    // Launch voice assistant (it will show its own tkinter UI)
+    // Pass environment variables including GROQ_API_KEY
+    let result = std::process::Command::new(&python_cmd)
+        .arg("voice-assistant.py")
+        .current_dir(&project_root)
+        .envs(std::env::vars())
         .spawn();
 
-    result.map_err(|e| format!("Failed to launch voice assistant: {}", e))?;
-    Ok(())
+    match result {
+        Ok(mut child) => {
+            // Wait for the voice assistant to exit in a separate task
+            let app_clone = app.clone();
+            tokio::spawn(async move {
+                let _ = child.wait();
+                // When voice assistant closes, show main window again
+                if let Some(main) = app_clone.get_webview_window("main") {
+                    let _ = main.show();
+                    let _ = main.set_focus();
+                }
+            });
+            Ok(())
+        }
+        Err(e) => {
+            // Re-show main window on error
+            if let Some(main) = app.get_webview_window("main") {
+                let _ = main.show();
+            }
+            Err(format!("Failed to launch voice assistant: {}", e))
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

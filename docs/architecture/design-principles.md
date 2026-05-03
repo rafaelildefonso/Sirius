@@ -1,12 +1,12 @@
 # Design Principles
 
-OpenJarvis follows a set of design principles that guide every architectural decision. These principles ensure the framework remains extensible, portable, and easy to work with.
+OpenSirius follows a set of design principles that guide every architectural decision. These principles ensure the framework remains extensible, portable, and easy to work with.
 
 ---
 
 ## 1. Pluggable Everything
 
-Every major component in OpenJarvis is defined as an **abstract base class** (ABC) with concrete implementations registered at runtime. This means you can swap, extend, or replace any part of the system without modifying existing code.
+Every major component in OpenSirius is defined as an **abstract base class** (ABC) with concrete implementations registered at runtime. This means you can swap, extend, or replace any part of the system without modifying existing code.
 
 ```mermaid
 graph LR
@@ -33,13 +33,13 @@ graph LR
 
 This pattern applies across all five primitives:
 
-| Primitive | ABC | Implementations |
-|--------|-----|----------------|
-| Engine | `InferenceEngine` | Ollama, vLLM, SGLang, llama.cpp, Cloud |
-| Memory | `MemoryBackend` | SQLite, FAISS, ColBERT, BM25, Hybrid |
-| Agents | `BaseAgent` | Simple, Orchestrator, NativeReAct, NativeOpenHands, RLM, OpenHands, ClaudeCode, Operative, MonitorOperative |
-| Learning | `RouterPolicy` | Heuristic, TraceDriven, GRPO |
-| Tools | `BaseTool` | Calculator, Think, Retrieval, LLM, FileRead |
+| Primitive | ABC               | Implementations                                                                                             |
+| --------- | ----------------- | ----------------------------------------------------------------------------------------------------------- |
+| Engine    | `InferenceEngine` | Ollama, vLLM, SGLang, llama.cpp, Cloud                                                                      |
+| Memory    | `MemoryBackend`   | SQLite, FAISS, ColBERT, BM25, Hybrid                                                                        |
+| Agents    | `BaseAgent`       | Simple, Orchestrator, NativeReAct, NativeOpenHands, RLM, OpenHands, ClaudeCode, Operative, MonitorOperative |
+| Learning  | `RouterPolicy`    | Heuristic, TraceDriven, GRPO                                                                                |
+| Tools     | `BaseTool`        | Calculator, Think, Retrieval, LLM, FileRead                                                                 |
 
 Adding a new implementation requires two things: implement the ABC and register it. The rest of the system discovers and uses it automatically.
 
@@ -75,25 +75,25 @@ The `RegistryBase[T]` generic base class provides:
 - **Introspection** -- `keys()`, `items()`, `contains()` for discovering available components
 
 !!! info "Why decorators instead of configuration files?"
-    The decorator pattern means that adding a new component is a single-file change.
-    There is no central registry file to edit, no YAML to update, and no factory to modify.
-    The component self-registers simply by being imported.
+The decorator pattern means that adding a new component is a single-file change.
+There is no central registry file to edit, no YAML to update, and no factory to modify.
+The component self-registers simply by being imported.
 
 ---
 
 ## 3. Offline-First
 
-OpenJarvis is designed to work **entirely without network access**. All core functionality -- inference, memory, agents, tools, telemetry -- operates locally. Cloud APIs are optional extensions, never requirements.
+OpenSirius is designed to work **entirely without network access**. All core functionality -- inference, memory, agents, tools, telemetry -- operates locally. Cloud APIs are optional extensions, never requirements.
 
-| Feature | Offline Behavior |
-|---------|-----------------|
-| Inference | Ollama, vLLM, SGLang, llama.cpp all run locally |
-| Memory | SQLite/FTS5 uses built-in Python `sqlite3` module |
-| Embeddings | `sentence-transformers` models run locally |
-| Telemetry | SQLite-based, fully local |
-| Traces | SQLite-based, fully local |
-| Tools | Calculator, Think, FileRead all local |
-| Configuration | TOML file on disk |
+| Feature       | Offline Behavior                                  |
+| ------------- | ------------------------------------------------- |
+| Inference     | Ollama, vLLM, SGLang, llama.cpp all run locally   |
+| Memory        | SQLite/FTS5 uses built-in Python `sqlite3` module |
+| Embeddings    | `sentence-transformers` models run locally        |
+| Telemetry     | SQLite-based, fully local                         |
+| Traces        | SQLite-based, fully local                         |
+| Tools         | Calculator, Think, FileRead all local             |
+| Configuration | TOML file on disk                                 |
 
 Cloud engines (OpenAI, Anthropic, Google) are available through the optional `cloud` backend, but they are:
 
@@ -103,9 +103,9 @@ Cloud engines (OpenAI, Anthropic, Google) are available through the optional `cl
 
 ```python
 # This works without any network connection
-from openjarvis import Jarvis
+from openjarvis import Sirius
 
-j = Jarvis(engine_key="ollama")  # Local Ollama server
+j = Sirius(engine_key="ollama")  # Local Ollama server
 response = j.ask("Hello")
 ```
 
@@ -113,25 +113,25 @@ response = j.ask("Hello")
 
 ## 4. Hardware-Aware
 
-OpenJarvis **auto-detects system hardware** at startup and recommends the optimal inference engine. The `detect_hardware()` function probes:
+OpenSirius **auto-detects system hardware** at startup and recommends the optimal inference engine. The `detect_hardware()` function probes:
 
-| Hardware | Detection Method |
-|----------|-----------------|
-| NVIDIA GPUs | `nvidia-smi` (name, VRAM, count) |
-| AMD GPUs | `rocm-smi` (product name) |
-| Apple Silicon | `system_profiler SPDisplaysDataType` |
-| CPU | `/proc/cpuinfo` or `sysctl` (brand string) |
-| RAM | `/proc/meminfo` or `sysctl hw.memsize` |
+| Hardware      | Detection Method                           |
+| ------------- | ------------------------------------------ |
+| NVIDIA GPUs   | `nvidia-smi` (name, VRAM, count)           |
+| AMD GPUs      | `rocm-smi` (product name)                  |
+| Apple Silicon | `system_profiler SPDisplaysDataType`       |
+| CPU           | `/proc/cpuinfo` or `sysctl` (brand string) |
+| RAM           | `/proc/meminfo` or `sysctl hw.memsize`     |
 
 The `recommend_engine()` function maps hardware to engines:
 
-| Hardware | Recommended Engine |
-|----------|-------------------|
-| No GPU | `llamacpp` (CPU-optimized) |
-| Apple Silicon | `ollama` (Metal acceleration) |
-| NVIDIA datacenter (A100, H100, etc.) | `vllm` (high throughput) |
-| NVIDIA consumer | `ollama` (easy setup) |
-| AMD GPU | `vllm` (ROCm support) |
+| Hardware                             | Recommended Engine            |
+| ------------------------------------ | ----------------------------- |
+| No GPU                               | `llamacpp` (CPU-optimized)    |
+| Apple Silicon                        | `ollama` (Metal acceleration) |
+| NVIDIA datacenter (A100, H100, etc.) | `vllm` (high throughput)      |
+| NVIDIA consumer                      | `ollama` (easy setup)         |
+| AMD GPU                              | `vllm` (ROCm support)         |
 
 This recommendation is written to `config.toml` during `jarvis init` and used as the default engine:
 
@@ -181,20 +181,20 @@ jarvis telemetry export --json  # Export all records
 ```
 
 !!! note "Telemetry is best-effort"
-    If telemetry setup fails (e.g., database is locked), the system continues
-    without telemetry rather than raising an error. Telemetry never blocks
-    the query flow.
+If telemetry setup fails (e.g., database is locked), the system continues
+without telemetry rather than raising an error. Telemetry never blocks
+the query flow.
 
 ---
 
 ## 6. Python-First
 
-OpenJarvis provides a **clean Python API** through the `Jarvis` class. There is no framework lock-in -- the SDK is a standard Python package with dataclass-based types and no required web framework.
+OpenSirius provides a **clean Python API** through the `Sirius` class. There is no framework lock-in -- the SDK is a standard Python package with dataclass-based types and no required web framework.
 
 ```python
-from openjarvis import Jarvis
+from openjarvis import Sirius
 
-j = Jarvis()
+j = Sirius()
 response = j.ask("Hello")
 
 # Full control
@@ -227,15 +227,15 @@ Design choices that support this principle:
 
 ## 7. OpenAI-Compatible
 
-The API server (`jarvis serve`) implements the **OpenAI chat completions API format**, making OpenJarvis a drop-in replacement for OpenAI in existing applications.
+The API server (`jarvis serve`) implements the **OpenAI chat completions API format**, making OpenSirius a drop-in replacement for OpenAI in existing applications.
 
 Supported endpoints:
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/v1/chat/completions` | POST | Chat completions (streaming and non-streaming) |
-| `/v1/models` | GET | List available models |
-| `/health` | GET | Health check |
+| Endpoint               | Method | Description                                    |
+| ---------------------- | ------ | ---------------------------------------------- |
+| `/v1/chat/completions` | POST   | Chat completions (streaming and non-streaming) |
+| `/v1/models`           | GET    | List available models                          |
+| `/health`              | GET    | Health check                                   |
 
 Request and response formats match the OpenAI API specification:
 
@@ -253,7 +253,7 @@ curl http://localhost:8000/v1/chat/completions \
 
 Streaming responses use Server-Sent Events (SSE) with `data: [DONE]` termination, matching the OpenAI streaming protocol.
 
-Any OpenAI client library can connect to OpenJarvis:
+Any OpenAI client library can connect to OpenSirius:
 
 ```python
 from openai import OpenAI
@@ -269,31 +269,31 @@ response = client.chat.completions.create(
 
 ## 8. Standalone
 
-OpenJarvis requires **no external services** for core functionality. Everything needed to run the system is included or uses standard system libraries.
+OpenSirius requires **no external services** for core functionality. Everything needed to run the system is included or uses standard system libraries.
 
-| Component | Dependency |
-|-----------|-----------|
-| Configuration | TOML file, built-in `tomllib` (Python 3.11+) or `tomli` |
-| Memory (default) | Built-in `sqlite3` module |
-| Telemetry | Built-in `sqlite3` module |
-| Traces | Built-in `sqlite3` module |
-| HTTP client | `httpx` (lightweight, pure Python) |
-| CLI | `click` + `rich` |
-| Event bus | Built-in `threading` module |
+| Component        | Dependency                                              |
+| ---------------- | ------------------------------------------------------- |
+| Configuration    | TOML file, built-in `tomllib` (Python 3.11+) or `tomli` |
+| Memory (default) | Built-in `sqlite3` module                               |
+| Telemetry        | Built-in `sqlite3` module                               |
+| Traces           | Built-in `sqlite3` module                               |
+| HTTP client      | `httpx` (lightweight, pure Python)                      |
+| CLI              | `click` + `rich`                                        |
+| Event bus        | Built-in `threading` module                             |
 
-The only external requirement is a running inference engine (Ollama, vLLM, etc.), which is the model server itself -- not a dependency of OpenJarvis.
+The only external requirement is a running inference engine (Ollama, vLLM, etc.), which is the model server itself -- not a dependency of OpenSirius.
 
 Optional features that require additional packages:
 
-| Feature | Extra | Packages |
-|---------|-------|----------|
-| FAISS memory | `openjarvis[memory-faiss]` | `faiss-cpu`, `sentence-transformers` |
-| ColBERT memory | `openjarvis[memory-colbert]` | `colbert-ai`, `torch` |
-| BM25 memory | `openjarvis[memory-bm25]` | `rank-bm25` |
-| API server | `openjarvis[server]` | `fastapi`, `uvicorn` |
-| Cloud inference | `openjarvis[inference-cloud]` | `openai`, `anthropic`, `google-genai` |
-| vLLM engine | `openjarvis[inference-vllm]` | `vllm` |
-| PDF ingestion | `openjarvis[memory-pdf]` | `pdfplumber` |
-| WhatsApp Baileys | `openjarvis[channel-whatsapp-baileys]` | Node.js 22+ |
+| Feature          | Extra                                  | Packages                              |
+| ---------------- | -------------------------------------- | ------------------------------------- |
+| FAISS memory     | `openjarvis[memory-faiss]`             | `faiss-cpu`, `sentence-transformers`  |
+| ColBERT memory   | `openjarvis[memory-colbert]`           | `colbert-ai`, `torch`                 |
+| BM25 memory      | `openjarvis[memory-bm25]`              | `rank-bm25`                           |
+| API server       | `openjarvis[server]`                   | `fastapi`, `uvicorn`                  |
+| Cloud inference  | `openjarvis[inference-cloud]`          | `openai`, `anthropic`, `google-genai` |
+| vLLM engine      | `openjarvis[inference-vllm]`           | `vllm`                                |
+| PDF ingestion    | `openjarvis[memory-pdf]`               | `pdfplumber`                          |
+| WhatsApp Baileys | `openjarvis[channel-whatsapp-baileys]` | Node.js 22+                           |
 
 This design ensures that a minimal installation (`uv sync`) gives you a fully functional system with SQLite memory, local inference, and the complete CLI -- no Docker, no external databases, no cloud accounts required.

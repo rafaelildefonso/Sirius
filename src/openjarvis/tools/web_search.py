@@ -16,13 +16,14 @@ logger = logging.getLogger(__name__)
 
 @ToolRegistry.register("web_search")
 class WebSearchTool(BaseTool):
-    """Search the web via Tavily API."""
+    """Search the web via Tavily API with SerpApi fallback."""
 
     tool_id = "web_search"
     is_local = False
 
     def __init__(self, api_key: str | None = None, max_results: int = 5):
-        self._api_key = api_key or os.environ.get("TAVILY_API_KEY")
+        self._tavily_key = api_key or os.environ.get("TAVILY_API_KEY")
+        self._serpapi_key = os.environ.get("SERPAPI_API_KEY")
         self._max_results = max_results
 
     @property
@@ -45,7 +46,7 @@ class WebSearchTool(BaseTool):
                 "required": ["query"],
             },
             category="search",
-            metadata={"requires_api_key": "TAVILY_API_KEY", "fallback": "duckduckgo"},
+            metadata={"requires_api_key": "TAVILY_API_KEY", "fallback": "serpapi"},
         )
 
     @staticmethod
@@ -115,6 +116,27 @@ class WebSearchTool(BaseTool):
             text = text[:max_chars] + "\n\n[Content truncated]"
         return text
 
+    def _serpapi_search(self, query: str, max_results: int) -> str:
+        """Search using SerpApi fallback."""
+        import httpx
+        url = "https://serpapi.com/search"
+        params = {
+            "q": query,
+            "api_key": self._serpapi_key,
+            "engine": "google",
+            "num": max_results
+        }
+        resp = httpx.get(url, params=params, timeout=15.0)
+        resp.raise_for_status()
+        data = resp.json()
+        results = []
+        for r in data.get("organic_results", []):
+            results.append(
+                f"**{r.get('title', 'Untitled')}**\n"
+                f"{r.get('link', '')}\n{r.get('snippet', '')}"
+            )
+        return "\n\n".join(results)
+
     def _duckduckgo_search(self, query: str, max_results: int) -> str:
         """Search using DuckDuckGo as fallback."""
         from ddgs import DDGS
@@ -157,28 +179,46 @@ class WebSearchTool(BaseTool):
 
         max_results = params.get("max_results", self._max_results)
 
-        try:
-            from tavily import TavilyClient
+        # 1. Try Tavily
+        if self._tavily_key:
+            try:
+                from tavily import TavilyClient
 
-            client = TavilyClient(api_key=self._api_key)
-            response = client.search(query, max_results=max_results)
-            results = response.get("results", [])
-            formatted = "\n\n".join(
-                f"**{r.get('title', 'Untitled')}**\n"
-                f"{r.get('url', '')}\n{r.get('content', '')}"
-                for r in results
-            )
-            return ToolResult(
-                tool_name="web_search",
-                content=formatted or "No results found.",
-                success=True,
-                metadata={"num_results": len(results), "engine": "tavily"},
-            )
-        except Exception as exc:
-            logger.debug(
-                "Tavily error (%s), falling back to DuckDuckGo", type(exc).__name__
-            )
+                client = TavilyClient(api_key=self._tavily_key)
+                response = client.search(query, max_results=max_results)
+                results = response.get("results", [])
+                formatted = "\n\n".join(
+                    f"**{r.get('title', 'Untitled')}**\n"
+                    f"{r.get('url', '')}\n{r.get('content', '')}"
+                    for r in results
+                )
+                return ToolResult(
+                    tool_name="web_search",
+                    content=formatted or "No results found.",
+                    success=True,
+                    metadata={"num_results": len(results), "engine": "tavily"},
+                )
+            except Exception as exc:
+                logger.debug(
+                    "Tavily error (%s), falling back", type(exc).__name__
+                )
 
+        # 2. Try SerpApi
+        if self._serpapi_key:
+            try:
+                formatted = self._serpapi_search(query, max_results)
+                return ToolResult(
+                    tool_name="web_search",
+                    content=formatted or "No results found.",
+                    success=True,
+                    metadata={"engine": "serpapi"},
+                )
+            except Exception as exc:
+                logger.debug(
+                    "SerpApi error (%s), falling back", type(exc).__name__
+                )
+
+        # 3. Try DuckDuckGo
         try:
             formatted = self._duckduckgo_search(query, max_results)
             return ToolResult(
@@ -186,15 +226,6 @@ class WebSearchTool(BaseTool):
                 content=formatted or "No results found.",
                 success=True,
                 metadata={"engine": "duckduckgo"},
-            )
-        except ImportError:
-            return ToolResult(
-                tool_name="web_search",
-                content=(
-                    "tavily-python not installed and ddgs not available."
-                    " Install with: pip install tavily-python ddgs"
-                ),
-                success=False,
             )
         except Exception as exc:
             return ToolResult(

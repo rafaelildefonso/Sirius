@@ -1,6 +1,6 @@
 # Channels Architecture
 
-The channels module provides a transport-agnostic messaging layer for receiving and sending messages through external platforms. The design follows the same registry-plus-ABC pattern used throughout OpenJarvis: a `BaseChannel` interface defines the contract, and concrete implementations for each platform (Telegram, Discord, Slack, WhatsApp, etc.) are registered for runtime discovery.
+The channels module provides a transport-agnostic messaging layer for receiving and sending messages through external platforms. The design follows the same registry-plus-ABC pattern used throughout OpenSirius: a `BaseChannel` interface defines the contract, and concrete implementations for each platform (Telegram, Discord, Slack, WhatsApp, etc.) are registered for runtime discovery.
 
 ---
 
@@ -111,10 +111,10 @@ for handler in self._handlers:
 
 Channel events are published to the `EventBus` using two event types:
 
-| Event | Published By | When | Payload |
-|-------|-------------|------|---------|
+| Event                      | Published By  | When                           | Payload                                      |
+| -------------------------- | ------------- | ------------------------------ | -------------------------------------------- |
 | `CHANNEL_MESSAGE_RECEIVED` | Listener loop | Message received from platform | `channel`, `sender`, `content`, `message_id` |
-| `CHANNEL_MESSAGE_SENT` | `send()` | Message successfully delivered | `channel`, `content`, `conversation_id` |
+| `CHANNEL_MESSAGE_SENT`     | `send()`      | Message successfully delivered | `channel`, `content`, `conversation_id`      |
 
 These events allow other modules to react to channel activity without depending on the channel implementation directly. For example, a logging subscriber can record all sent and received messages, or an agent can be wired to respond to incoming channel messages by subscribing to `CHANNEL_MESSAGE_RECEIVED`.
 
@@ -141,16 +141,16 @@ ChannelHandler = Callable[[ChannelMessage], Optional[str]]
 
 ## Threading Model
 
-Channel implementations use Python's `threading` module rather than asyncio. This is a deliberate choice: OpenJarvis's core inference path is synchronous, and daemon threads are simpler to compose with synchronous code than coroutines.
+Channel implementations use Python's `threading` module rather than asyncio. This is a deliberate choice: OpenSirius's core inference path is synchronous, and daemon threads are simpler to compose with synchronous code than coroutines.
 
-| Component | Thread | Notes |
-|-----------|--------|-------|
-| `connect()`, `send()`, `disconnect()` | Caller thread | All public methods are thread-safe |
-| Listener loop | Background daemon thread | Started in `connect()`, joined in `disconnect()` |
-| Handler callbacks | Background daemon thread | Called from listener thread -- use thread-safe data structures |
+| Component                             | Thread                   | Notes                                                          |
+| ------------------------------------- | ------------------------ | -------------------------------------------------------------- |
+| `connect()`, `send()`, `disconnect()` | Caller thread            | All public methods are thread-safe                             |
+| Listener loop                         | Background daemon thread | Started in `connect()`, joined in `disconnect()`               |
+| Handler callbacks                     | Background daemon thread | Called from listener thread -- use thread-safe data structures |
 
 !!! warning "Handler thread safety"
-    Handler callbacks run on the listener thread, not the thread that called `connect()`. If your handler modifies shared state, protect it with a lock or use thread-safe data structures such as `queue.Queue`.
+Handler callbacks run on the listener thread, not the thread that called `connect()`. If your handler modifies shared state, protect it with a lock or use thread-safe data structures such as `queue.Queue`.
 
 ---
 

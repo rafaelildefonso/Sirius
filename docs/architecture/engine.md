@@ -1,6 +1,6 @@
 # Inference Engine Primitive
 
-The Engine primitive provides the **inference runtime** -- the layer that connects OpenJarvis to language model servers. All backends implement a uniform interface, making it straightforward to swap between local and cloud inference without changing application code.
+The Engine primitive provides the **inference runtime** -- the layer that connects OpenSirius to language model servers. All backends implement a uniform interface, making it straightforward to swap between local and cloud inference without changing application code.
 
 ---
 
@@ -84,13 +84,13 @@ When the model requests tool calls, they are extracted and passed through in Ope
 
 Engine backends normalize tool calls from different providers into the standard flat format used by agents:
 
-| Provider | Source Format | Extraction Logic |
-|----------|-------------|-----------------|
-| **OpenAI** | `choices[0].message.tool_calls[].function.{name, arguments}` | Direct extraction, add `id` from `tool_calls[].id` |
-| **Anthropic** | `content[]` blocks with `type: "tool_use"` | Filter `tool_use` blocks, map `input` dict to JSON `arguments` |
-| **Google** | `candidates[0].content.parts[]` with `function_call` | Extract `function_call.name` and `function_call.args`, serialize args to JSON |
-| **LiteLLM** | Flat `{id, name, arguments}` dicts (proxy pre-normalizes) | Pass through directly |
-| **Ollama** | `message.tool_calls[].function.{name, arguments}` | Extract from Ollama native format, serialize arguments dict to JSON |
+| Provider      | Source Format                                                | Extraction Logic                                                              |
+| ------------- | ------------------------------------------------------------ | ----------------------------------------------------------------------------- |
+| **OpenAI**    | `choices[0].message.tool_calls[].function.{name, arguments}` | Direct extraction, add `id` from `tool_calls[].id`                            |
+| **Anthropic** | `content[]` blocks with `type: "tool_use"`                   | Filter `tool_use` blocks, map `input` dict to JSON `arguments`                |
+| **Google**    | `candidates[0].content.parts[]` with `function_call`         | Extract `function_call.name` and `function_call.args`, serialize args to JSON |
+| **LiteLLM**   | Flat `{id, name, arguments}` dicts (proxy pre-normalizes)    | Pass through directly                                                         |
+| **Ollama**    | `message.tool_calls[].function.{name, arguments}`            | Extract from Ollama native format, serialize arguments dict to JSON           |
 
 All providers produce the same output format consumed by agents:
 
@@ -106,21 +106,21 @@ All providers produce the same output format consumed by agents:
 
 ## Backend Comparison
 
-| Backend | Registry Key | Protocol | Default Port | GPU Required | Best For |
-|---------|-------------|----------|-------------|-------------|----------|
-| **Ollama** | `ollama` | Native HTTP API | 11434 | No (GPU optional) | Getting started, consumer GPUs, Apple Silicon |
-| **vLLM** | `vllm` | OpenAI-compatible | 8000 | NVIDIA recommended | Datacenter GPUs (A100, H100), high throughput |
-| **SGLang** | `sglang` | OpenAI-compatible | 30000 | NVIDIA recommended | Structured generation, speculative decoding |
-| **llama.cpp** | `llamacpp` | OpenAI-compatible | 8080 | No (CPU-optimized) | CPU-only systems, GGUF models, edge devices |
-| **MLX** | `mlx` | OpenAI-compatible | 8080 | Apple Silicon | Apple Silicon native inference via MLX |
-| **LM Studio** | `lmstudio` | OpenAI-compatible | 1234 | No (GPU optional) | Desktop GUI, easy model management |
-| **Exo** | `exo` | OpenAI-compatible | 52415 | No (distributed) | Distributed inference across heterogeneous devices |
-| **Nexa** | `nexa` | OpenAI-compatible | 18181 | No (CPU/GPU) | On-device inference with GGUF models |
-| **Lemonade** | `lemonade` | OpenAI-compatible | 8000 | AMD GPU/NPU | AMD consumer GPUs (RDNA), Ryzen AI NPUs |
-| **Uzu** | `uzu` | OpenAI-compatible | 8000 | Varies | Uzu inference runtime |
-| **Apple FM** | `apple_fm` | OpenAI-compatible | 8079 | Apple Silicon | Apple Foundation Model on-device inference |
-| **LiteLLM** | `litellm` | OpenAI-compatible | — | No | Unified proxy to 100+ LLM providers |
-| **Cloud** | `cloud` | Provider SDKs | — | No | OpenAI, Anthropic, Google API access |
+| Backend       | Registry Key | Protocol          | Default Port | GPU Required       | Best For                                           |
+| ------------- | ------------ | ----------------- | ------------ | ------------------ | -------------------------------------------------- |
+| **Ollama**    | `ollama`     | Native HTTP API   | 11434        | No (GPU optional)  | Getting started, consumer GPUs, Apple Silicon      |
+| **vLLM**      | `vllm`       | OpenAI-compatible | 8000         | NVIDIA recommended | Datacenter GPUs (A100, H100), high throughput      |
+| **SGLang**    | `sglang`     | OpenAI-compatible | 30000        | NVIDIA recommended | Structured generation, speculative decoding        |
+| **llama.cpp** | `llamacpp`   | OpenAI-compatible | 8080         | No (CPU-optimized) | CPU-only systems, GGUF models, edge devices        |
+| **MLX**       | `mlx`        | OpenAI-compatible | 8080         | Apple Silicon      | Apple Silicon native inference via MLX             |
+| **LM Studio** | `lmstudio`   | OpenAI-compatible | 1234         | No (GPU optional)  | Desktop GUI, easy model management                 |
+| **Exo**       | `exo`        | OpenAI-compatible | 52415        | No (distributed)   | Distributed inference across heterogeneous devices |
+| **Nexa**      | `nexa`       | OpenAI-compatible | 18181        | No (CPU/GPU)       | On-device inference with GGUF models               |
+| **Lemonade**  | `lemonade`   | OpenAI-compatible | 8000         | AMD GPU/NPU        | AMD consumer GPUs (RDNA), Ryzen AI NPUs            |
+| **Uzu**       | `uzu`        | OpenAI-compatible | 8000         | Varies             | Uzu inference runtime                              |
+| **Apple FM**  | `apple_fm`   | OpenAI-compatible | 8079         | Apple Silicon      | Apple Foundation Model on-device inference         |
+| **LiteLLM**   | `litellm`    | OpenAI-compatible | —            | No                 | Unified proxy to 100+ LLM providers                |
+| **Cloud**     | `cloud`      | Provider SDKs     | —            | No                 | OpenAI, Anthropic, Google API access               |
 
 ### Ollama
 
@@ -162,9 +162,9 @@ The Cloud backend provides access to OpenAI, Anthropic, and Google models via th
 - All other models route to the **OpenAI** client
 
 !!! info "API Keys"
-    Cloud models require API keys set as environment variables:
-    `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY` (or `GOOGLE_API_KEY`).
-    The cloud engine is only registered if the corresponding SDK packages are installed.
+Cloud models require API keys set as environment variables:
+`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY` (or `GOOGLE_API_KEY`).
+The cloud engine is only registered if the corresponding SDK packages are installed.
 
 ### MLX
 
@@ -223,7 +223,7 @@ The Uzu backend connects to the Uzu inference runtime. Unlike other OpenAI-compa
 The Apple FM backend connects to Apple's Foundation Model SDK via a FastAPI shim (`apple_fm_shim.py`). It wraps `python-apple-fm-sdk` as an OpenAI-compatible API. Requires macOS 15+ with Apple Silicon.
 
 !!! note "Token counts"
-    The Apple FM SDK does not expose token counts. The shim returns 0 for all token counts. Benchmark throughput and energy-per-token metrics will reflect this limitation.
+The Apple FM SDK does not expose token counts. The shim returns 0 for all token counts. Benchmark throughput and energy-per-token metrics will reflect this limitation.
 
 - **Default host:** `http://localhost:8079`
 - **Health check:** `GET /v1/models`
@@ -241,15 +241,15 @@ The LiteLLM backend connects to a LiteLLM proxy server, which provides a unified
 
 ## Hardware Auto-Detection
 
-OpenJarvis automatically detects system hardware to recommend the best engine. Detection runs at config load time via `detect_hardware()`:
+OpenSirius automatically detects system hardware to recommend the best engine. Detection runs at config load time via `detect_hardware()`:
 
-| Detection | Method | Information Extracted |
-|-----------|--------|---------------------|
-| NVIDIA GPU | `nvidia-smi` | GPU name, VRAM (GB), count |
-| AMD GPU | `rocm-smi` | GPU name |
-| Apple Silicon | `system_profiler SPDisplaysDataType` | Chipset model name |
-| CPU | `/proc/cpuinfo` or `sysctl` | Brand string |
-| RAM | `/proc/meminfo` or `sysctl hw.memsize` | Total GB |
+| Detection     | Method                                 | Information Extracted      |
+| ------------- | -------------------------------------- | -------------------------- |
+| NVIDIA GPU    | `nvidia-smi`                           | GPU name, VRAM (GB), count |
+| AMD GPU       | `rocm-smi`                             | GPU name                   |
+| Apple Silicon | `system_profiler SPDisplaysDataType`   | Chipset model name         |
+| CPU           | `/proc/cpuinfo` or `sysctl`            | Brand string               |
+| RAM           | `/proc/meminfo` or `sysctl hw.memsize` | Total GB                   |
 
 ### Engine Recommendation Logic
 
@@ -362,18 +362,18 @@ host = "http://localhost:30000"
 
 The `EngineConfig` dataclass and its per-engine sub-dataclasses map these settings:
 
-| Config Class | Field | Default | Description |
-|---|---|---|---|
-| `EngineConfig` | `default` | `"ollama"` (hardware-dependent) | Preferred engine backend |
-| `OllamaEngineConfig` | `host` | `http://localhost:11434` | Ollama server URL |
-| `VLLMEngineConfig` | `host` | `http://localhost:8000` | vLLM server URL |
-| `SGLangEngineConfig` | `host` | `http://localhost:30000` | SGLang server URL |
-| `LlamaCppEngineConfig` | `host` | `http://localhost:8080` | llama.cpp server URL |
-| `LlamaCppEngineConfig` | `binary_path` | `""` | Path to llama.cpp binary (for managed mode) |
-| `LemonadeEngineConfig` | `host` | `http://localhost:8000` | Lemonade server URL |
+| Config Class           | Field         | Default                         | Description                                 |
+| ---------------------- | ------------- | ------------------------------- | ------------------------------------------- |
+| `EngineConfig`         | `default`     | `"ollama"` (hardware-dependent) | Preferred engine backend                    |
+| `OllamaEngineConfig`   | `host`        | `http://localhost:11434`        | Ollama server URL                           |
+| `VLLMEngineConfig`     | `host`        | `http://localhost:8000`         | vLLM server URL                             |
+| `SGLangEngineConfig`   | `host`        | `http://localhost:30000`        | SGLang server URL                           |
+| `LlamaCppEngineConfig` | `host`        | `http://localhost:8080`         | llama.cpp server URL                        |
+| `LlamaCppEngineConfig` | `binary_path` | `""`                            | Path to llama.cpp binary (for managed mode) |
+| `LemonadeEngineConfig` | `host`        | `http://localhost:8000`         | Lemonade server URL                         |
 
 !!! note "Backward compatibility"
-    The old flat field names `ollama_host`, `vllm_host`, `llamacpp_host`, `llamacpp_path`, `sglang_host`, and `lemonade_host` under `[engine]` are still accepted as backward-compatible properties on `EngineConfig`. New configurations should use the nested sub-section format.
+The old flat field names `ollama_host`, `vllm_host`, `llamacpp_host`, `llamacpp_path`, `sglang_host`, and `lemonade_host` under `[engine]` are still accepted as backward-compatible properties on `EngineConfig`. New configurations should use the nested sub-section format.
 
 ---
 

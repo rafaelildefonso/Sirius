@@ -8,9 +8,11 @@ from typing import Optional
 
 import soundfile as sf
 
+from voice_assistant.cache import model_cache
+
 
 class SpeechToText:
-    """Local STT using faster-whisper."""
+    """Local STT using faster-whisper with model caching."""
 
     def __init__(
         self,
@@ -26,23 +28,29 @@ class SpeechToText:
         self._model = None
         self._initialized = False
 
+    def _load_model(self):
+        """Actually load the model (called by cache)."""
+        from faster_whisper import WhisperModel
+        print(f"Loading whisper model '{self.model_size}'...")
+        model = WhisperModel(
+            self.model_size,
+            device=self.device,
+            compute_type=self.compute_type,
+            download_root=None,
+        )
+        print("Whisper model loaded!")
+        return model
+
     def _ensure_model(self):
-        """Lazy-load the whisper model."""
+        """Lazy-load the whisper model with caching."""
         if self._model is not None:
             return
 
+        # Use global model cache
+        cache_key = f"whisper_{self.model_size}_{self.device}_{self.compute_type}"
         try:
-            from faster_whisper import WhisperModel
-
-            print(f"Loading whisper model '{self.model_size}'...")
-            self._model = WhisperModel(
-                self.model_size,
-                device=self.device,
-                compute_type=self.compute_type,
-                download_root=None,  # Use default cache dir
-            )
+            self._model = model_cache.get_model(cache_key, self._load_model)
             self._initialized = True
-            print("Whisper model loaded!")
         except Exception as e:
             print(f"Failed to load whisper model: {e}")
             raise

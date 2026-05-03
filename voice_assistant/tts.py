@@ -8,9 +8,11 @@ from typing import Optional
 import numpy as np
 import soundfile as sf
 
+from voice_assistant.cache import model_cache
+
 
 class TextToSpeech:
-    """Local TTS using Kokoro (open source)."""
+    """Local TTS using Kokoro with model caching."""
 
     def __init__(
         self,
@@ -24,18 +26,24 @@ class TextToSpeech:
         self._pipeline = None
         self._initialized = False
 
+    def _load_pipeline(self):
+        """Actually load the pipeline (called by cache)."""
+        from kokoro import KPipeline
+        print("Loading Kokoro TTS pipeline...")
+        pipeline = KPipeline(lang_code=self.lang_code)
+        print("Kokoro TTS loaded!")
+        return pipeline
+
     def _ensure_pipeline(self):
-        """Lazy-load kokoro pipeline."""
+        """Lazy-load kokoro pipeline with caching."""
         if self._pipeline is not None:
             return
 
+        # Use global model cache
+        cache_key = f"kokoro_{self.lang_code}"
         try:
-            from kokoro import KPipeline
-
-            print("Loading Kokoro TTS pipeline...")
-            self._pipeline = KPipeline(lang_code=self.lang_code)
+            self._pipeline = model_cache.get_model(cache_key, self._load_pipeline)
             self._initialized = True
-            print("Kokoro TTS loaded!")
         except Exception as e:
             print(f"Failed to load Kokoro: {e}")
             raise

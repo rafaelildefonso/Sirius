@@ -41,14 +41,14 @@ The `accepts_tools` class attribute (default `False`) enables the CLI and SDK to
 
 `BaseAgent` provides five concrete helpers that subclasses use to avoid duplicating common logic:
 
-| Helper | Purpose |
-|--------|---------|
-| `_emit_turn_start(input)` | Publish `AGENT_TURN_START` on the event bus |
-| `_emit_turn_end(**data)` | Publish `AGENT_TURN_END` on the event bus |
+| Helper                                              | Purpose                                                                                     |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `_emit_turn_start(input)`                           | Publish `AGENT_TURN_START` on the event bus                                                 |
+| `_emit_turn_end(**data)`                            | Publish `AGENT_TURN_END` on the event bus                                                   |
 | `_build_messages(input, context, *, system_prompt)` | Assemble the message list from optional system prompt, conversation context, and user input |
-| `_generate(messages, **extra_kwargs)` | Call `engine.generate()` with stored defaults (model, temperature, max_tokens) |
-| `_max_turns_result(tool_results, turns, content)` | Build the standard `AgentResult` for when `max_turns` is exceeded |
-| `_strip_think_tags(text)` | Remove `<think>...</think>` blocks from model output (static method) |
+| `_generate(messages, **extra_kwargs)`               | Call `engine.generate()` with stored defaults (model, temperature, max_tokens)              |
+| `_max_turns_result(tool_results, turns, content)`   | Build the standard `AgentResult` for when `max_turns` is exceeded                           |
+| `_strip_think_tags(text)`                           | Remove `<think>...</think>` blocks from model output (static method)                        |
 
 ### The `run()` Contract
 
@@ -56,7 +56,7 @@ The `run()` method is the single entry point for all agent implementations. It r
 
 - **`input`** -- The user's query text
 - **`context`** -- An optional `AgentContext` with conversation history, tool names, and memory results
-- **`**kwargs`** -- Additional implementation-specific parameters
+- **`**kwargs`\*\* -- Additional implementation-specific parameters
 
 It returns an `AgentResult` containing the response content, any tool results, the number of turns taken, and metadata.
 
@@ -108,7 +108,7 @@ class ToolUsingAgent(BaseAgent):
 All tool-using agents (`OrchestratorAgent`, `NativeReActAgent`, `NativeOpenHandsAgent`, `RLMAgent`) extend this class.
 
 !!! info "Agents that bypass ToolUsingAgent"
-    Some agents extend `BaseAgent` directly and set `accepts_tools = False`: `SimpleAgent` (single-turn, no tools), `OpenHandsAgent` (tool management is handled by the openhands-sdk), and `ClaudeCodeAgent` (tools are managed by the Claude Agent SDK). `SandboxedAgent` also extends `BaseAgent` directly because it wraps another agent rather than calling tools itself.
+Some agents extend `BaseAgent` directly and set `accepts_tools = False`: `SimpleAgent` (single-turn, no tools), `OpenHandsAgent` (tool management is handled by the openhands-sdk), and `ClaudeCodeAgent` (tools are managed by the Claude Agent SDK). `SandboxedAgent` also extends `BaseAgent` directly because it wraps another agent rather than calling tools itself.
 
 ---
 
@@ -116,14 +116,14 @@ All tool-using agents (`OrchestratorAgent`, `NativeReActAgent`, `NativeOpenHands
 
 Start here. Pick the simplest agent that handles your task — simpler agents are faster, use fewer tokens, and are easier to debug. Reach for more complex agents only when the task demands it.
 
-| Use case | Agent | Why |
-|---|---|---|
-| Simple Q&A, single-turn | `simple` | No overhead, one inference call |
-| Multi-step with tools (calculator, search, files) | `orchestrator` | Function-calling loop, most compatible with OpenAI-format models |
-| Explicit reasoning chains | `native_react` | Thought-Action-Observation loop based on [ReAct (Yao et al., 2023)](https://arxiv.org/abs/2210.03629); reasoning traces are visible and debuggable |
-| Code generation + execution | `native_openhands` | CodeAct pattern inspired by [OpenHands (Wang et al., 2024)](https://arxiv.org/abs/2407.16741); generates and executes Python inline |
-| Long documents, recursive decomposition | `rlm` | Stores context in a persistent REPL, decomposes via recursive sub-LM calls |
-| Untrusted inputs | `sandboxed` wrapping any agent | Container isolation with network disabled and mount allowlists |
+| Use case                                          | Agent                          | Why                                                                                                                                                |
+| ------------------------------------------------- | ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Simple Q&A, single-turn                           | `simple`                       | No overhead, one inference call                                                                                                                    |
+| Multi-step with tools (calculator, search, files) | `orchestrator`                 | Function-calling loop, most compatible with OpenAI-format models                                                                                   |
+| Explicit reasoning chains                         | `native_react`                 | Thought-Action-Observation loop based on [ReAct (Yao et al., 2023)](https://arxiv.org/abs/2210.03629); reasoning traces are visible and debuggable |
+| Code generation + execution                       | `native_openhands`             | CodeAct pattern inspired by [OpenHands (Wang et al., 2024)](https://arxiv.org/abs/2407.16741); generates and executes Python inline                |
+| Long documents, recursive decomposition           | `rlm`                          | Stores context in a persistent REPL, decomposes via recursive sub-LM calls                                                                         |
+| Untrusted inputs                                  | `sandboxed` wrapping any agent | Container isolation with network disabled and mount allowlists                                                                                     |
 
 **General guidance:** `orchestrator` is the default for most tool-using tasks. Use `native_react` when you want visible reasoning traces (e.g., for debugging or auditing agent behavior). Use `native_openhands` when the task involves writing and running code. Use `rlm` when context is too long to fit in a single prompt window.
 
@@ -188,9 +188,9 @@ How it works:
 1. Builds initial messages from context and user input
 2. Converts available tools to OpenAI function-calling format via `ToolExecutor.get_openai_tools()`
 3. Enters a loop (up to `max_turns` iterations):
-    - Calls `engine.generate()` with messages and tool definitions
-    - If the response contains `tool_calls`, executes each tool and appends the results as `TOOL` messages
-    - If no `tool_calls` are present, returns the content as the final answer
+   - Calls `engine.generate()` with messages and tool definitions
+   - If the response contains `tool_calls`, executes each tool and appends the results as `TOOL` messages
+   - If no `tool_calls` are present, returns the content as the final answer
 4. If `max_turns` is exceeded, returns the last content or a warning message
 
 ```python
@@ -240,7 +240,7 @@ How it works:
 5. Loops until a final answer is produced or `max_turns` is exceeded
 
 !!! note "Backward compatibility"
-    The old `from openjarvis.agents.react import ReActAgent` import path still works via a backward-compat shim. The registry alias `"react"` also maps to `NativeReActAgent`.
+The old `from openjarvis.agents.react import ReActAgent` import path still works via a backward-compat shim. The registry alias `"react"` also maps to `NativeReActAgent`.
 
 ```python
 from openjarvis.agents.native_react import NativeReActAgent
@@ -265,10 +265,10 @@ How it works:
 1. Builds a detailed system prompt with enriched tool descriptions (via shared `build_tool_descriptions()` builder) and code execution instructions
 2. Pre-fetches any URLs in the user input, inlining the content directly
 3. For each turn:
-    - Generates a response and strips `<think>` tags
-    - If a `\`\`\`python` code block is found, executes it via `code_interpreter`
-    - If an `Action:` / `Action Input:` is found, dispatches the tool
-    - If neither is found, returns the content as the final answer
+   - Generates a response and strips `<think>` tags
+   - If a `\`\`\`python`code block is found, executes it via`code_interpreter`
+   - If an `Action:` / `Action Input:` is found, dispatches the tool
+   - If neither is found, returns the content as the final answer
 4. Handles context window overflow with automatic truncation
 
 ```python
@@ -315,13 +315,13 @@ How it works:
 
 The agent supports configurable sub-model parameters for recursive calls:
 
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `sub_model` | same as `model` | Model for sub-LM calls |
-| `sub_temperature` | `0.3` | Temperature for sub-LM calls |
-| `sub_max_tokens` | `1024` | Max tokens for sub-LM calls |
-| `max_output_chars` | `10000` | Max REPL output characters |
-| `system_prompt` | `RLM_SYSTEM_PROMPT` | Override the system prompt |
+| Parameter          | Default             | Description                  |
+| ------------------ | ------------------- | ---------------------------- |
+| `sub_model`        | same as `model`     | Model for sub-LM calls       |
+| `sub_temperature`  | `0.3`               | Temperature for sub-LM calls |
+| `sub_max_tokens`   | `1024`              | Max tokens for sub-LM calls  |
+| `max_output_chars` | `10000`             | Max REPL output characters   |
+| `system_prompt`    | `RLM_SYSTEM_PROMPT` | Override the system prompt   |
 
 ```python
 from openjarvis.agents.rlm import RLMAgent
@@ -343,7 +343,7 @@ result = agent.run("Summarize this document", context=ctx)
 A thin wrapper around the real `openhands-sdk` package for AI-driven software development tasks. Extends `BaseAgent` directly (does not use `ToolUsingAgent` since tool management is handled by the SDK).
 
 !!! warning "Optional dependency"
-    This agent requires the `openhands-sdk` package (`uv sync --extra openhands`). The SDK requires Python 3.12+.
+This agent requires the `openhands-sdk` package (`uv sync --extra openhands`). The SDK requires Python 3.12+.
 
 How it works:
 
@@ -368,7 +368,7 @@ result = agent.run("Fix the failing test in test_utils.py")
 
 **Registry key:** `claude_code`
 
-Wraps the `@anthropic-ai/claude-code` SDK via a bundled Node.js subprocess bridge. Unlike every other agent, inference is handled entirely by the Claude Agent SDK -- the OpenJarvis inference engine is not used. This makes `ClaudeCodeAgent` a true external agent, similar in spirit to `OpenHandsAgent` but implemented via subprocess rather than an importable Python SDK.
+Wraps the `@anthropic-ai/claude-code` SDK via a bundled Node.js subprocess bridge. Unlike every other agent, inference is handled entirely by the Claude Agent SDK -- the OpenSirius inference engine is not used. This makes `ClaudeCodeAgent` a true external agent, similar in spirit to `OpenHandsAgent` but implemented via subprocess rather than an importable Python SDK.
 
 ```mermaid
 graph LR
@@ -391,7 +391,7 @@ How it works:
 5. Falls back to treating all stdout as plain text content if sentinels are absent
 
 !!! warning "Requires Node.js 22+"
-    `ClaudeCodeAgent` raises `RuntimeError` at `run()` time if `node` is not found on `PATH`. An `ANTHROPIC_API_KEY` environment variable is required for the Claude Agent SDK to authenticate.
+`ClaudeCodeAgent` raises `RuntimeError` at `run()` time if `node` is not found on `PATH`. An `ANTHROPIC_API_KEY` environment variable is required for the Claude Agent SDK to authenticate.
 
 ```python
 from openjarvis.agents.claude_code import ClaudeCodeAgent
@@ -454,7 +454,7 @@ result = sandboxed.run("Summarize the reports in /home/user/data")
 ```
 
 !!! warning "accepts_tools = False"
-    `SandboxedAgent` does not accept tools via `--tools` or `tools=`. Tool calling within the sandbox is the responsibility of the wrapped inner agent.
+`SandboxedAgent` does not accept tools via `--tools` or `tools=`. Tool calling within the sandbox is the responsibility of the wrapped inner agent.
 
 ---
 
@@ -481,13 +481,13 @@ class BaseTool(ABC):
 
 ### Built-in Tools
 
-| Tool | Registry Key | Description |
-|------|-------------|-------------|
-| `CalculatorTool` | `calculator` | AST-based safe expression evaluator |
-| `ThinkTool` | `think` | Reasoning scratchpad (returns input as-is) |
-| `RetrievalTool` | `retrieval` | Memory search via a memory backend |
-| `LLMTool` | `llm` | Sub-model calls (query a different model) |
-| `FileReadTool` | `file_read` | Safe file reading with path validation |
+| Tool             | Registry Key | Description                                |
+| ---------------- | ------------ | ------------------------------------------ |
+| `CalculatorTool` | `calculator` | AST-based safe expression evaluator        |
+| `ThinkTool`      | `think`      | Reasoning scratchpad (returns input as-is) |
+| `RetrievalTool`  | `retrieval`  | Memory search via a memory backend         |
+| `LLMTool`        | `llm`        | Sub-model calls (query a different model)  |
+| `FileReadTool`   | `file_read`  | Safe file reading with path validation     |
 
 ### ToolExecutor
 
@@ -521,15 +521,15 @@ For each tool call:
 
 All agents integrate with the `EventBus` for telemetry and trace collection:
 
-| Event | Published By | When |
-|-------|-------------|------|
-| `AGENT_TURN_START` | All agents (via `_emit_turn_start` helper) | Before starting query processing |
-| `AGENT_TURN_END` | All agents (via `_emit_turn_end` helper) | After producing a response |
-| `TOOL_CALL_START` | ToolExecutor (all `ToolUsingAgent` subclasses) | Before executing a tool |
-| `TOOL_CALL_END` | ToolExecutor (all `ToolUsingAgent` subclasses) | After executing a tool |
+| Event              | Published By                                   | When                             |
+| ------------------ | ---------------------------------------------- | -------------------------------- |
+| `AGENT_TURN_START` | All agents (via `_emit_turn_start` helper)     | Before starting query processing |
+| `AGENT_TURN_END`   | All agents (via `_emit_turn_end` helper)       | After producing a response       |
+| `TOOL_CALL_START`  | ToolExecutor (all `ToolUsingAgent` subclasses) | Before executing a tool          |
+| `TOOL_CALL_END`    | ToolExecutor (all `ToolUsingAgent` subclasses) | After executing a tool           |
 
 !!! info "Inference events"
-    `INFERENCE_START` and `INFERENCE_END` events are published by the `InstrumentedEngine` wrapper (in `telemetry/instrumented_engine.py`), not by agents directly. This keeps telemetry opt-in and transparent to agent code.
+`INFERENCE_START` and `INFERENCE_END` events are published by the `InstrumentedEngine` wrapper (in `telemetry/instrumented_engine.py`), not by agents directly. This keeps telemetry opt-in and transparent to agent code.
 
 These events are consumed by the `TelemetryStore` (for metrics) and `TraceCollector` (for interaction traces).
 

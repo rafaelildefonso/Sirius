@@ -133,6 +133,11 @@ voice = [
     "numpy>=1.24",
     "keyboard>=0.13",
     "pynput>=1.7",
+    "pyautogui>=0.9",
+    "pywin32>=306; platform_system=='Windows'",
+    "psutil>=5.9",
+    "pygetwindow>=0.0.9; platform_system=='Windows'",
+    "groq>=0.9",
 ]
 eval-wandb = ["wandb>=0.17"]
 eval-sheets = ["gspread>=6.0", "google-auth>=2.0"]

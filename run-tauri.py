@@ -57,7 +57,7 @@ def main():
     # Start Tauri app
     tauri_proc = start_tauri_dev()
     
-    print("\n✅ OpenJarvis Desktop running!")
+    print("\n✅ OpenSirius Desktop running!")
     print("🖥️  App: Tauri window opening...")
     print("🔧 API: http://localhost:8000")
     print("\nPress Ctrl+C to stop")

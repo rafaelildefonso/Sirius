@@ -39,6 +39,10 @@ Thumbs.db
 # Secrets
 .env
 .env.*
+**/groq_key.txt
+**/api_key.txt
+**/*.key
+**/.jarvis_cache/
 
 # Project
 *.sqlite

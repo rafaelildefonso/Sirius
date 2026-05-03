@@ -60,14 +60,14 @@ def main():
     from tkinter import ttk
 
     root = tk.Tk()
-    root.title("OpenJarvis Launcher")
+    root.title("OpenSirius Launcher")
     root.geometry("500x400")
     root.configure(bg="#0a0a0a")
 
     # Title
     tk.Label(
         root,
-        text="OpenJarvis",
+        text="OpenSirius",
         font=("Segoe UI", 32, "bold"),
         bg="#0a0a0a",
         fg="#00a8ff",
@@ -91,7 +91,7 @@ def main():
         backend_proc[0] = start_backend()
         frontend_proc[0] = start_frontend_dev()
         open_browser()
-        print("\n✅ OpenJarvis running!")
+        print("\n✅ OpenSirius running!")
         print("🌐 Web: http://localhost:5173")
         print("🔧 API: http://localhost:8000")
         print("\nPress Ctrl+C to stop")
@@ -120,7 +120,7 @@ def main():
         backend_proc[0] = start_backend()
         frontend_proc[0] = start_frontend_dev()
         open_browser()
-        print("\n✅ OpenJarvis running with both modes!")
+        print("\n✅ OpenSirius running with both modes!")
         print("🌐 Web: http://localhost:5173")
         print("🎙️ Voice: Press SPACE in the window to talk")
         print("\nPress Ctrl+C to stop")
