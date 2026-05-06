@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from pathlib import Path
 from typing import Any, List
@@ -128,12 +129,20 @@ class ShellExecTool(BaseTool):
 
             _rust = get_rust_module()
             output = _rust.ShellExecTool().execute(command, working_dir)
+            output_text = output or "(no output)"
+            returncode = 0
+            match = re.search(r"Exit code:\s*(-?\d+)", output_text)
+            if match:
+                try:
+                    returncode = int(match.group(1))
+                except ValueError:
+                    returncode = 0
             return ToolResult(
                 tool_name="shell_exec",
-                content=output or "(no output)",
-                success=True,
+                content=output_text,
+                success=returncode == 0,
                 metadata={
-                    "returncode": 0,
+                    "returncode": returncode,
                     "timeout_used": timeout,
                     "working_dir": working_dir,
                 },

@@ -193,10 +193,7 @@ class TestShellExecTool:
         assert result.metadata["returncode"] == 0
 
     def test_nonzero_returncode(self):
-        """Non-zero exit in Rust returns ToolResult::failure() but PyO3 binding
-        returns Ok(content).  The Python wrapper currently treats that as
-        success=True (it only sets success=False on exception).  The Rust
-        output still contains the exit code in the formatted string."""
+        """Non-zero exit code parsed from Rust output must mark failure."""
         mock_mod = _make_mock_rust(
             return_value=_rust_output(code=42),
         )
@@ -206,10 +203,9 @@ class TestShellExecTool:
             return_value=mock_mod,
         ):
             result = tool.execute(command="exit 42")
-        # PyO3 binding returns content for both success/failure ToolResults,
-        # so Python wrapper sets success=True and returncode=0.
-        assert result.success is True
+        assert result.success is False
         assert "Exit code: 42" in result.content
+        assert result.metadata["returncode"] == 42
 
     @pytest.mark.skip(reason="Rust backend has no output truncation")
     def test_max_output_truncation(self, tmp_path):

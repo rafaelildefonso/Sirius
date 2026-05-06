@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import glob
+import inspect
 import json
 import os
 import subprocess
@@ -49,7 +50,28 @@ class ToolExecutor:
         self._tools: Dict[str, Callable] = {}
         self._specs: Dict[str, ToolSpec] = {}
         self._memory = memory_manager
+        self._sensitive_tools = {
+            "type_text",
+            "press_keys",
+            "send_hotkey",
+            "close_active_window",
+            "send_message",
+        }
         self._register_builtin_tools()
+
+    @staticmethod
+    def _is_confirmation_value(value: Any) -> bool:
+        return str(value).lower().strip() in ("yes", "true", "1", "confirm")
+
+    def _requires_confirmation(self, tool_name: str, arguments: Dict[str, Any]) -> bool:
+        if tool_name in self._sensitive_tools:
+            return True
+        if tool_name == "computer_settings":
+            action = str(arguments.get("action", "")).lower().strip()
+            action = action.replace(" ", "_").replace("-", "_")
+            dangerous_actions = {"restart", "shutdown", "sleep_display", "lock_screen"}
+            return action in dangerous_actions
+        return False
 
     def _register_builtin_tools(self):
         """Register all built-in local tools."""
@@ -567,6 +589,227 @@ class ToolExecutor:
             self._send_hotkey,
         )
 
+        self.register(
+            "computer_settings",
+            ToolSpec(
+                name="computer_settings",
+                description="Controla configurações do computador: volume, brilho, janelas, teclas, etc. Ações: volume_up, volume_down, mute, brightness_up, brightness_down, full_screen, minimize, maximize, snap_left, snap_right, show_desktop, lock_screen, screenshot, dark_mode, open_settings, file_explorer, new_tab, close_tab, next_tab, prev_tab, scroll_up, scroll_down, copy, paste, cut, undo, redo, select_all, save, refresh_page, pause_video, play_pause, close_app, close_window, switch_window, focus_search, zoom_in, zoom_out, sleep_display, restart, shutdown (requer confirmed=yes).",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "description": "Nome da ação (ex: volume_up, mute, brightness_up, full_screen, lock_screen, etc)",
+                        },
+                        "value": {
+                            "type": "string",
+                            "description": "Valor opcional para ações que precisam (ex: volume_set 50)",
+                        },
+                        "confirmed": {
+                            "type": "string",
+                            "description": "Confirmação para ações perigosas (restart, shutdown). Use 'yes' para confirmar.",
+                        },
+                    },
+                    "required": ["action"],
+                },
+            ),
+            self._computer_settings,
+        )
+
+        self.register(
+            "youtube_summarize",
+            ToolSpec(
+                name="youtube_summarize",
+                description="Resume um vídeo do YouTube. Extrai a transcrição e gera um resumo com Groq/Gemini. Use quando o usuário pedir 'resume esse vídeo', 'me conta do que se trata', etc.",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "url": {
+                            "type": "string",
+                            "description": "URL do vídeo do YouTube",
+                        }
+                    },
+                    "required": ["url"],
+                },
+            ),
+            self._youtube_summarize,
+        )
+
+        self.register(
+            "youtube_info",
+            ToolSpec(
+                name="youtube_info",
+                description="Obtém informações de um vídeo do YouTube (título, canal, visualizações, duração). Use quando o usuário quiser saber detalhes do vídeo.",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "url": {
+                            "type": "string",
+                            "description": "URL do vídeo do YouTube",
+                        }
+                    },
+                    "required": ["url"],
+                },
+            ),
+            self._youtube_info,
+        )
+
+        self.register(
+            "youtube_trending",
+            ToolSpec(
+                name="youtube_trending",
+                description="Mostra vídeos em alta no YouTube Brasil. Use quando o usuário pedir 'o que está em alta', 'trending', etc.",
+                parameters={
+                    "type": "object",
+                    "properties": {},
+                },
+            ),
+            self._youtube_trending,
+        )
+
+        self.register(
+            "desktop_wallpaper",
+            ToolSpec(
+                name="desktop_wallpaper",
+                description="Altera o papel de parede do desktop. Use quando o usuário pedir 'muda o wallpaper', 'põe essa imagem de fundo', etc.",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Caminho da imagem ou URL",
+                        }
+                    },
+                    "required": ["path"],
+                },
+            ),
+            self._desktop_wallpaper,
+        )
+
+        self.register(
+            "desktop_organize",
+            ToolSpec(
+                name="desktop_organize",
+                description="Organiza os arquivos do desktop em pastas por tipo ou data. Use quando o usuário pedir 'organiza minha área de trabalho', 'limpa o desktop', etc.",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "mode": {
+                            "type": "string",
+                            "description": "Modo de organização: 'by_type' (por tipo) ou 'by_date' (por data)",
+                            "default": "by_type",
+                        }
+                    },
+                },
+            ),
+            self._desktop_organize,
+        )
+
+        self.register(
+            "desktop_list",
+            ToolSpec(
+                name="desktop_list",
+                description="Lista todos os arquivos e pastas no desktop. Use quando o usuário perguntar 'o que tem na área de trabalho', 'lista meu desktop', etc.",
+                parameters={
+                    "type": "object",
+                    "properties": {},
+                },
+            ),
+            self._desktop_list,
+        )
+
+        self.register(
+            "desktop_stats",
+            ToolSpec(
+                name="desktop_stats",
+                description="Mostra estatísticas do desktop (número de arquivos, tamanho total, etc). Use quando o usuário pedir 'quanto espaço ocupa o desktop', 'estatísticas da área de trabalho', etc.",
+                parameters={
+                    "type": "object",
+                    "properties": {},
+                },
+            ),
+            self._desktop_stats,
+        )
+
+        self.register(
+            "send_message",
+            ToolSpec(
+                name="send_message",
+                description="Envia mensagem via WhatsApp, Telegram, Discord, Instagram ou Messenger. Use quando o usuário pedir 'manda mensagem pro João', 'avisa no telegram', etc. Para WhatsApp, use 'receiver' como nome do contato ou número. Para outras plataformas, abre o app/site pronto.",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "receiver": {
+                            "type": "string",
+                            "description": "Nome do contato ou número de telefone",
+                        },
+                        "message": {
+                            "type": "string",
+                            "description": "Texto da mensagem",
+                        },
+                        "platform": {
+                            "type": "string",
+                            "description": "Plataforma: whatsapp, telegram, discord, instagram, messenger",
+                            "default": "whatsapp",
+                        },
+                        "confirmed": {
+                            "type": "string",
+                            "description": "Confirmação para envio real da mensagem. Use 'yes' para confirmar.",
+                            "default": "",
+                        },
+                    },
+                    "required": ["receiver", "message"],
+                },
+            ),
+            self._send_message,
+        )
+
+        self.register(
+            "set_reminder",
+            ToolSpec(
+                name="set_reminder",
+                description="Cria um lembrete para uma data/hora específica. Use quando o usuário pedir 'me lembra às 15h', 'lembrete amanhã', etc. Formato de data: YYYY-MM-DD, hora: HH:MM.",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "date": {
+                            "type": "string",
+                            "description": "Data no formato YYYY-MM-DD",
+                        },
+                        "time": {
+                            "type": "string",
+                            "description": "Hora no formato HH:MM (24h)",
+                        },
+                        "message": {
+                            "type": "string",
+                            "description": "Texto do lembrete",
+                        },
+                    },
+                    "required": ["date", "time", "message"],
+                },
+            ),
+            self._set_reminder,
+        )
+
+        self.register(
+            "weather_report",
+            ToolSpec(
+                name="weather_report",
+                description="Mostra o clima de uma cidade. Use quando o usuário perguntar 'como está o tempo', 'clima em São Paulo', etc.",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "city": {
+                            "type": "string",
+                            "description": "Nome da cidade",
+                        }
+                    },
+                    "required": ["city"],
+                },
+            ),
+            self._weather_report,
+        )
+
     def register(self, name: str, spec: ToolSpec, func: Callable):
         """Register a new tool."""
         self._tools[name] = func
@@ -597,7 +840,20 @@ class ToolExecutor:
 
         try:
             func = self._tools[tool_name]
-            result = func(**arguments)
+            args = dict(arguments or {})
+            confirmed = self._is_confirmation_value(args.pop("confirmed", ""))
+            if self._requires_confirmation(tool_name, args) and not confirmed:
+                return ToolResult(
+                    tool_name=tool_name,
+                    content=(
+                        "Essa ação exige confirmação explícita. "
+                        "Revise os argumentos e repita com confirmed=yes."
+                    ),
+                    success=False,
+                )
+            if "confirmed" in inspect.signature(func).parameters:
+                args["confirmed"] = "yes" if confirmed else ""
+            result = func(**args)
             return ToolResult(tool_name=tool_name, content=result, success=True)
         except Exception as e:
             return ToolResult(
@@ -1013,7 +1269,9 @@ class ToolExecutor:
         # Try to get API keys from env or centralized credentials
         serp_key = os.environ.get("SERPAPI_API_KEY")
         tavily_key = os.environ.get("TAVILY_API_KEY")
-        
+
+        print(f"[Search] Env - SerpApi: {'YES' if serp_key else 'NO'}, Tavily: {'YES' if tavily_key else 'NO'}")
+
         # Fallback to centralized credentials if not in env
         if not serp_key or not tavily_key:
             try:
@@ -1027,10 +1285,19 @@ class ToolExecutor:
                 from openjarvis.core.credentials import get_tool_credential
                 if not serp_key:
                     serp_key = get_tool_credential("web_search", "SERPAPI_API_KEY")
+                    if serp_key:
+                        print(f"[Search] Loaded SerpApi key from credentials.toml")
                 if not tavily_key:
                     tavily_key = get_tool_credential("web_search", "TAVILY_API_KEY")
-            except Exception:
-                pass
+                    if tavily_key:
+                        print(f"[Search] Loaded Tavily key from credentials.toml")
+            except Exception as e:
+                print(f"[Search] Could not load from credentials.toml: {e}")
+                import traceback
+                traceback.print_exc()
+
+        # Debug final state
+        print(f"[Search] Final - SerpApi: {'YES' if serp_key else 'NO'}, Tavily: {'YES' if tavily_key else 'NO'}")
 
         # 1. Try SerpApi (requested by user)
         if serp_key:
@@ -1050,6 +1317,7 @@ class ToolExecutor:
                 return f"Resultados da busca (Tavily):\n{result}"
 
         # 3. Fallback to DuckDuckGo scraping (current system)
+        print(f"[Search] Using fallback: DuckDuckGo scraping")
         try:
             import urllib.request
             import re
@@ -1108,14 +1376,73 @@ class ToolExecutor:
             webbrowser.open(google_url)
             return f"Pesquisando '{query}' no Google. Verifique os resultados no navegador aberto."
 
+    def _scrape_first_video_id(self, query: str) -> str | None:
+        """Scrape YouTube search results and return first non-Shorts video ID."""
+        try:
+            import urllib.request
+            import re
+            from urllib.parse import quote
+
+            search_url = f"https://www.youtube.com/results?search_query={quote(query)}&sp=EgIQAQ%253D%253D"
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Accept-Language": "pt-BR,pt;q=0.9",
+            }
+
+            req = urllib.request.Request(search_url, headers=headers)
+            with urllib.request.urlopen(req, timeout=10) as response:
+                html = response.read().decode('utf-8', errors='ignore')
+
+                # Look for video IDs in multiple formats
+                # Pattern 1: videoRenderer with videoId
+                patterns = [
+                    r'"videoRenderer":\{"videoId":"([a-zA-Z0-9_-]{11})"',
+                    r'"videoId":"([a-zA-Z0-9_-]{11})"',
+                    r'/watch\?v=([a-zA-Z0-9_-]{11})',
+                    r'watch%3Fv%3D([a-zA-Z0-9_-]{11})',
+                ]
+
+                found_ids = []
+                for pattern in patterns:
+                    matches = re.findall(pattern, html)
+                    found_ids.extend(matches)
+
+                # Return first unique video ID that's not a Short
+                for vid in found_ids:
+                    # Check if it's likely a Short (usually has different pattern)
+                    if len(vid) == 11:
+                        # Verify it's not in a Shorts section
+                        short_pattern = f'"videoId":"{vid}".*?isShort":true'
+                        if not re.search(short_pattern, html[:html.find(vid) + 500]):
+                            return vid
+
+                # Fallback: return first ID found
+                for vid in found_ids:
+                    if len(vid) == 11:
+                        return vid
+
+        except Exception as e:
+            print(f"[YouTube] Scraping error: {e}")
+
+        return None
+
     def _youtube_search_and_play(self, query: str) -> str:
-        """Search YouTube and open first video result."""
+        """Search YouTube and play first video result directly (Mark-XXXIX approach)."""
         from urllib.parse import quote
-        encoded = quote(query)
-        # Use YouTube search with filter for videos only
-        url = f"https://www.youtube.com/results?search_query={encoded}&sp=EgIQAQ%253D%253D"
-        webbrowser.open(url)
-        return f"Buscando '{query}' no YouTube. Escolha um vídeo da lista para tocar."
+
+        # Try to scrape and play first video directly
+        video_id = self._scrape_first_video_id(query)
+
+        if video_id:
+            video_url = f"https://www.youtube.com/watch?v={video_id}"
+            webbrowser.open(video_url)
+            return f"Tocando '{query}' no YouTube."
+        else:
+            # Fallback to search page
+            encoded = quote(query)
+            search_url = f"https://www.youtube.com/results?search_query={encoded}&sp=EgIQAQ%253D%253D"
+            webbrowser.open(search_url)
+            return f"Buscando '{query}' no YouTube. Escolha um vídeo da lista."
 
     def _browser_navigate(self, url: str) -> str:
         """Navigate to URL using browser automation if available."""
@@ -1370,6 +1697,267 @@ class ToolExecutor:
         except Exception as e:
             return f"Erro ao envinar atalho: {str(e)}"
 
+    def _computer_settings(self, action: str, value: str = "", confirmed: str = "") -> str:
+        """Execute computer settings actions (Mark-XXXIX approach)."""
+        if not pyautogui:
+            return "Erro: PyAutoGUI não está disponível."
+
+        action = action.lower().strip().replace(" ", "_").replace("-", "_")
+
+        # Dangerous actions require confirmation
+        dangerous = {"restart", "shutdown"}
+        if action in dangerous:
+            if confirmed.lower() not in ("yes", "true", "1", "confirm"):
+                return f"Isso vai {action} o computador. Confirme chamando novamente com confirmed=yes."
+
+        try:
+            # Volume controls
+            if action in ("volume_up", "vol_up", "aumentar_volume"):
+                for _ in range(5): pyautogui.press("volumeup")
+                return "Volume aumentado."
+
+            if action in ("volume_down", "vol_down", "diminuir_volume"):
+                for _ in range(5): pyautogui.press("volumedown")
+                return "Volume diminuído."
+
+            if action in ("mute", "unmute", "toggle_mute", "silenciar"):
+                pyautogui.press("volumemute")
+                return "Som silenciado/restaurado."
+
+            if action == "volume_set":
+                try:
+                    level = int(value)
+                    # Use pycaw if available for precise control
+                    try:
+                        import math
+                        from ctypes import cast, POINTER
+                        from comtypes import CLSCTX_ALL
+                        from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+                        devices = AudioUtilities.GetSpeakers()
+                        interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+                        vol = cast(interface, POINTER(IAudioEndpointVolume))
+                        vol_db = -65.25 if level == 0 else max(-65.25, 20 * math.log10(level / 100))
+                        vol.SetMasterVolumeLevel(vol_db, None)
+                    except:
+                        # Fallback: use keypresses (approximate)
+                        pyautogui.press("volumemute")
+                        pyautogui.press("volumemute")
+                    return f"Volume ajustado para {level}%."
+                except:
+                    return "Erro ao ajustar volume. Use um valor de 0 a 100."
+
+            # Brightness controls (Windows only)
+            if action in ("brightness_up", "aumentar_brilho"):
+                try:
+                    subprocess.run(
+                        ["powershell", "-Command",
+                         "(Get-WmiObject -Namespace root/wmi -Class WmiMonitorBrightnessMethods)"
+                         ".WmiSetBrightness(1, [math]::Min(100, (Get-WmiObject -Namespace root/wmi -Class WmiMonitorBrightness).CurrentBrightness + 10))"],
+                        capture_output=True, timeout=5
+                    )
+                    return "Brilho aumentado."
+                except Exception as e:
+                    return f"Não consegui aumentar o brilho: {e}"
+
+            if action in ("brightness_down", "diminuir_brilho"):
+                try:
+                    subprocess.run(
+                        ["powershell", "-Command",
+                         "(Get-WmiObject -Namespace root/wmi -Class WmiMonitorBrightnessMethods)"
+                         ".WmiSetBrightness(1, [math]::Max(0, (Get-WmiObject -Namespace root/wmi -Class WmiMonitorBrightness).CurrentBrightness - 10))"],
+                        capture_output=True, timeout=5
+                    )
+                    return "Brilho diminuído."
+                except Exception as e:
+                    return f"Não consegui diminuir o brilho: {e}"
+
+            # Window controls
+            if action in ("close_app", "close_application", "fechar_app"):
+                pyautogui.hotkey("alt", "f4")
+                return "Aplicativo fechado."
+
+            if action in ("close_window", "fechar_janela"):
+                pyautogui.hotkey("ctrl", "w")
+                return "Janela fechada."
+
+            if action in ("full_screen", "fullscreen", "tela_cheia"):
+                pyautogui.press("f11")
+                return "Tela cheia ativada/desativada."
+
+            if action in ("minimize", "minimize_window", "minimizar"):
+                pyautogui.hotkey("win", "down")
+                return "Janela minimizada."
+
+            if action in ("maximize", "maximize_window", "maximizar"):
+                pyautogui.hotkey("win", "up")
+                return "Janela maximizada."
+
+            if action in ("snap_left", "encaixar_esquerda"):
+                pyautogui.hotkey("win", "left")
+                return "Janela encaixada à esquerda."
+
+            if action in ("snap_right", "encaixar_direita"):
+                pyautogui.hotkey("win", "right")
+                return "Janela encaixada à direita."
+
+            if action in ("switch_window", "alternar_janela"):
+                pyautogui.hotkey("alt", "tab")
+                return "Alternando janela."
+
+            if action in ("show_desktop", "mostrar_desktop", "minimizar_tudo"):
+                pyautogui.hotkey("win", "d")
+                return "Desktop exibido."
+
+            # Browser controls
+            if action in ("new_tab", "nova_aba"):
+                pyautogui.hotkey("ctrl", "t")
+                return "Nova aba aberta."
+
+            if action in ("close_tab", "fechar_aba"):
+                pyautogui.hotkey("ctrl", "w")
+                return "Aba fechada."
+
+            if action in ("next_tab", "proxima_aba"):
+                pyautogui.hotkey("ctrl", "tab")
+                return "Próxima aba."
+
+            if action in ("prev_tab", "previous_tab", "aba_anterior"):
+                pyautogui.hotkey("ctrl", "shift", "tab")
+                return "Aba anterior."
+
+            if action in ("refresh_page", "reload", "recarregar", "atualizar"):
+                pyautogui.press("f5")
+                return "Página recarregada."
+
+            if action in ("focus_search", "focar_busca", "barra_de_endereco"):
+                pyautogui.hotkey("ctrl", "l")
+                return "Barra de endereço focada."
+
+            if action in ("zoom_in", "aumentar_zoom"):
+                pyautogui.hotkey("ctrl", "equal")
+                return "Zoom aumentado."
+
+            if action in ("zoom_out", "diminuir_zoom"):
+                pyautogui.hotkey("ctrl", "minus")
+                return "Zoom diminuído."
+
+            if action in ("zoom_reset", "resetar_zoom"):
+                pyautogui.hotkey("ctrl", "0")
+                return "Zoom resetado."
+
+            # Video controls
+            if action in ("pause_video", "play_pause", "pausar_video"):
+                pyautogui.press("space")
+                return "Vídeo pausado/continuado."
+
+            # Clipboard and editing
+            if action in ("copy", "copiar"):
+                pyautogui.hotkey("ctrl", "c")
+                return "Copiado."
+
+            if action in ("paste", "colar"):
+                pyautogui.hotkey("ctrl", "v")
+                return "Colado."
+
+            if action in ("cut", "recortar"):
+                pyautogui.hotkey("ctrl", "x")
+                return "Recortado."
+
+            if action in ("undo", "desfazer"):
+                pyautogui.hotkey("ctrl", "z")
+                return "Desfeito."
+
+            if action in ("redo", "refazer"):
+                pyautogui.hotkey("ctrl", "y")
+                return "Refeito."
+
+            if action in ("select_all", "selecionar_tudo"):
+                pyautogui.hotkey("ctrl", "a")
+                return "Tudo selecionado."
+
+            if action in ("save", "save_file", "salvar"):
+                pyautogui.hotkey("ctrl", "s")
+                return "Salvando..."
+
+            # Scroll
+            if action in ("scroll_up", "rolar_cima"):
+                pyautogui.scroll(500)
+                return "Rolou para cima."
+
+            if action in ("scroll_down", "rolar_baixo"):
+                pyautogui.scroll(-500)
+                return "Rolou para baixo."
+
+            if action in ("scroll_top", "topo_da_pagina"):
+                pyautogui.keyDown("ctrl")
+                pyautogui.keyDown("home")
+                pyautogui.keyUp("home")
+                pyautogui.keyUp("ctrl")
+                return "Topo da página."
+
+            if action in ("scroll_bottom", "fim_da_pagina"):
+                pyautogui.keyDown("ctrl")
+                pyautogui.keyDown("end")
+                pyautogui.keyUp("end")
+                pyautogui.keyUp("ctrl")
+                return "Fim da página."
+
+            # System controls
+            if action in ("screenshot", "captura_de_tela"):
+                pyautogui.hotkey("win", "shift", "s")
+                return "Ferramenta de captura ativada."
+
+            if action in ("lock_screen", "bloquear_tela"):
+                pyautogui.hotkey("win", "l")
+                return "Tela bloqueada."
+
+            if action in ("open_settings", "configuracoes", "abrir_configuracoes"):
+                pyautogui.hotkey("win", "i")
+                return "Configurações abertas."
+
+            if action in ("file_explorer", "explorar_arquivos", "abrir_explorador"):
+                pyautogui.hotkey("win", "e")
+                return "Explorador de arquivos aberto."
+
+            if action in ("task_manager", "gerenciador_tarefas"):
+                pyautogui.hotkey("ctrl", "shift", "esc")
+                return "Gerenciador de tarefas aberto."
+
+            if action in ("sleep_display", "sleep", "desligar_tela"):
+                try:
+                    import ctypes
+                    ctypes.windll.user32.SendMessageW(0xFFFF, 0x0112, 0xF170, 2)
+                    return "Tela desligada."
+                except:
+                    return "Não consegui desligar a tela."
+
+            if action in ("dark_mode", "modo_escuro"):
+                try:
+                    import winreg
+                    key_path = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize"
+                    key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_ALL_ACCESS)
+                    current, _ = winreg.QueryValueEx(key, "AppsUseLightTheme")
+                    winreg.SetValueEx(key, "AppsUseLightTheme", 0, winreg.REG_DWORD, 1 - current)
+                    winreg.SetValueEx(key, "SystemUsesLightTheme", 0, winreg.REG_DWORD, 1 - current)
+                    winreg.CloseKey(key)
+                    return "Modo escuro alternado."
+                except Exception as e:
+                    return f"Não consegui alternar modo escuro: {e}"
+
+            # Dangerous actions
+            if action == "restart":
+                subprocess.Popen(["shutdown", "/r", "/t", "10"], capture_output=True)
+                return "Reiniciando em 10 segundos..."
+
+            if action == "shutdown":
+                subprocess.Popen(["shutdown", "/s", "/t", "10"], capture_output=True)
+                return "Desligando em 10 segundos..."
+
+            return f"Ação desconhecida: {action}. Ações disponíveis: volume_up, mute, brightness_up, full_screen, lock_screen, screenshot, etc."
+
+        except Exception as e:
+            return f"Erro ao executar {action}: {e}"
+
 
     def _search_products(self, query: str, store: str = "") -> str:
         """Search products online with caching."""
@@ -1548,10 +2136,460 @@ class ToolExecutor:
         """Open a specific URL after user confirmation."""
         if not url.startswith(("http://", "https://")):
             url = "https://" + url
-        
+
         webbrowser.open(url)
         desc = description or "link"
         return f"Abrindo {desc} no navegador."
+
+    def _extract_video_id(self, url: str) -> str | None:
+        """Extract YouTube video ID from various URL formats."""
+        import re
+        patterns = [
+            r'(?:youtube\.com/watch\?v=|youtu\.be/|youtube\.com/embed/)([a-zA-Z0-9_-]{11})',
+            r'youtube\.com/shorts/([a-zA-Z0-9_-]{11})',
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, url)
+            if match:
+                return match.group(1)
+        return None
+
+    def _youtube_info(self, url: str) -> str:
+        """Get YouTube video info (title, channel, views, duration)."""
+        import urllib.request
+        import re
+
+        video_id = self._extract_video_id(url)
+        if not video_id:
+            return "Não consegui identificar o ID do vídeo na URL."
+
+        try:
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Accept-Language": "pt-BR,pt;q=0.9",
+            }
+            req = urllib.request.Request(url, headers=headers)
+
+            with urllib.request.urlopen(req, timeout=10) as response:
+                html = response.read().decode('utf-8', errors='ignore')
+
+                # Extract title
+                title_match = re.search(r'<title>([^<]+)</title>', html)
+                title = title_match.group(1).replace(" - YouTube", "").strip() if title_match else "Desconhecido"
+
+                # Extract channel
+                channel_match = re.search(r'"channelName":"([^"]+)"', html)
+                channel = channel_match.group(1) if channel_match else "Desconhecido"
+
+                # Extract views (approximate)
+                views_match = re.search(r'viewCount":\{"simpleText":"([^"]+)"', html)
+                views = views_match.group(1) if views_match else "Desconhecido"
+
+                # Extract duration
+                duration_match = re.search(r'duration":\{"simpleText":"([^"]+)"', html)
+                duration = duration_match.group(1) if duration_match else "Desconhecido"
+
+                return f"Título: {title}\nCanal: {channel}\nVisualizações: {views}\nDuração: {duration}"
+
+        except Exception as e:
+            return f"Erro ao obter informações: {e}"
+
+    def _youtube_summarize(self, url: str) -> str:
+        """Summarize YouTube video using transcript (if available) or Gemini."""
+        video_id = self._extract_video_id(url)
+        if not video_id:
+            return "Não consegui identificar o ID do vídeo."
+
+        # Try to get transcript
+        transcript_text = None
+        try:
+            # Try youtube-transcript-api if available
+            from youtube_transcript_api import YouTubeTranscriptApi
+            transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=['pt', 'en'])
+            transcript_text = " ".join([item['text'] for item in transcript_list[:100]])  # First 100 segments
+        except:
+            pass
+
+        # Fallback: get video info for context
+        info = self._youtube_info(url)
+
+        if transcript_text:
+            # Summarize with Groq if available
+            try:
+                import os
+                from groq import Groq
+                client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
+                response = client.chat.completions.create(
+                    model="llama-3.3-70b-versatile",
+                    messages=[
+                        {"role": "system", "content": "Resuma o seguinte texto em português, destacando os pontos principais:"},
+                        {"role": "user", "content": transcript_text[:4000]},  # Limit length
+                    ],
+                    max_tokens=500,
+                )
+                summary = response.choices[0].message.content
+                return f"Resumo do vídeo:\n{summary}\n\nInfo:\n{info}"
+            except Exception as e:
+                return f"Transcrição encontrada mas não consegui resumir:\n{transcript_text[:500]}...\n\n{info}"
+        else:
+            return f"Não consegui extrair a transcrição deste vídeo.\n\n{info}\n\nPara assistir, abra o link: {url}"
+
+    def _youtube_trending(self) -> str:
+        """Get trending YouTube videos for Brazil."""
+        import urllib.request
+        import re
+        from urllib.parse import quote
+
+        try:
+            url = "https://www.youtube.com/feed/trending?gl=BR"
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Accept-Language": "pt-BR,pt;q=0.9",
+            }
+            req = urllib.request.Request(url, headers=headers)
+
+            with urllib.request.urlopen(req, timeout=10) as response:
+                html = response.read().decode('utf-8', errors='ignore')
+                videos = []
+
+                # Find video renderers in trending
+                video_data = re.findall(
+                    r'"videoRenderer":\{"videoId":"([a-zA-Z0-9_-]{11})".*?"title":\{"runs":\[\{"text":"([^"]+)".*?"longBylineText":\{"runs":\[\{"text":"([^"]+)"',
+                    html
+                )
+
+                for i, (vid_id, title, channel) in enumerate(video_data[:8]):
+                    videos.append(f"{i+1}. {title[:60]} - {channel}")
+
+                if videos:
+                    webbrowser.open(url)
+                    return "Vídeos em alta no YouTube Brasil:\n" + "\n".join(videos)
+                else:
+                    webbrowser.open(url)
+                    return "Abrindo vídeos em alta no YouTube Brasil."
+
+        except Exception as e:
+            webbrowser.open("https://www.youtube.com/feed/trending?gl=BR")
+            return f"Abrindo trending do YouTube Brasil."
+
+    def _get_desktop_path(self) -> Path:
+        """Get desktop path for current user."""
+        return Path.home() / "Desktop"
+
+    def _desktop_wallpaper(self, path: str) -> str:
+        """Set desktop wallpaper from file path or URL."""
+        import tempfile
+        from pathlib import Path
+
+        try:
+            # Check if it's a URL
+            if path.startswith(("http://", "https://")):
+                # Download image
+                import urllib.request
+                suffix = Path(path.split("?")[0]).suffix or ".jpg"
+                tmp_file = Path(tempfile.mktemp(suffix=suffix))
+                urllib.request.urlretrieve(path, str(tmp_file))
+                image_path = str(tmp_file)
+            else:
+                image_path = Path(path).expanduser().resolve()
+                if not image_path.exists():
+                    return f"Imagem não encontrada: {path}"
+
+            # Set wallpaper using ctypes
+            import ctypes
+            # Convert webp/png to bmp if needed for Windows compatibility
+            if str(image_path).lower().endswith((".webp", ".png")):
+                try:
+                    from PIL import Image
+                    bmp_path = Path(tempfile.mktemp(suffix=".bmp"))
+                    Image.open(image_path).convert("RGB").save(bmp_path, "BMP")
+                    image_path = str(bmp_path)
+                except ImportError:
+                    pass
+
+            ctypes.windll.user32.SystemParametersInfoW(20, 0, str(image_path), 3)
+            return f"Papel de parede alterado para: {Path(image_path).name}"
+
+        except Exception as e:
+            return f"Erro ao alterar wallpaper: {e}"
+
+    def _desktop_organize(self, mode: str = "by_type") -> str:
+        """Organize desktop files by type or date."""
+        from pathlib import Path
+        from datetime import datetime
+        import shutil
+
+        desktop = self._get_desktop_path()
+        if not desktop.exists():
+            return "Desktop não encontrado."
+
+        # File type mapping
+        type_folders = {
+            "Imagens": {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".svg", ".ico", ".heic"},
+            "Documentos": {".pdf", ".doc", ".docx", ".txt", ".xls", ".xlsx", ".ppt", ".pptx", ".csv", ".odt"},
+            "Videos": {".mp4", ".avi", ".mkv", ".mov", ".wmv", ".flv", ".webm", ".m4v"},
+            "Musicas": {".mp3", ".wav", ".flac", ".aac", ".ogg", ".wma", ".m4a"},
+            "Arquivos": {".zip", ".rar", ".7z", ".tar", ".gz", ".bz2"},
+            "Codigo": {".py", ".js", ".ts", ".html", ".css", ".json", ".xml", ".cpp", ".java", ".cs"},
+        }
+
+        moved = 0
+        skipped = 0
+
+        for item in desktop.iterdir():
+            if item.is_dir() or item.name.startswith("."):
+                continue
+
+            # Skip shortcuts
+            if item.suffix.lower() in {".lnk", ".url"}:
+                continue
+
+            # Determine target folder
+            if mode == "by_date":
+                mtime = datetime.fromtimestamp(item.stat().st_mtime)
+                folder_name = mtime.strftime("%Y-%m")
+            else:  # by_type
+                ext = item.suffix.lower()
+                folder_name = "Outros"
+                for folder, exts in type_folders.items():
+                    if ext in exts:
+                        folder_name = folder
+                        break
+
+            target_dir = desktop / folder_name
+            target_dir.mkdir(exist_ok=True)
+            target_path = target_dir / item.name
+
+            if target_path.exists():
+                skipped += 1
+                continue
+
+            try:
+                shutil.move(str(item), str(target_path))
+                moved += 1
+            except Exception:
+                skipped += 1
+
+        return f"Desktop organizado: {moved} arquivos movidos, {skipped} ignorados."
+
+    def _desktop_list(self) -> str:
+        """List all items on desktop."""
+        desktop = self._get_desktop_path()
+        if not desktop.exists():
+            return "Desktop não encontrado."
+
+        items = []
+        for item in sorted(desktop.iterdir()):
+            if item.name.startswith("."):
+                continue
+            if item.is_dir():
+                try:
+                    count = len(list(item.iterdir()))
+                    items.append(f"📁 {item.name}/ ({count} itens)")
+                except:
+                    items.append(f"📁 {item.name}/")
+            else:
+                size = item.stat().st_size
+                size_str = f"{size/1024:.1f} KB" if size < 1024*1024 else f"{size/1024/1024:.1f} MB"
+                items.append(f"📄 {item.name} ({size_str})")
+
+        if not items:
+            return "Desktop está vazio."
+        return f"Itens no Desktop ({len(items)}):\n" + "\n".join(items[:20])
+
+    def _desktop_stats(self) -> str:
+        """Get desktop statistics."""
+        desktop = self._get_desktop_path()
+        if not desktop.exists():
+            return "Desktop não encontrado."
+
+        files = [i for i in desktop.iterdir() if i.is_file()]
+        folders = [i for i in desktop.iterdir() if i.is_dir()]
+        total_size = sum(f.stat().st_size for f in files if f.exists())
+
+        size_str = f"{total_size/1024:.1f} KB" if total_size < 1024*1024 else f"{total_size/1024/1024:.1f} MB"
+
+        # Count by extension
+        exts = {}
+        for f in files:
+            ext = f.suffix.lower() or "(sem extensão)"
+            exts[ext] = exts.get(ext, 0) + 1
+
+        ext_summary = ", ".join([f"{k}: {v}" for k, v in sorted(exts.items(), key=lambda x: -x[1])[:5]])
+
+        return (
+            f"Estatísticas do Desktop:\n"
+            f"  Arquivos: {len(files)}\n"
+            f"  Pastas: {len(folders)}\n"
+            f"  Tamanho total: {size_str}\n"
+            f"  Tipos principais: {ext_summary or 'N/A'}"
+        )
+
+    def _send_message(
+        self,
+        receiver: str,
+        message: str,
+        platform: str = "whatsapp",
+        confirmed: str = "",
+    ) -> str:
+        """Send message via various platforms."""
+        import urllib.parse
+        from urllib.parse import quote
+
+        platform = platform.lower().strip()
+        receiver = receiver.strip()
+        confirmed = str(confirmed).lower().strip()
+        message_encoded = quote(message)
+        preview = message if len(message) <= 180 else f"{message[:177]}..."
+
+        if confirmed not in ("yes", "true", "1", "confirm"):
+            return (
+                "Prévia da mensagem (não enviada):\n"
+                f"  Plataforma: {platform}\n"
+                f"  Destinatário: {receiver}\n"
+                f"  Mensagem: {preview}\n\n"
+                "Se estiver certo, repita o envio com confirmed=yes."
+            )
+
+        if platform in ("whatsapp", "wp", "wapp"):
+            # WhatsApp Web - works best
+            clean_phone = "".join(filter(str.isdigit, receiver))
+            if len(clean_phone) == 11 and not clean_phone.startswith("55"):
+                clean_phone = "55" + clean_phone
+            if clean_phone:
+                url = f"https://web.whatsapp.com/send?phone={clean_phone}&text={message_encoded}"
+            else:
+                url = f"https://web.whatsapp.com/send?text={message_encoded}"
+            webbrowser.open(url)
+            return f"Abrindo WhatsApp Web para enviar mensagem para {receiver}."
+
+        elif platform in ("telegram", "tg"):
+            # Telegram Web
+            url = f"https://web.telegram.org/"
+            webbrowser.open(url)
+            return f"Abrindo Telegram Web. Busque por '{receiver}' e cole a mensagem: {message[:50]}..."
+
+        elif platform == "discord":
+            # Try to open Discord app
+            try:
+                subprocess.Popen(["discord"], shell=True)
+                return f"Discord aberto. Cole a mensagem no chat de {receiver}: {message[:50]}..."
+            except:
+                webbrowser.open("https://discord.com/app")
+                return f"Abrindo Discord. Envie a mensagem para {receiver}."
+
+        elif platform in ("instagram", "ig", "insta"):
+            url = f"https://www.instagram.com/direct/new/"
+            webbrowser.open(url)
+            return f"Abrindo Instagram Direct. Busque por '{receiver}' e envie a mensagem."
+
+        elif platform in ("messenger", "facebook", "fb"):
+            url = f"https://www.messenger.com/"
+            webbrowser.open(url)
+            return f"Abrindo Messenger. Busque por '{receiver}' e envie a mensagem."
+
+        else:
+            return f"Plataforma '{platform}' não suportada. Use: whatsapp, telegram, discord, instagram, messenger."
+
+    def _set_reminder(self, date: str, time: str, message: str) -> str:
+        """Set a reminder using Windows Task Scheduler."""
+        from datetime import datetime
+        from pathlib import Path
+        import sys
+
+        try:
+            # Parse date and time
+            target_dt = datetime.strptime(f"{date} {time}", "%Y-%m-%d %H:%M")
+
+            if target_dt <= datetime.now():
+                return "Essa hora já passou. Use uma data/hora futura."
+
+            # Create reminder script
+            scripts_dir = Path.home() / ".jarvis" / "reminders"
+            scripts_dir.mkdir(parents=True, exist_ok=True)
+
+            task_name = f"JARVISReminder_{target_dt.strftime('%Y%m%d_%H%M%S')}"
+            script_path = scripts_dir / f"{task_name}.py"
+
+            # Create notification script (simplified, uses winsound + msg)
+            script_content = f'''# Reminder by JARVIS - Auto-generated
+import winsound
+import subprocess
+import sys
+from pathlib import Path
+
+# Play notification sound
+try:
+    for freq in [800, 1000, 1200]:
+        winsound.Beep(freq, 200)
+except:
+    pass
+
+# Show notification
+try:
+    subprocess.run(["msg", "*", "/TIME:30", "JARVIS Reminder: {message.replace('"', '')}"], check=False)
+except:
+    pass
+
+# Self-delete
+Path(__file__).unlink(missing_ok=True)
+'''
+            script_path.write_text(script_content, encoding="utf-8")
+
+            # Create scheduled task via schtasks
+            python_exe = sys.executable
+            xml_path = scripts_dir / f"{task_name}.xml"
+
+            xml_content = f'''<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo><Description>JARVIS Reminder</Description></RegistrationInfo>
+  <Triggers><TimeTrigger>
+    <StartBoundary>{target_dt.strftime("%Y-%m-%dT%H:%M:%S")}</StartBoundary>
+    <Enabled>true</Enabled>
+  </TimeTrigger></Triggers>
+  <Actions><Exec>
+    <Command>{python_exe}</Command>
+    <Arguments>"{script_path}"</Arguments>
+  </Exec></Actions>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <Enabled>true</Enabled>
+  </Settings>
+</Task>'''
+
+            xml_path.write_text(xml_content, encoding="utf-16")
+
+            result = subprocess.run(
+                ["schtasks", "/Create", "/TN", task_name, "/XML", str(xml_path), "/F"],
+                capture_output=True, text=True,
+            )
+
+            # Cleanup XML
+            xml_path.unlink(missing_ok=True)
+
+            if result.returncode == 0:
+                friendly_time = target_dt.strftime("%d/%m/%Y às %H:%M")
+                return f"Lembrete definido para {friendly_time}: '{message}'"
+            else:
+                script_path.unlink(missing_ok=True)
+                return f"Não consegui agendar o lembrete: {result.stderr}"
+
+        except ValueError:
+            return "Formato inválido. Use data: YYYY-MM-DD, hora: HH:MM (ex: 2025-01-15 14:30)"
+        except Exception as e:
+            return f"Erro ao criar lembrete: {e}"
+
+    def _weather_report(self, city: str) -> str:
+        """Show weather report by opening Google search."""
+        from urllib.parse import quote_plus
+
+        search_query = f"clima em {city}"
+        url = f"https://www.google.com/search?q={quote_plus(search_query)}"
+
+        webbrowser.open(url)
+        return f"Mostrando clima para {city}."
 
 
 def create_default_executor(memory: Optional[MemoryManager] = None) -> ToolExecutor:

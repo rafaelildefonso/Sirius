@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import random
 import sys
 import threading
 import time
 import queue
 from typing import Dict, Optional
+from datetime import datetime
 import os
 
 # Suppress pygame startup banner before any pygame import
@@ -35,6 +37,8 @@ from voice_assistant.hotkey import PushToTalkHandler
 from voice_assistant.ui import VoiceAssistantUI
 from voice_assistant.tools import create_default_executor, ToolExecutor
 from voice_assistant.memory import MemoryManager
+from voice_assistant.gemini_audio import GeminiAudioClient, QuotaExceededError
+from voice_assistant.user_profile import get_profile_manager, ProfileManager
 
 # Inject credentials from centralized TOML
 try:
@@ -93,23 +97,30 @@ class VoiceAssistant:
         clap_max_duration_ms: float = 200,
         clap_debug: bool = False,
     ):
+        print("[INIT] VoiceAssistant.__init__ starting...")
         self.state = "idle"  # idle, recording, listening, processing, playing
         self.running = False
         self._live_mode = False
         self._live_mode_requested = False
 
         # Components
+        print("[INIT] Creating AudioRecorder...")
         self.audio_recorder = AudioRecorder()
+        self.audio_recorder.set_audio_level_callback(self._on_audio_level)
         self._continuous_recorder: Optional[ContinuousAudioRecorder] = None
+        
         # Use best available STT
+        print("[INIT] Initializing STT...")
         if stt_module.__name__ == "SpeechToText":
             self.stt = stt_module(model_size="small")
         elif stt_module.__name__ == "WhisperSTT":
             self.stt = stt_module(model_size="base")
         else:
             self.stt = stt_module(language="pt-BR")
+        print(f"[INIT] STT initialized: {type(self.stt).__name__}")
 
         # Use best available TTS
+        print("[INIT] Initializing TTS...")
         if tts_module.__name__ == "EdgeTTS":
             # Use male voice (Antonio) for natural sound
             self.tts = tts_module(voice="pt-BR-AntonioNeural", rate="+10%")
@@ -120,16 +131,29 @@ class VoiceAssistant:
         else:
             self.tts = tts_module()
 
-        # Initialize Ollama as fallback first
+        # Load user profile for personalized experience
+        print("[INIT] Loading user profile...")
+        try:
+            self._profile_manager = get_profile_manager()
+            self._user_name = self._profile_manager.profile.userName
+            if self._user_name:
+                print(f"[Profile] Configurado para usuário: {self._user_name}")
+        except Exception as e:
+            print(f"[Profile] Erro ao carregar perfil: {e}")
+            self._profile_manager = None
+            self._user_name = None
+        
+        # Initialize Ollama as fallback first (with user profile)
+        print("[INIT] Creating Ollama fallback LLM...")
         fallback_llm = OllamaClient(model="qwen3.5:2b")
 
         # Initialize Memory
+        print("[INIT] Initializing Memory...")
         memory_path = os.path.join(project_root, "memory.json")
         self.memory = MemoryManager(memory_path)
 
         # GroqClient manages its own fallback to Ollama internally.
-        # We always keep GroqClient as self.llm so it can try Groq first
-        # and fall back to Ollama per-request if needed.
+        print("[INIT] Creating Groq LLM client...")
         self.llm = GroqClient(
             model="llama-3.3-70b-versatile",
             fallback_client=fallback_llm,
@@ -138,6 +162,21 @@ class VoiceAssistant:
             print("[INFO] Using Groq (llama-3.3-70b-versatile)")
         else:
             print("[INFO] Groq unavailable, will use Ollama local as fallback")
+        # Gemini native audio (primary voice engine when available)
+        print("[INIT] Creating Gemini audio client...")
+        self._gemini_audio: Optional[GeminiAudioClient] = None
+        try:
+            self._gemini_audio = GeminiAudioClient()
+            if self._gemini_audio.is_available():
+                print("[INFO] Using Gemini native audio (gemini-2.5-flash-native-audio-preview)")
+            else:
+                print("[INFO] Gemini native audio unavailable, using STT+LLM+TTS pipeline")
+                self._gemini_audio = None
+        except Exception as e:
+            print(f"[INFO] Gemini native audio init failed: {e}")
+            self._gemini_audio = None
+
+        print("[INIT] Creating PushToTalk handler...")
         self.hotkey: Optional[PushToTalkHandler] = None
         self.ui: Optional[VoiceAssistantUI] = None
 
@@ -183,13 +222,40 @@ class VoiceAssistant:
         text = text.lower().strip()
         
         # 1. Open/Close Apps
+        # 1. YouTube - MUST be before open_application to catch "abre ... no youtube"
+        yt_patterns = [
+            r"(?:toca|tocar|play|ouvir|ver)\s+(?:no youtube|no yt)?\s*(.+)",
+            r"(?:abre|abra|abrir)\s+(?:um|uma|o|a)?\s*vid[eé]o\s+(?:no youtube|no yt|de|sobre)\s*(.+)",
+            r"(?:abre|abra|abrir)\s+(?:no youtube|no yt)\s*(?:um|uma)?\s*vid[eé]o\s*(?:de|sobre)?\s*(.*)",
+            r"(?:youtube|yt)\s+(?:toca|tocar|play)?\s*(.+)",
+        ]
+        for pattern in yt_patterns:
+            yt_match = re.search(pattern, text)
+            if yt_match:
+                query = yt_match.group(1).strip() if yt_match.group(1) else "música relaxante"
+                # Clean up common words
+                for word in ["no youtube", "youtube", "no yt", "yt", "um vídeo de", "uma música de", "vídeo de"]:
+                    query = query.replace(word, "").strip()
+                if query:
+                    print(f"[FastPath] YouTube: {query}")
+                    self._tool_executor.execute("youtube_search_and_play", {"search_query": query})
+                    return f"Beleza! Vou tocar {query} no YouTube agora mesmo."
+
+        # 2. Open application (after YouTube check)
         open_match = re.search(r"(?:abre|abra|abrir|open|iniciar|lancer)\s+(?:o|a|os|as)?\s*([\w\s]+)", text)
         if open_match:
             app = open_match.group(1).strip()
+            # Skip if it's a YouTube reference (should have been caught above)
+            if "youtube" in app or "yt" in app:
+                # Fallback to generic YouTube search
+                print(f"[FastPath] YouTube (fallback): {app}")
+                self._tool_executor.execute("youtube_search_and_play", {"search_query": "música relaxante"})
+                return f"Vou tocar algo no YouTube para você."
             print(f"[FastPath] Opening app: {app}")
             res = self._tool_executor.execute("open_application", {"app_name": app})
             return f"Com certeza! Abrindo {app} para você." if res.success else f"Tentei abrir o {app}, mas não consegui encontrá-lo."
 
+        # 3. Close application
         close_match = re.search(r"(?:fecha|fechar|encerrar|close|quit)\s+(?:o|a|os|as)?\s*([\w\s]+)", text)
         if close_match:
             app = close_match.group(1).strip()
@@ -197,7 +263,7 @@ class VoiceAssistant:
             res = self._tool_executor.execute("close_window", {"app_name": app})
             return f"Feito! Fechei o {app}." if res.success else f"Não consegui fechar o {app}, talvez ele já esteja fechado."
 
-        # 2. Volume
+        # 4. Volume
         vol_match = re.search(r"volume\s+(?:no|em|para)?\s*(\d+)", text)
         if vol_match:
             val = int(vol_match.group(1))
@@ -205,19 +271,10 @@ class VoiceAssistant:
             self._tool_executor.execute("set_system_volume", {"level": val})
             return f"Volume ajustado para {val} por cento."
 
-        # 3. Time
+        # 5. Time
         if any(w in text for w in ["que horas", "qual a hora", "horas são", "me diga a hora"]):
             res = self._tool_executor.execute("get_current_time", {})
             return f"Agora são {res.content}."
-
-        # 4. YouTube
-        yt_match = re.search(r"(?:toca|tocar|play|ouvir|ver|search on youtube)\s+(?:no youtube|no yt)?\s*(.+)", text)
-        if yt_match:
-            query = yt_match.group(1).strip()
-            if "youtube" in query: query = query.replace("no youtube", "").replace("youtube", "").strip()
-            print(f"[FastPath] YouTube: {query}")
-            self._tool_executor.execute("youtube_search_and_play", {"search_query": query})
-            return f"Beleza! Vou tocar {query} no YouTube agora mesmo."
 
         return None
 
@@ -295,6 +352,153 @@ class VoiceAssistant:
             self.state = "idle"
             self._update_ui_state()
 
+    def _process_audio_gemini(self, audio_data: bytes) -> None:
+        """Process audio using Gemini native audio (audio-in, audio-out).
+
+        Raises QuotaExceededError on rate limit, Exception on other errors.
+        """
+        self.ui.set_subtitle("Ouvindo...")
+
+        # Build system prompt with memory context
+        memory_summary = self.memory.get_summary_string()
+        system_prompt = (
+            "Você é o Sirius, o assistente de voz pessoal do usuário. "
+            "Responda de forma curta, natural e conversacional em português. "
+            "Não use markdown, não use emojis, não use blocos de código.\n\n"
+            f"Contexto do usuário (MEMÓRIA):\n{memory_summary}"
+        )
+
+        # Send audio to Gemini and get audio back (async)
+        print("[Gemini] Sending audio to Live API...")
+        audio_response, transcript = asyncio.run(self._gemini_audio.chat_audio(
+            audio_data,
+            system_prompt=system_prompt,
+        ))
+
+        # Check if we got a valid response
+        if not audio_response or len(audio_response) < 100:
+            print(f"[Gemini] Warning: Empty or very small audio response ({len(audio_response) if audio_response else 0} bytes)")
+            if transcript:
+                print(f"[Gemini] Got transcript but no audio: {transcript}")
+            # Raise error to trigger fallback
+            raise RuntimeError("Gemini returned empty audio")
+
+        # Show transcript if available
+        if transcript:
+            print(f"Gemini transcript: {transcript}")
+            self.ui.set_subtitle(transcript)
+
+        # Update conversation history (text-only for memory)
+        self._conversation_history.append({"role": "assistant", "content": transcript or "(resposta de áudio)"})
+        self.memory.save_conversation(self._conversation_history)
+
+        # Play audio response
+        print(f"[Gemini] Playing audio response ({len(audio_response)} bytes)...")
+        self.state = "playing"
+        self._update_ui_state()
+
+        # Transcribe Gemini's response audio for subtitles (if no transcript provided)
+        display_text = transcript
+        if not display_text and audio_response:
+            try:
+                print("[Gemini] Transcribing response for subtitles...")
+                # Convert WAV to format STT expects if needed
+                import io
+                import wave
+                buffer = io.BytesIO(audio_response)
+                with wave.open(buffer, 'rb') as wf:
+                    # Read raw audio for STT
+                    raw_audio = wf.readframes(wf.getnframes())
+                # Transcribe in background thread to not block playback
+                import threading
+                transcript_result = [None]
+                def transcribe():
+                    try:
+                        transcript_result[0] = self.stt.transcribe(audio_response)
+                    except Exception as e:
+                        print(f"[Gemini] Transcription error: {e}")
+                t = threading.Thread(target=transcribe)
+                t.start()
+                # Don't wait for transcription, show generic message initially
+                display_text = "Assistente respondendo..."
+            except Exception as e:
+                print(f"[Gemini] Could not prepare transcription: {e}")
+                display_text = "Assistente respondendo..."
+
+        try:
+            import tempfile
+            import pygame
+
+            tmp_path = None
+            try:
+                with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp:
+                    tmp.write(audio_response)
+                    tmp_path = tmp.name
+
+                pygame.mixer.init()
+                pygame.mixer.music.load(tmp_path)
+                pygame.mixer.music.play()
+
+                # Show initial subtitle
+                if display_text:
+                    self.ui.set_subtitle(display_text)
+
+                # Playback with animation
+                start_time = time.time()
+                last_subtitle_update = 0
+                transcription_done = False
+                while pygame.mixer.music.get_busy():
+                    if self._interrupt_playback:
+                        pygame.mixer.music.stop()
+                        break
+
+                    # Update subtitle when transcription is ready
+                    if not transcription_done and 't' in dir() and not t.is_alive():
+                        transcription_done = True
+                        if transcript_result[0]:
+                            print(f"[Gemini] Transcription: {transcript_result[0]}")
+                            self.ui.set_subtitle(transcript_result[0])
+
+                    # Voice animation
+                    elapsed = time.time() - start_time
+                    level = 0.4 + 0.4 * abs((elapsed * 3) % 2 - 1) + random.random() * 0.2
+                    self.ui.set_audio_level(min(1.0, level))
+                    time.sleep(0.02)
+
+                # Handle interruption
+                if self._interrupt_playback:
+                    self.ui.clear_subtitle()
+                    self.ui.set_audio_level(0.0)
+                    self._interrupt_playback = False
+                    return
+
+                # Keep subtitle visible briefly after speech ends
+                time.sleep(0.5)
+                self.ui.clear_subtitle()
+                self.ui.set_audio_level(0.0)
+
+            finally:
+                if tmp_path and os.path.exists(tmp_path):
+                    try:
+                        pygame.mixer.quit()
+                        time.sleep(0.2)
+                        os.unlink(tmp_path)
+                    except Exception:
+                        pass
+        except Exception as e:
+            print(f"[Gemini] Playback error: {e}")
+            # Fallback: try sounddevice
+            try:
+                from voice_assistant.audio import play_audio
+                play_audio(audio_response)
+            except Exception as e2:
+                print(f"[Gemini] Fallback playback also failed: {e2}")
+
+        # Back to idle
+        if not self._interrupt_playback:
+            self.state = "idle"
+            self._update_ui_state()
+
     def _process_audio(self) -> None:
         """Process recorded audio with streaming subtitles."""
         try:
@@ -307,6 +511,19 @@ class VoiceAssistant:
         # State: Processing (while getting transcription)
         self.state = "processing"
         self._update_ui_state()
+
+        # --- Try Gemini native audio first ---
+        if self._gemini_audio and self._gemini_audio.is_available():
+            try:
+                self._process_audio_gemini(audio_data)
+                return
+            except QuotaExceededError:
+                print("[Gemini] Quota exceeded, falling back to STT+LLM+TTS pipeline")
+                self.ui.set_subtitle("Modo local...")
+            except Exception as e:
+                print(f"[Gemini] Error, falling back: {e}")
+                self.ui.set_subtitle("Modo local...")
+            # If Gemini failed, continue with fallback pipeline below
 
         # Step 1: Speech-to-Text
         transcription = self.stt.transcribe(audio_data)
@@ -332,7 +549,7 @@ class VoiceAssistant:
             self.state = "playing"
             self._update_ui_state()
             self.ui.set_subtitle(fast_response)
-            self.tts.say(fast_response)
+            self.tts.play_direct(fast_response)
             self.memory.save_conversation(self._conversation_history)
             self.state = "idle"
             self._update_ui_state()
@@ -360,7 +577,7 @@ class VoiceAssistant:
         memory_summary = self.memory.get_summary_string()
         
         full_system_prompt = (
-            "Você é o Sirius (antigo Jarvis), o assistente de voz pessoal do usuário. "
+            "Você é o Sirius, o assistente de voz pessoal do usuário. "
             "Responda de forma curta, natural e conversacional em português. "
             "Não use markdown, não use emojis, não use blocos de código.\n\n"
             "REGRAS CRÍTICAS:\n"
@@ -374,10 +591,18 @@ class VoiceAssistant:
 
         # Check if model supports tools
         llm_model = getattr(self.llm, 'model', '')
-        model_supports_tools = any(
-            model in llm_model.lower()
-            for model in ["qwen2.5", "qwen3.5", "llama3.2", "mistral", "llama-3.3", "llama-3.1"]
-        ) or isinstance(self.llm, GroqClient)
+        llm_model_lower = llm_model.lower()
+        
+        # Models that support proper function calling
+        supports_tools = any(model in llm_model_lower for model in [
+            "qwen2.5", "qwen3.5", "llama3.2", "mistral", "llama-3.1"
+        ])
+        
+        # Groq: llama-3.3-70b generates malformed XML tool calls, disable tools for it
+        # Only use tools with Groq if explicitly using a compatible model
+        groq_supports_tools = isinstance(self.llm, GroqClient) and "llama-3.1" in llm_model_lower
+        
+        model_supports_tools = supports_tools or groq_supports_tools
 
         full_response = ""
         tool_calls_executed = []
@@ -510,6 +735,14 @@ class VoiceAssistant:
         self._conversation_history.append({"role": "assistant", "content": full_response})
         if len(self._conversation_history) > self._max_history:
             self._conversation_history = self._conversation_history[-self._max_history:]
+
+        # Check if response looks like an error message (contains technical terms)
+        error_indicators = ['error:', 'error code:', 'exception', 'traceback', 'failed_generation', '400', '401', '403', '429', '500', '503']
+        is_error_message = any(indicator in full_response.lower() for indicator in error_indicators)
+        
+        if is_error_message:
+            print(f"[ERROR] Detected error in response, filtering: {full_response[:200]}...")
+            full_response = "Desculpe, tive um problema técnico. Pode tentar de novo?"
 
         # Step 3: Text-to-Speech
         self.state = "playing"
@@ -716,7 +949,7 @@ class VoiceAssistant:
             return
 
         print("\n" + "=" * 50)
-        print("Ready! Hold Ctrl+Space to talk.")
+        print("Ready! Hold Ctrl+Shift+Space to talk.")
         print("Press 'L' to toggle LIVE MODE (microphone always on).")
         print("Press Shift+Escape for BACKGROUND MODE (2 claps to wake).")
         print("Press Escape in the UI to exit.")
@@ -730,16 +963,127 @@ class VoiceAssistant:
         self.hotkey.start()
 
         # Setup UI (with key bindings)
-        self.ui = VoiceAssistantUI(
-            on_close=self.stop,
-            on_push=self._on_push,
-            on_release=self._on_release,
-            on_live_toggle=self._on_live_mode_toggle,
-            on_background_toggle=self._on_background_mode_toggle,
-            on_settings=self._on_settings_click,
-        )
-        self.ui.build()
-        self.ui.run()
+        try:
+            self.ui = VoiceAssistantUI(
+                on_close=self.stop,
+                on_push=self._on_push,
+                on_release=self._on_release,
+                on_live_toggle=self._on_live_mode_toggle,
+                on_background_toggle=self._on_background_mode_toggle,
+                on_settings=self._on_settings_click,
+            )
+            self.ui.build()
+        except Exception as e:
+            print(f"ERROR: Failed to create UI: {e}")
+            import traceback
+            traceback.print_exc()
+            input("Press Enter to exit...")
+            return
+
+        # Schedule greeting after UI is shown (500ms delay)
+        if self.ui._root:
+            self.ui._root.after(500, self._play_greeting)
+
+        try:
+            self.ui.run()
+        except Exception as e:
+            print(f"ERROR: UI crashed: {e}")
+            import traceback
+            traceback.print_exc()
+            input("Press Enter to exit...")
+
+    def _play_greeting(self) -> None:
+        """Play random greeting with time and day."""
+        try:
+            now = datetime.now()
+            hour = now.hour
+
+            # Determine time of day greeting
+            if 5 <= hour < 12:
+                time_greeting = "Bom dia"
+            elif 12 <= hour < 18:
+                time_greeting = "Boa tarde"
+            else:
+                time_greeting = "Boa noite"
+
+            # Days of week in Portuguese
+            days = ["segunda-feira", "terça-feira", "quarta-feira",
+                    "quinta-feira", "sexta-feira", "sábado", "domingo"]
+            day_name = days[now.weekday()]
+
+            # Format time (HH:MM)
+            time_str = now.strftime("%H:%M")
+
+            # Random follow-up questions
+            questions = [
+                "O que temos para hoje?",
+                "O que manda?",
+                "O que você precisa?",
+                "Como posso ajudar?",
+                "No que posso ser útil?",
+                "O que vamos fazer?",
+                "Estou aqui. O que precisa?",
+                "Pronto para começar. O que manda?",
+                "O que você tem em mente?",
+                "Estou ouvindo. O que precisa?",
+            ]
+            question = random.choice(questions)
+
+            # Build greeting variations - include user name if available
+            user_name = getattr(self, '_user_name', '')
+            name_part = f" {user_name}" if user_name else ""
+            
+            if user_name:
+                greetings = [
+                    f"{time_greeting}{name_part}! São {time_str} de {day_name}. {question}",
+                    f"{time_greeting}{name_part}! Agora são {time_str}, {day_name}. {question}",
+                    f"Olá{name_part}! {time_greeting}. São {time_str} de {day_name}. {question}",
+                    f"Oi{name_part}! {time_greeting}! São {time_str}, {day_name}. {question}",
+                    f"{time_greeting}{name_part}! Hoje é {day_name}, {time_str}. {question}",
+                    f"{time_greeting}{name_part}! {day_name.capitalize()}, {time_str}. {question}",
+                ]
+            else:
+                greetings = [
+                    f"{time_greeting}! São {time_str} de {day_name}. {question}",
+                    f"{time_greeting}! Agora são {time_str}, {day_name}. {question}",
+                    f"Olá! {time_greeting}. São {time_str} de {day_name}. {question}",
+                    f"{time_greeting}! Hoje é {day_name}, {time_str}. {question}",
+                    f"{time_greeting}! {day_name.capitalize()}, {time_str}. {question}",
+                ]
+            greeting = random.choice(greetings)
+
+            print(f"[Greeting] {greeting}")
+
+            # Update UI
+            self._update_ui_response(greeting)
+
+            # Play greeting audio using Gemini TTS if available (for voice consistency)
+            def speak():
+                try:
+                    # Use Gemini native audio if available for consistent voice
+                    if self._gemini_audio and self._gemini_audio.is_available():
+                        print("[Greeting] Using Gemini native audio for greeting")
+                        import asyncio
+                        audio_bytes = asyncio.run(self._gemini_audio.speak_text(greeting))
+                        if audio_bytes:
+                            self._play_audio_bytes(audio_bytes)
+                        else:
+                            # Fallback to regular TTS
+                            self.tts.play_direct(greeting)
+                    else:
+                        # Use regular TTS as fallback
+                        self.tts.play_direct(greeting)
+                except Exception as e:
+                    print(f"[Greeting] Gemini TTS error: {e}, falling back to regular TTS")
+                    try:
+                        self.tts.play_direct(greeting)
+                    except Exception as e2:
+                        print(f"[Greeting] Fallback TTS error: {e2}")
+
+            threading.Thread(target=speak, daemon=True).start()
+
+        except Exception as e:
+            print(f"[Greeting] Error: {e}")
 
     def _on_live_mode_toggle(self, enabled: bool) -> None:
         """Handle live mode toggle from UI."""
@@ -802,6 +1146,12 @@ class VoiceAssistant:
             # Send level to UI for waveform
             self.ui.set_audio_level(level)
 
+    def _on_audio_level(self, level: float) -> None:
+        """Update UI with audio level during push-to-talk recording."""
+        if self.state == "recording":
+            # Send level to UI for waveform
+            self.ui.set_audio_level(level)
+
     def _on_live_recording_complete(self, audio_data: bytes) -> None:
         """Process completed recording from live mode."""
         if not audio_data:
@@ -842,6 +1192,23 @@ class VoiceAssistant:
         # Go to processing state
         self.state = "processing"
         self._update_ui_state()
+
+        # --- Try Gemini native audio first ---
+        if self._gemini_audio and self._gemini_audio.is_available():
+            try:
+                self._process_audio_gemini(audio_data)
+                # After Gemini playback, go back to listening in live mode
+                if self._live_mode and self.state == "idle":
+                    self.state = "listening"
+                    self._update_ui_state()
+                return
+            except QuotaExceededError:
+                print("[Gemini] Quota exceeded, falling back to STT+LLM+TTS pipeline")
+                self.ui.set_subtitle("Modo local...")
+            except Exception as e:
+                print(f"[Gemini] Error, falling back: {e}")
+                self.ui.set_subtitle("Modo local...")
+            # If Gemini failed, continue with fallback pipeline below
 
         # Step 1: Speech-to-Text
         transcription = self.stt.transcribe(audio_data)
@@ -884,10 +1251,12 @@ class VoiceAssistant:
         tool_definitions = [t for t in all_tool_definitions 
                            if any(name in str(t) for name in essential_tools)]
 
-        model_supports_tools = any(
-            model in self.llm.model.lower()
-            for model in ["qwen", "gemma", "llama3", "mistral"]
-        )
+        llm_model_lower = self.llm.model.lower()
+        supports_tools = any(model in llm_model_lower for model in [
+            "qwen2.5", "qwen3.5", "llama3.2", "mistral", "llama-3.1"
+        ])
+        groq_supports_tools = isinstance(self.llm, GroqClient) and "llama-3.1" in llm_model_lower
+        model_supports_tools = supports_tools or groq_supports_tools
 
         full_response = ""
 
@@ -948,6 +1317,14 @@ class VoiceAssistant:
 
         full_response = self.llm._clean_response(full_response)
         print(f"Resposta: {full_response}")
+
+        # Check if response looks like an error message
+        error_indicators = ['error:', 'error code:', 'exception', 'traceback', 'failed_generation', '400', '401', '403', '429', '500', '503']
+        is_error_message = any(indicator in full_response.lower() for indicator in error_indicators)
+        
+        if is_error_message:
+            print(f"[ERROR] Detected error in response (live mode), filtering: {full_response[:200]}...")
+            full_response = "Desculpe, tive um problema técnico. Pode tentar de novo?"
 
         # Update history and save to memory
         self._conversation_history.append({"role": "assistant", "content": full_response})

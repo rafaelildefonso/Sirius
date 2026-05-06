@@ -5,6 +5,8 @@ from __future__ import annotations
 import inspect
 import json
 import logging
+import shutil
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -55,6 +57,11 @@ class OptimizeRunRequest(BaseModel):
     max_trials: int = 20
     optimizer_model: str = "claude-sonnet-4-6"
     max_samples: int = 50
+
+
+class SkillInstallRequest(BaseModel):
+    source_path: str
+    force: bool = False
 
 
 # ---- Agent routes ----
@@ -424,21 +431,66 @@ async def list_skills(request: Request):
 
 
 @skills_router.post("")
-async def install_skill(request: Request):
-    """Install a skill (placeholder)."""
-    return {
-        "status": "not_implemented",
-        "message": "Use TOML files in ~/.openjarvis/skills/",
-    }
+async def install_skill(req: SkillInstallRequest, request: Request):
+    """Install a skill package directory into ~/.openjarvis/skills."""
+    try:
+        from openjarvis.skills.loader import load_skill_directory
+
+        src = Path(req.source_path).expanduser().resolve()
+        if not src.exists() or not src.is_dir():
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid source_path directory: {req.source_path}",
+            )
+
+        manifest = load_skill_directory(src)
+        target_root = Path("~/.openjarvis/skills/").expanduser()
+        target_root.mkdir(parents=True, exist_ok=True)
+        target_dir = target_root / manifest.name
+
+        if target_dir.exists():
+            if not req.force:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"Skill '{manifest.name}' already installed at {target_dir}. "
+                        "Set force=true to replace."
+                    ),
+                )
+            shutil.rmtree(target_dir)
+
+        shutil.copytree(src, target_dir)
+        return {
+            "status": "installed",
+            "name": manifest.name,
+            "path": str(target_dir),
+        }
+    except HTTPException:
+        raise
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @skills_router.delete("/{skill_name}")
 async def remove_skill(skill_name: str, request: Request):
-    """Remove a skill (placeholder)."""
-    return {
-        "status": "not_implemented",
-        "message": "Skill removal not yet supported via API",
-    }
+    """Remove installed skill directories matching skill_name."""
+    try:
+        from openjarvis.core.events import EventBus
+        from openjarvis.skills.manager import SkillManager
+
+        mgr = SkillManager(bus=EventBus())
+        removed = mgr.remove(skill_name)
+        return {
+            "status": "removed",
+            "name": skill_name,
+            "removed_paths": [str(p) for p in removed],
+        }
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=f"Skill '{skill_name}' not found")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 # ---- Sessions routes ----
@@ -877,8 +929,51 @@ async def get_optimize_run(run_id: str, request: Request):
 
 @optimize_router.post("/runs")
 async def start_optimize_run(req: OptimizeRunRequest, request: Request):
-    """Start a new optimization run."""
-    return {"status": "started", "run_id": "placeholder"}
+    """Start an optimization run and persist results."""
+    try:
+        from openjarvis.core.config import DEFAULT_CONFIG_DIR
+        from openjarvis.learning.optimize.llm_optimizer import LLMOptimizer
+        from openjarvis.learning.optimize.optimizer import OptimizationEngine
+        from openjarvis.learning.optimize.search_space import DEFAULT_SEARCH_SPACE
+        from openjarvis.learning.optimize.store import OptimizationStore
+        from openjarvis.learning.optimize.trial_runner import TrialRunner
+
+        optimizer_backend = None
+        try:
+            from openjarvis.evals.cli import _build_judge_backend
+
+            optimizer_backend = _build_judge_backend(req.optimizer_model)
+        except Exception:
+            optimizer_backend = None
+
+        store = OptimizationStore(DEFAULT_CONFIG_DIR / "optimize.db")
+        llm_opt = LLMOptimizer(
+            search_space=DEFAULT_SEARCH_SPACE,
+            optimizer_model=req.optimizer_model,
+            optimizer_backend=optimizer_backend,
+        )
+        runner = TrialRunner(
+            benchmark=req.benchmark,
+            max_samples=req.max_samples,
+            output_dir="results/optimize/",
+        )
+        engine = OptimizationEngine(
+            search_space=DEFAULT_SEARCH_SPACE,
+            llm_optimizer=llm_opt,
+            trial_runner=runner,
+            store=store,
+            max_trials=req.max_trials,
+        )
+        run = engine.run()
+        store.close()
+        return {
+            "status": run.status,
+            "run_id": run.run_id,
+            "benchmark": run.benchmark,
+            "trials": len(run.trials),
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 def include_all_routes(app) -> None:
