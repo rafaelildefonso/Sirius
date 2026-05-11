@@ -73,7 +73,7 @@ O Sirius agora suporta integração com Google Calendar e Gmail. Para ativar:
 6. Baixe o arquivo JSON e renomeie-o para `client_secrets.json`.
 7. Mova o arquivo para a pasta `config/` do Sirius.
 
-Na primeira vez que você usar um comando do Google (ex: "O que eu tenho para hoje?"), o Sirius abrirá o navegador para você autorizar o acesso.
+Na primeira vez que você usar um comando do Google (ex: "O que eu tenho para hoje?"), o Sirius abrirá o navegador para você autorizar o acesso
 
 ---
 
