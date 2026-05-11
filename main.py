@@ -8,6 +8,7 @@ import random
 from pathlib import Path
 
 import sounddevice as sd
+import numpy as np
 from google import genai
 from google.genai import types
 from ui import SiriusUI
@@ -32,6 +33,8 @@ from actions.dev_agent         import dev_agent
 from actions.web_search        import web_search as web_search_action
 from actions.computer_control  import computer_control
 from actions.game_updater      import game_updater
+from actions.google_calendar  import google_calendar as calendar_action
+from actions.gmail            import gmail_action
 
 
 def get_base_dir():
@@ -481,6 +484,36 @@ TOOL_DECLARATIONS = [
             "required": ["category", "key", "value"]
         }
     },
+    {
+        "name": "google_calendar",
+        "description": "Accesses and manages the user's Google Calendar: list events, create events.",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action":   {"type": "STRING", "description": "list | create"},
+                "days":     {"type": "INTEGER", "description": "Number of days to list (for list)"},
+                "summary":  {"type": "STRING", "description": "Title of the event (for create)"},
+                "start":    {"type": "STRING", "description": "Start time in ISO format (for create)"},
+                "end":      {"type": "STRING", "description": "End time in ISO format (for create)"},
+                "location": {"type": "STRING", "description": "Location (for create)"},
+            },
+            "required": ["action"]
+        }
+    },
+    {
+        "name": "gmail",
+        "description": "Accesses and manages the user's Gmail: list emails, search, read email.",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {"type": "STRING", "description": "list | search | read"},
+                "count":  {"type": "INTEGER", "description": "Number of emails to list/search"},
+                "query":  {"type": "STRING", "description": "Search query"},
+                "id":     {"type": "STRING", "description": "Email ID to read"},
+            },
+            "required": ["action"]
+        }
+    },
 ]
 
 class SiriusLive:
@@ -677,6 +710,14 @@ class SiriusLive:
                 r = await loop.run_in_executor(None, lambda: flight_finder(parameters=args, player=self.ui))
                 result = r or "Done."
 
+            elif name == "google_calendar":
+                r = await loop.run_in_executor(None, lambda: calendar_action(parameters=args, player=self.ui))
+                result = r or "Done."
+
+            elif name == "gmail":
+                r = await loop.run_in_executor(None, lambda: gmail_action(parameters=args, player=self.ui))
+                result = r or "Done."
+
             elif name == "shutdown_jarvis":
                 self.ui.write_log("SYS: Shutdown requested.")
                 self.speak("Goodbye, sir.")
@@ -717,10 +758,18 @@ class SiriusLive:
                 sirius_speaking = self._is_speaking
             if not sirius_speaking and not self.ui.muted:
                 data = indata.tobytes()
+                
+                # Calculate voice level for UI feedback
+                rms = np.sqrt(np.mean(indata**2))
+                level = min(1.0, rms * 15) # Scaling factor
+                self.ui.set_voice_level(level)
+
                 loop.call_soon_threadsafe(
                     self.out_queue.put_nowait,
                     {"data": data, "mime_type": "audio/pcm"}
                 )
+            else:
+                self.ui.set_voice_level(0.0)
 
         try:
             with sd.InputStream(

@@ -1,8 +1,4 @@
 venv
 venv/
 
-config/api_keys.json
-config/client_secrets.json
-config/google_token.json
-config/openai_key.json
-config/google_token.json
+config/*.json

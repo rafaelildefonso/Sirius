@@ -59,6 +59,7 @@ class C:
     ACC2      = "#ffcc00"
     GREEN     = "#00ff88"
     GREEN_D   = "#00aa55"
+    GREEN_DIM = "#004422"
     RED       = "#ff3355"
     MUTED_C   = "#ff3366"
     TEXT      = "#e0f0ff"
@@ -252,6 +253,7 @@ class HudCanvas(QWidget):
         self.muted    = False
         self.speaking = False
         self.state    = "INITIALISING"
+        self.voice_level = 0.0 # 0.0 to 1.0
 
         self._tick       = 0
         self._scale      = 1.0
@@ -308,6 +310,10 @@ class HudCanvas(QWidget):
             elif self.muted:
                 self._tgt_scale = 1.0
                 self._tgt_halo  = 10
+            elif self.state == "LISTENING" and self.voice_level > 0.05:
+                # React to user voice
+                self._tgt_scale = 1.0 + self.voice_level * 0.15
+                self._tgt_halo  = 30 + self.voice_level * 60
             else:
                 self._tgt_scale = 1.0
                 self._tgt_halo  = 30
@@ -346,6 +352,9 @@ class HudCanvas(QWidget):
             size = dot["base_size"] * (1.0 + 0.3 * osc)
             if self.speaking:
                 size *= random.uniform(1.2, 1.8)
+            elif self.state == "LISTENING" and self.voice_level > 0.05:
+                # Dots jitter/grow with voice
+                size *= (1.0 + self.voice_level * 1.5 * random.random())
             
             # Position
             r = fw * dot["r_factor"] * self._scale
@@ -354,11 +363,16 @@ class HudCanvas(QWidget):
             dx = cx + r * math.cos(drift_ang)
             dy = cy + r * math.sin(drift_ang)
             
-            # Opacity
+            # Opacity and Color
             alpha = int(180 + 75 * osc)
             if self.muted: alpha //= 3
             
-            p.setBrush(QBrush(qcol(C.PRI, alpha)))
+            # Use Green for user voice
+            if self.state == "LISTENING" and self.voice_level > 0.05:
+                p.setBrush(QBrush(qcol(C.GREEN, alpha)))
+            else:
+                p.setBrush(QBrush(qcol(C.PRI, alpha)))
+            
             p.drawEllipse(QPointF(dx, dy), size, size)
 
         # Center Face/Logo
@@ -371,8 +385,9 @@ class HudCanvas(QWidget):
             )
             p.drawPixmap(int(cx - fsz / 2), int(cy - fsz / 2), scaled)
 
-        # status text
-        sy = cy + fw * 0.40
+        # status text - Move to Center
+        # sy = cy + fw * 0.40  <-- Old position
+        sy = cy - 13 # Center vertically (text height is 26)
         if self.muted:
             txt, col = "⊘  MUTED",     qcol(C.MUTED_C)
         elif self.speaking:
@@ -391,23 +406,16 @@ class HudCanvas(QWidget):
             txt, col = f"{sym}  {self.state}", qcol(C.PRI)
 
         p.setPen(QPen(col, 1))
-        p.setFont(QFont("Inter", 11, QFont.Weight.Medium))
+        # Add a subtle background for the text to make it readable over the logo
+        p.setBrush(QBrush(qcol(C.BG, 160)))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawRoundedRect(QRectF(cx - 60, sy, 120, 26), 4, 4)
+        
+        p.setPen(QPen(col, 1))
+        p.setFont(QFont("Inter", 10, QFont.Weight.Bold))
         p.drawText(QRectF(0, sy, W, 26), Qt.AlignmentFlag.AlignCenter, txt)
 
-        # waveform
-        wy = sy + 30
-        N, bw = 36, 8
-        wx0 = (W - N * bw) / 2
-        for i in range(N):
-            if self.muted:
-                hgt, cl = 2, qcol(C.MUTED_C)
-            elif self.speaking:
-                hgt = random.randint(3, 20)
-                cl  = qcol(C.PRI) if hgt > 12 else qcol(C.PRI_DIM)
-            else:
-                hgt = int(3 + 2 * math.sin(self._tick * 0.09 + i * 0.6))
-                cl  = qcol(C.BORDER_B)
-            p.fillRect(QRectF(wx0 + i * bw, wy + 20 - hgt, bw - 1, hgt), cl)
+        # (Waveform removed as requested)
 
 class MetricBar(QWidget):
 
@@ -874,6 +882,193 @@ class SetupOverlay(QWidget):
         self.done.emit(key, self._sel_os)
 
 
+class SettingsOverlay(QWidget):
+    done = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setStyleSheet(f"""
+            SettingsOverlay {{
+                background: rgba(0, 6, 10, 250);
+                border: 1px solid {C.BORDER_B};
+                border-radius: 8px;
+            }}
+        """)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(25, 20, 25, 20)
+        layout.setSpacing(10)
+
+        def _lbl(txt, font_size=10, bold=False, color=C.PRI, align=Qt.AlignmentFlag.AlignLeft):
+            w = QLabel(txt); w.setAlignment(align)
+            w.setFont(QFont("Inter", font_size, QFont.Weight.Bold if bold else QFont.Weight.Normal))
+            w.setStyleSheet(f"color: {color}; background: transparent;")
+            return w
+
+        layout.addWidget(_lbl("⚙ CONFIGURAÇÕES", 12, True, C.WHITE, Qt.AlignmentFlag.AlignCenter))
+        layout.addSpacing(10)
+
+        # Gemini Section
+        layout.addWidget(_lbl("GEMINI API KEY", 8, color=C.TEXT_DIM))
+        self._key_input = QLineEdit()
+        self._key_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self._key_input.setFont(QFont("Courier New", 9))
+        self._key_input.setFixedHeight(30)
+        self._key_input.setStyleSheet(f"""
+            QLineEdit {{
+                background: #080808; color: {C.TEXT};
+                border: 1px solid {C.BORDER}; border-radius: 4px; padding: 4px 8px;
+            }}
+            QLineEdit:focus {{ border: 1px solid {C.PRI}; }}
+        """)
+        layout.addWidget(self._key_input)
+
+        # OS Section
+        layout.addWidget(_lbl("SISTEMA OPERACIONAL", 8, color=C.TEXT_DIM))
+        self._os_combo = QHBoxLayout(); self._os_combo.setSpacing(5)
+        self._os_btns = {}
+        for k, v in [("windows", "Win"), ("mac", "Mac"), ("linux", "Lin")]:
+            btn = QPushButton(v); btn.setFixedHeight(26)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.clicked.connect(lambda _, x=k: self._set_os(x))
+            self._os_combo.addWidget(btn); self._os_btns[k] = btn
+        layout.addLayout(self._os_combo)
+
+        sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet(f"color: {C.BORDER}; margin: 5px 0;"); layout.addWidget(sep)
+
+        # Google Integration Section
+        layout.addWidget(_lbl("INTEGRAÇÕES", 9, True, C.ACC2))
+        
+        # Google Credentials (hidden by default or expandable?)
+        # Let's show them as small inputs
+        layout.addWidget(_lbl("GOOGLE CLIENT ID", 7, color=C.TEXT_DIM))
+        self._g_id = QLineEdit()
+        self._g_id.setFont(QFont("Courier New", 8))
+        self._g_id.setFixedHeight(24)
+        self._g_id.setStyleSheet(f"background: #080808; color: {C.TEXT_MED}; border: 1px solid {C.BORDER};")
+        layout.addWidget(self._g_id)
+
+        layout.addWidget(_lbl("GOOGLE CLIENT SECRET", 7, color=C.TEXT_DIM))
+        self._g_secret = QLineEdit()
+        self._g_secret.setEchoMode(QLineEdit.EchoMode.Password)
+        self._g_secret.setFont(QFont("Courier New", 8))
+        self._g_secret.setFixedHeight(24)
+        self._g_secret.setStyleSheet(f"background: #080808; color: {C.TEXT_MED}; border: 1px solid {C.BORDER};")
+        layout.addWidget(self._g_secret)
+
+        layout.addSpacing(5)
+        
+        g_row = QHBoxLayout(); g_row.setSpacing(10)
+        layout.addLayout(g_row)
+        
+        self._g_btn = QPushButton("Connect Google Account")
+        self._g_btn.setFixedHeight(32)
+        self._g_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._g_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {C.PANEL2}; color: {C.WHITE};
+                border: 1px solid {C.BORDER_B}; border-radius: 4px; font-size: 9pt;
+            }}
+            QPushButton:hover {{ background: {C.PRI_DIM}; border: 1px solid {C.PRI}; }}
+        """)
+        self._g_btn.clicked.connect(self._google_auth)
+        g_row.addWidget(self._g_btn)
+
+        self._g_status = QLabel("Not connected")
+        self._g_status.setFont(QFont("Inter", 7))
+        self._g_status.setStyleSheet(f"color: {C.TEXT_DIM};")
+        layout.addWidget(self._g_status)
+
+        layout.addStretch()
+
+        save_btn = QPushButton("SALVAR E FECHAR")
+        save_btn.setFixedHeight(36); save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        save_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {C.PRI}; color: {C.BG};
+                border: none; border-radius: 4px; font-weight: bold;
+            }}
+            QPushButton:hover {{ background: {C.WHITE}; }}
+        """)
+        save_btn.clicked.connect(self._save)
+        layout.addWidget(save_btn)
+
+        self._load()
+
+    def _set_os(self, key):
+        self._os_name = key
+        for k, b in self._os_btns.items():
+            if k == key:
+                b.setStyleSheet(f"background: {C.PRI}; color: {C.BG}; border: none; border-radius: 3px;")
+            else:
+                b.setStyleSheet(f"background: #080808; color: {C.TEXT_DIM}; border: 1px solid {C.BORDER}; border-radius: 3px;")
+
+    def _load(self):
+        if API_FILE.exists():
+            try:
+                d = json.loads(API_FILE.read_text(encoding="utf-8"))
+                self._key_input.setText(d.get("gemini_api_key", ""))
+                self._set_os(d.get("os_system", "windows"))
+                g = d.get("google_creds", {})
+                self._g_id.setText(g.get("client_id", ""))
+                self._g_secret.setText(g.get("client_secret", ""))
+                
+                if (BASE_DIR / "config" / "google_token.json").exists():
+                    self._g_status.setText("✅ Google Connected")
+                    self._g_status.setStyleSheet(f"color: {C.GREEN};")
+            except Exception:
+                pass
+
+    def _google_auth(self):
+        # Save current keys first
+        self._save_keys_only()
+        
+        self._g_status.setText("⌛ Authorizing in browser...")
+        self._g_status.setStyleSheet(f"color: {C.ACC2};")
+        QApplication.processEvents()
+        
+        # We need to run this in a thread to not block UI
+        def _run():
+            from core.google_auth import run_auth_flow
+            ok, msg = run_auth_flow()
+            if ok:
+                self._g_status.setText(f"✅ {msg}")
+                self._g_status.setStyleSheet(f"color: {C.GREEN};")
+            else:
+                self._g_status.setText(f"❌ {msg}")
+                self._g_status.setStyleSheet(f"color: {C.RED};")
+        
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _save(self):
+        self._save_keys_only()
+        self.done.emit()
+        self.hide()
+
+    def _save_keys_only(self):
+        key = self._key_input.text().strip()
+        os_name = getattr(self, "_os_name", "windows")
+        g_id = self._g_id.text().strip()
+        g_secret = self._g_secret.text().strip()
+        
+        d = {}
+        if API_FILE.exists():
+            try: d = json.loads(API_FILE.read_text(encoding="utf-8"))
+            except Exception: pass
+        
+        d["gemini_api_key"] = key
+        d["os_system"] = os_name
+        d["google_creds"] = {
+            "client_id": g_id,
+            "client_secret": g_secret
+        }
+        
+        os.makedirs(CONFIG_DIR, exist_ok=True)
+        API_FILE.write_text(json.dumps(d, indent=4), encoding="utf-8")
+
+
 class MainWindow(QMainWindow):
     _log_sig   = pyqtSignal(str)
     _state_sig = pyqtSignal(str)
@@ -917,6 +1112,8 @@ class MainWindow(QMainWindow):
         root.addLayout(body, stretch=1)
         root.addWidget(self._build_footer())
 
+        self._settings_overlay: SettingsOverlay | None = None
+
         self._clock_tmr = QTimer(self)
         self._clock_tmr.timeout.connect(self._tick_clock)
         self._clock_tmr.start(1000)
@@ -947,6 +1144,14 @@ class MainWindow(QMainWindow):
             ow, oh = 460, 390
             cw = self.centralWidget()
             self._overlay.setGeometry(
+                (cw.width()  - ow) // 2,
+                (cw.height() - oh) // 2,
+                ow, oh,
+            )
+        if self._settings_overlay and self._settings_overlay.isVisible():
+            ow, oh = 480, 420
+            cw = self.centralWidget()
+            self._settings_overlay.setGeometry(
                 (cw.width()  - ow) // 2,
                 (cw.height() - oh) // 2,
                 ow, oh,
@@ -1101,10 +1306,39 @@ class MainWindow(QMainWindow):
 
         lay.addWidget(_fl("[F4] Mute  ·  [F11] Fullscreen"))
         lay.addStretch()
-        lay.addWidget(_fl("SIRIUS  ·  CLASSIFIED"))
+        lay.addWidget(_fl(""))
         lay.addStretch()
+
+        self._settings_btn = QPushButton("⚙")
+        self._settings_btn.setFixedSize(18, 18)
+        self._settings_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._settings_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent; color: {C.TEXT_MED};
+                border: none; padding: 0; font-size: 10pt;
+            }}
+            QPushButton:hover {{ color: {C.PRI}; }}
+        """)
+        self._settings_btn.clicked.connect(self._show_settings)
+        lay.addWidget(self._settings_btn)
+
         lay.addWidget(_fl("© RAFAEL ILDEFONSO", C.PRI_DIM))
         return w
+
+    def _show_settings(self):
+        if not self._settings_overlay:
+            self._settings_overlay = SettingsOverlay(self.centralWidget())
+            self._settings_overlay.hide()
+        
+        cw = self.centralWidget()
+        ow, oh = 480, 420
+        self._settings_overlay.setGeometry(
+            (cw.width()  - ow) // 2,
+            (cw.height() - oh) // 2,
+            ow, oh,
+        )
+        self._settings_overlay.show()
+        self._settings_overlay.raise_()
 
     def _on_file_selected(self, path: str):
         self._current_file = path
@@ -1197,7 +1431,7 @@ class MainWindow(QMainWindow):
             self._overlay.hide()
             self._overlay = None
         self._apply_state("LISTENING")
-        self._log.append_log(f"SYS: Initialised. OS={os_name.upper()}. SIRIUS online.")
+        self._log.append_log(f"System: Initialised. OS={os_name.upper()}. SIRIUS online.")
 
 class _RootShim:
     def __init__(self, app: QApplication):
@@ -1239,6 +1473,11 @@ class SiriusUI:
 
     def set_state(self, state: str):
         self._win._state_sig.emit(state)
+
+    def set_voice_level(self, level: float):
+        """Sets the user voice level (0.0 to 1.0) for visual feedback."""
+        if hasattr(self._win, "hud"):
+            self._win.hud.voice_level = level
 
     def write_log(self, text: str):
         self._win._log_sig.emit(text)

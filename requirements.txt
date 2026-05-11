@@ -1,4 +1,4 @@
-﻿sounddevice
+sounddevice
 google-genai
 google-generativeai
 pillow
@@ -21,4 +21,7 @@ send2trash
 youtube-transcript-api
 pywinauto
 python-pptx
-pyqt6
+
+google-api-python-client
+google-auth-httplib2
+google-auth-oauthlib

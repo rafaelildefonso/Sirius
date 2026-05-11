@@ -111,7 +111,35 @@ code_helper
 dev_agent
   description: string (required)
   language: string (optional)
+
+google_calendar
+  action: "list_events" | "create_event" (required)
+  date: string YYYY-MM-DD (optional, default: today)
+  summary: string (for create_event)
+  start_time: string "YYYY-MM-DD HH:MM" (for create_event)
+
+gmail
+  action: "list_emails" | "search_emails" | "read_email" (required)
+  query: string (optional, e.g. "is:unread", "from:jose")
+  count: int (optional, default: 5)
+
 EXAMPLES:
+
+Goal: "o que eu tenho para hoje?"
+Steps:
+
+google_calendar | action: list_events, date: [today]
+
+Goal: "alguem enviou algum email para mim?"
+Steps:
+
+gmail | action: list_emails, query: "is:unread"
+
+Goal: "agende uma reunião com o Pedro para amanhã às 10h"
+Steps:
+
+google_calendar | action: create_event, summary: "Reunião com Pedro", start_time: "[tomorrow] 10:00"
+
 
 Goal: "research mechanical engineering and save it to a notepad file"
 Steps:

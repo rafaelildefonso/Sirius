@@ -29,7 +29,7 @@ It's not just an assistant — it's an extension of your digital life.
 
 ---
 
-## 🆕 What's New in SIRIUS XXXIX
+## 🆕 What's New in SIRIUS
 
 - 📂 **Advanced File Handling** — New support for direct file uploads. Drop PDFs, source code, or images into the assistant to have them analyzed, summarized, or edited instantly.
 - 🎨 **Adaptive & Flexible UI** — A complete overhaul of the interface. The new UI is fully resizable and responsive, featuring transparency controls and customizable layouts to fit your workspace perfectly.
@@ -41,8 +41,8 @@ It's not just an assistant — it's an extension of your digital life.
 ## ⚡ Quick Start
 
 ```bash
-git clone https://github.com/RafaelIldefonso/Sirius.git
-cd Sirius
+git clone https://github.com/rafaelildefonso/sirius.git
+cd sirius
 pip install -r requirements.txt
 playwright install
 python main.py
@@ -60,6 +60,20 @@ python main.py
 | **Python** | 3.11 or 3.12 |
 | **Microphone** | Required for voice interaction |
 | **API Key** | Free Gemini API key |
+
+## 📧 Integração Google (Calendar & Gmail)
+
+O Sirius agora suporta integração com Google Calendar e Gmail. Para ativar:
+
+1. Acesse o [Google Cloud Console](https://console.cloud.google.com/).
+2. Crie um novo projeto.
+3. Ative as APIs **Google Calendar API** e **Gmail API**.
+4. Vá em **Credentials** > **Create Credentials** > **OAuth client ID**.
+5. Selecione **Desktop App**.
+6. Baixe o arquivo JSON e renomeie-o para `client_secrets.json`.
+7. Mova o arquivo para a pasta `config/` do Sirius.
+
+Na primeira vez que você usar um comando do Google (ex: "O que eu tenho para hoje?"), o Sirius abrirá o navegador para você autorizar o acesso.
 
 ---
 
