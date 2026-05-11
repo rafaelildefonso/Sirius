@@ -19,7 +19,18 @@ Guia rápido para iniciar o projeto (backend + frontend).
 
 ## 🎯 Modo Rápido (Recomendado)
 
-### Terminal 1 - Backend (API Server)
+### Tudo em um comando (Backend + Ollama + Tauri Desktop)
+
+```powershell
+uv run jarvis dev
+```
+
+Isso inicia automaticamente:
+- **Ollama** (se não estiver rodando)
+- **Backend** API em `http://localhost:8000`
+- **Tauri Desktop App** - Interface nativa em janela própria
+
+### Modo apenas Backend
 
 ```powershell
 uv run jarvis serve
@@ -27,7 +38,7 @@ uv run jarvis serve
 
 O servidor inicia em: `http://localhost:8000`
 
-### Terminal 2 - Frontend (Interface Web)
+### Modo Frontend Web (navegador)
 
 ```powershell
 cd frontend
@@ -36,10 +47,6 @@ npm run dev
 ```
 
 O frontend inicia em: `http://localhost:5173`
-
-### Acesse no navegador:
-
-👉 **http://localhost:5173**
 
 ---
 
@@ -243,19 +250,22 @@ jarvis/
 Execute o frontend como um aplicativo Windows nativo (sem navegador):
 
 ```powershell
-# Instalar dependências do Tauri (primeira vez)
-cd frontend
-npm install
+# Tudo automático (inclui Ollama e Backend)
+uv run jarvis dev
 
-# Voltar na raiz e executar
-uv run python run-tauri.py
+# Ou sem Ollama (se já estiver rodando)
+uv run jarvis dev --skip-ollama
+
+# Ou só backend + Ollama (sem Tauri)
+uv run jarvis dev --no-tauri
 ```
 
 Isso abre:
 
 - **🖥️ App Desktop** - Interface nativa em janela própria
-- **�️ Voice Mode** - Clique em "Voice Call" no sidebar para abrir janela de voz
+- **🎙️ Voice Mode** - Clique em "Voice Call" no sidebar para abrir janela de voz
 - **🔧 Backend** - API rodando em background
+- **🧠 Ollama** - Servidor local de IA
 
 ### ✨ Recursos do App Desktop:
 
@@ -263,22 +273,6 @@ Isso abre:
 - Janela de voz flutuante e sempre no topo
 - Integração com atalhos de teclado do sistema
 - Ícone na bandeja do Windows
-
----
-
-## 🎯 Modo Integrado (Web)
-
-Execute Web e Voz juntos com interface de seleção:
-
-```powershell
-uv run python run-integrated.py
-```
-
-Isso abre uma janela para escolher:
-
-- **🌐 Modo Web** - Interface web completa no navegador
-- **🎙️ Modo Voz** - Assistente de voz em tela cheia
-- **⚡ Ambos** - Web no navegador + Voz em janela separada
 
 ### 🔄 Acesso pelo Frontend
 

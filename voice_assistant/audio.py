@@ -23,11 +23,38 @@ class AudioRecorder:
         self._frames: list[np.ndarray] = []
         self._stream: Optional[sd.InputStream] = None
         self._thread: Optional[threading.Thread] = None
+        
+        # Audio level tracking for UI
+        self._last_level_db = -60.0
+        self._on_audio_level: Optional[Callable[[float], None]] = None
+
+    def set_audio_level_callback(self, callback: Optional[Callable[[float], None]]) -> None:
+        """Set callback for real-time audio level updates (0.0 to 1.0)."""
+        self._on_audio_level = callback
+
+    def _calculate_rms_db(self, audio: np.ndarray) -> float:
+        """Calculate RMS level in dB."""
+        rms = np.sqrt(np.mean(audio ** 2))
+        if rms < 1e-9:
+            return -100.0
+        return 20 * np.log10(rms)
 
     def _callback(self, indata: np.ndarray, frames: int, time_info: dict, status: sd.CallbackFlags) -> None:
         """Called for each audio block."""
         if status:
             print(f"Audio callback status: {status}")
+        
+        # Calculate and report audio level in real-time
+        level_db = self._calculate_rms_db(indata)
+        self._last_level_db = level_db
+        level_normalized = max(0.0, min(1.0, (level_db + 60) / 60))  # Normalize -60dB to 0dB
+        
+        if self._on_audio_level:
+            try:
+                self._on_audio_level(level_normalized)
+            except Exception:
+                pass
+        
         if self._recording:
             self._frames.append(indata.copy())
 

@@ -5033,7 +5033,7 @@ wheels = [
 ]
 
 [[package]]
-name = "opensirius"
+name = "openjarvis"
 version = "0.1.1"
 source = { editable = "." }
 dependencies = [
@@ -5042,6 +5042,7 @@ dependencies = [
     { name = "ddgs" },
     { name = "edge-tts" },
     { name = "faster-whisper" },
+    { name = "groq" },
     { name = "httpx" },
     { name = "keyboard" },
     { name = "openai" },
@@ -5285,6 +5286,7 @@ requires-dist = [
     { name = "google-auth-httplib2", marker = "extra == 'channel-gmail'", specifier = ">=0.2" },
     { name = "google-auth-oauthlib", marker = "extra == 'channel-gmail'", specifier = ">=1.0" },
     { name = "google-genai", marker = "extra == 'inference-google'", specifier = ">=1.0" },
+    { name = "groq", specifier = ">=0.4.0" },
     { name = "groq", marker = "extra == 'voice'", specifier = ">=0.9" },
     { name = "gspread", marker = "extra == 'eval-sheets'", specifier = ">=6.0" },
     { name = "httpx", specifier = ">=0.27" },

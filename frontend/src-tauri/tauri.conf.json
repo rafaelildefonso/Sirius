@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "OpenJarvis",
+        "title": "OpenSirius",
         "width": 1280,
         "height": 800,
         "minWidth": 900,
@@ -42,7 +42,7 @@
     ],
     "category": "Utility",
     "shortDescription": "On-device AI assistant with energy monitoring and trace debugging",
-    "longDescription": "OpenJarvis Desktop wraps the OpenJarvis research framework in a native desktop application with real-time energy monitoring, trace debugging, learning curve visualization, and memory browsing.",
+    "longDescription": "OpenSirius Desktop wraps the OpenSirius research framework in a native desktop application with real-time energy monitoring, trace debugging, learning curve visualization, and memory browsing.",
     "macOS": {
       "entitlements": "Entitlements.plist",
       "minimumSystemVersion": "10.15",

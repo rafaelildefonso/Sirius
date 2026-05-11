@@ -35,6 +35,7 @@ const OPTIN_NAME_KEY = 'openjarvis-display-name';
 const OPTIN_EMAIL_KEY = 'openjarvis-email';
 const OPTIN_ANONID_KEY = 'openjarvis-anon-id';
 const OPTIN_SEEN_KEY = 'openjarvis-optin-seen';
+const ASSISTANT_PROFILE_KEY = 'openjarvis-assistant-profile';
 
 interface ConversationStore {
   version: 1;
@@ -75,6 +76,27 @@ interface Settings {
   speechEnabled: boolean;
 }
 
+export type AssistantStyle = 'professional' | 'friendly' | 'technical' | 'creative';
+export type Language = 'pt' | 'en' | 'es';
+
+export interface AssistantProfile {
+  userName: string;
+  assistantName: string;
+  assistantStyle: AssistantStyle;
+  permissions: {
+    fileAccess: boolean;
+    commandExecution: boolean;
+    internetAccess: boolean;
+    externalIntegrations: boolean;
+    autonomousMode: boolean;
+  };
+  language: Language;
+  theme: ThemeMode;
+  notifications: boolean;
+  fontSize: 'small' | 'default' | 'large';
+  onboardingCompleted: boolean;
+}
+
 function loadSettings(): Settings {
   const defaults: Settings = {
     theme: 'system',
@@ -97,6 +119,37 @@ function loadSettings(): Settings {
 
 function saveSettings(settings: Settings): void {
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+}
+
+function loadAssistantProfile(): AssistantProfile {
+  const defaults: AssistantProfile = {
+    userName: '',
+    assistantName: 'Sirius',
+    assistantStyle: 'friendly',
+    permissions: {
+      fileAccess: true,
+      commandExecution: false,
+      internetAccess: true,
+      externalIntegrations: true,
+      autonomousMode: false,
+    },
+    language: 'pt',
+    theme: 'system',
+    notifications: true,
+    fontSize: 'default',
+    onboardingCompleted: false,
+  };
+  try {
+    const raw = localStorage.getItem(ASSISTANT_PROFILE_KEY);
+    if (!raw) return defaults;
+    return { ...defaults, ...JSON.parse(raw) };
+  } catch {
+    return defaults;
+  }
+}
+
+function saveAssistantProfile(profile: AssistantProfile): void {
+  localStorage.setItem(ASSISTANT_PROFILE_KEY, JSON.stringify(profile));
 }
 
 // ── Store ─────────────────────────────────────────────────────────────
@@ -134,6 +187,9 @@ interface AppState {
 
   // System panel
   systemPanelOpen: boolean;
+
+  // Assistant profile (onboarding)
+  assistantProfile: AssistantProfile;
 
   // Opt-in sharing
   optInEnabled: boolean;
@@ -178,6 +234,12 @@ interface AppState {
   setSidebarOpen: (open: boolean) => void;
   toggleSystemPanel: () => void;
   setSystemPanelOpen: (open: boolean) => void;
+
+  // Actions: assistant profile
+  updateAssistantProfile: (partial: Partial<AssistantProfile>) => void;
+  completeOnboarding: () => void;
+  resetOnboarding: () => void;
+  exportProfileToFile: () => Promise<void>;
 
   // Data sources (cached between visits to avoid empty-state flicker)
   cachedConnectors: CachedConnector[] | null;
@@ -239,6 +301,8 @@ export const useAppStore = create<AppState>((set, get) => {
     commandPaletteOpen: false,
     sidebarOpen: true,
     systemPanelOpen: true,
+
+    assistantProfile: loadAssistantProfile(),
 
     optInEnabled: localStorage.getItem(OPTIN_KEY) === 'true',
     optInDisplayName: localStorage.getItem(OPTIN_NAME_KEY) || '',
@@ -432,6 +496,48 @@ export const useAppStore = create<AppState>((set, get) => {
     setSidebarOpen: (open: boolean) => set({ sidebarOpen: open }),
     toggleSystemPanel: () => set((s) => ({ systemPanelOpen: !s.systemPanelOpen })),
     setSystemPanelOpen: (open: boolean) => set({ systemPanelOpen: open }),
+
+    // ── Assistant Profile ───────────────────────────────────────────
+
+    updateAssistantProfile: (partial: Partial<AssistantProfile>) => {
+      const updated = { ...get().assistantProfile, ...partial };
+      saveAssistantProfile(updated);
+      set({ assistantProfile: updated });
+    },
+    completeOnboarding: () => {
+      const updated = { ...get().assistantProfile, onboardingCompleted: true };
+      saveAssistantProfile(updated);
+      set({ assistantProfile: updated });
+    },
+    resetOnboarding: () => {
+      const updated = { ...get().assistantProfile, onboardingCompleted: false };
+      saveAssistantProfile(updated);
+      set({ assistantProfile: updated });
+    },
+    exportProfileToFile: async () => {
+      // Export profile to a JSON file for voice assistant to read
+      const profile = get().assistantProfile;
+      const profileJson = JSON.stringify(profile, null, 2);
+      
+      // Try to save via Tauri to voice_assistant folder
+      try {
+        const { invoke } = await import('@tauri-apps/api/core');
+        await invoke('save_assistant_profile', { profileJson });
+        console.log('[Profile] Saved to voice_assistant/profile.json via Tauri');
+      } catch (e) {
+        // Fallback: download the file
+        console.log('[Profile] Tauri save failed, downloading file:', e);
+        const blob = new Blob([profileJson], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'sirius-profile.json';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }
+    },
 
     // ── Agents ─────────────────────────────────────────────────────
 

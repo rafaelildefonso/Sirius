@@ -17,6 +17,7 @@ from openjarvis.cli.config_cmd import config
 from openjarvis.cli.connect_cmd import connect
 from openjarvis.cli.daemon_cmd import restart, start, status, stop
 from openjarvis.cli.deep_research_setup_cmd import deep_research_setup
+from openjarvis.cli.dev_cmd import dev
 from openjarvis.cli.digest_cmd import digest
 from openjarvis.cli.doctor_cmd import doctor
 from openjarvis.cli.eval_cmd import eval_group
@@ -100,6 +101,7 @@ cli.add_command(digest, "digest")
 cli.add_command(deep_research_setup, "deep-research-setup")
 cli.add_command(deep_research_setup, "research")
 cli.add_command(learning_group, "learning")
+cli.add_command(dev, "dev")
 
 # Gateway CLI commands (lazy import to avoid pulling starlette)
 try:

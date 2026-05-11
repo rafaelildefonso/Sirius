@@ -4,13 +4,13 @@ import { Layout } from './components/Layout';
 import { ChatPage } from './pages/ChatPage';
 import { DashboardPage } from './pages/DashboardPage';
 import { SettingsPage } from './pages/SettingsPage';
-import { GetStartedPage } from './pages/GetStartedPage';
 import { AgentsPage } from './pages/AgentsPage';
 import { DataSourcesPage } from './pages/DataSourcesPage';
 import { LogsPage } from './pages/LogsPage';
 import { VoicePage } from './pages/VoicePage';
 import { CommandPalette } from './components/CommandPalette';
 import { SetupScreen } from './components/SetupScreen';
+import { OnboardingWizard } from './components/OnboardingWizard';
 import { Toaster } from './components/ui/sonner';
 import { useAppStore } from './lib/store';
 import { fetchModels, fetchServerInfo, fetchSavings, submitSavings, isTauri } from './lib/api';
@@ -21,6 +21,11 @@ export default function App() {
   const [backendReady, setBackendReady] = useState(false);
   const [backendChecking, setBackendChecking] = useState(true);
   const handleSetupReady = useCallback(() => setSetupDone(true), []);
+
+  // Onboarding state
+  const assistantProfile = useAppStore((s) => s.assistantProfile);
+  const [showOnboarding, setShowOnboarding] = useState(!assistantProfile.onboardingCompleted);
+  const handleOnboardingComplete = useCallback(() => setShowOnboarding(false), []);
   const setModels = useAppStore((s) => s.setModels);
   const setModelsLoading = useAppStore((s) => s.setModelsLoading);
   const setSelectedModel = useAppStore((s) => s.setSelectedModel);
@@ -206,6 +211,11 @@ export default function App() {
   //   })();
   // }, []);
 
+  // Show onboarding wizard for first-time users
+  if (showOnboarding) {
+    return <OnboardingWizard onComplete={handleOnboardingComplete} />;
+  }
+
   // Show loading screen while backend is initializing
   if (backendChecking && !backendReady) {
     return (
@@ -230,7 +240,6 @@ export default function App() {
           <Route index element={<ChatPage />} />
           <Route path="dashboard" element={<DashboardPage />} />
           <Route path="settings" element={<SettingsPage />} />
-          <Route path="get-started" element={<GetStartedPage />} />
           <Route path="data-sources" element={<DataSourcesPage />} />
           <Route path="agents" element={<AgentsPage />} />
           <Route path="logs" element={<LogsPage />} />

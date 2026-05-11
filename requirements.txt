@@ -1,0 +1,32 @@
+# Jarvis Voice Assistant Dependencies
+
+# Core
+groq>=0.4.0
+numpy>=1.24.0
+sounddevice>=0.4.6
+keyboard>=0.13.5
+pygame>=2.5.0
+
+# Speech Recognition
+openai-whisper>=20231117
+speechrecognition>=3.10.0
+webrtcvad-wheels>=2.0.11
+
+# Text-to-Speech
+edge-tts>=6.1.9
+pyttsx3>=2.90
+
+# LLM
+requests>=2.31.0
+ollama>=0.1.0
+
+# Gemini Native Audio
+google-genai>=1.0.0
+
+# Web & Tools
+beautifulsoup4>=4.12.0
+urllib3>=2.0.0
+
+# Utilities
+python-dotenv>=1.0.0
+comtypes>=1.2.0; platform_system=="Windows"

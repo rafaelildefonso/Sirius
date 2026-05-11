@@ -65,6 +65,11 @@ class VoiceAssistantUI:
         self._waveform_data = [0.0] * 50
         self._live_mode = False
         self._is_fullscreen = False
+        
+        # Waveform data for smooth Siri-style animation
+        self._waveform_data = [0.0] * 80  # More points for smoother curve
+        self._waveform_phase = 0.0  # Animation phase
+        self._waveform_history: list[float] = []  # History for smoothing
 
     def build(self) -> tk.Tk:
         """Build and return the main window."""
@@ -230,62 +235,96 @@ class VoiceAssistantUI:
         self._animation_id = self._root.after(33, self._animate)
 
     def _draw_waveform(self, state_color: str):
-        """Draw Siri-style waveform based on audio level."""
+        """Draw smooth Siri-style waveform that reacts to voice."""
         self._indicator.delete("wave")
         cx, cy = 600, 300
         
-        # Shift waveform data and add new point
-        self._waveform_data.pop(0)
-        self._waveform_data.append(self._audio_level)
+        # Update waveform phase for smooth animation
+        self._waveform_phase += 0.05
         
-        # Draw multi-colored waves
-        # Use state color as primary, and variations for depth
-        r, g, b = self._hex_to_rgb(state_color)
-        wave_colors = [
-            state_color,
-            f"#{int(r*0.7):02x}{int(g*0.7):02x}{int(b*0.7):02x}", # Darker
-            f"#{min(255, int(r*1.3)):02x}{min(255, int(g*1.3)):02x}{min(255, int(b*1.3)):02x}" # Lighter
+        # Add current audio level to history for smoothing
+        self._waveform_history.append(self._audio_level)
+        if len(self._waveform_history) > 10:
+            self._waveform_history.pop(0)
+        
+        # Smooth the audio level using moving average
+        smoothed_level = sum(self._waveform_history) / len(self._waveform_history) if self._waveform_history else 0
+        
+        # Shift waveform data and add new smoothed point
+        self._waveform_data.pop(0)
+        self._waveform_data.append(smoothed_level)
+        
+        # Width of the waveform - full width minus padding
+        width_span = 500
+        num_points = len(self._waveform_data)
+        
+        # Generate smooth wave using multiple sine harmonics (Fourier-style)
+        def get_wave_y(x_norm, time_phase, audio_level):
+            """Generate smooth wave Y position based on normalized X."""
+            # Base breathing animation (always present, subtle)
+            breath = math.sin(time_phase * 0.3) * 8
+            
+            # Audio-responsive component
+            if self._current_state == "recording":
+                # User speaking - more reactive, higher frequency
+                base_amp = 15 + audio_level * 40
+                freq1, freq2, freq3 = 2.0, 4.0, 6.0
+            elif self._current_state == "playing":
+                # AI speaking - smooth, flowing
+                base_amp = 12 + audio_level * 25
+                freq1, freq2, freq3 = 1.5, 3.0, 5.0
+            else:
+                # Idle - gentle breathing
+                base_amp = 6
+                freq1, freq2, freq3 = 1.0, 2.0, 3.0
+            
+            # Multiple harmonics for smooth organic shape
+            y = math.sin(x_norm * freq1 + time_phase) * base_amp
+            y += math.sin(x_norm * freq2 + time_phase * 1.3) * base_amp * 0.5
+            y += math.sin(x_norm * freq3 + time_phase * 0.7) * base_amp * 0.25
+            
+            # Apply Gaussian envelope for smooth taper at edges
+            envelope = math.exp(-3 * x_norm**2)
+            
+            return breath + y * envelope
+        
+        # Draw multiple layers for depth effect
+        layers = [
+            {"offset": 0, "alpha": 1.0, "width": 4},      # Main layer
+            {"offset": -15, "alpha": 0.5, "width": 3},     # Shadow layer behind
+            {"offset": 15, "alpha": 0.5, "width": 3},      # Shadow layer front
         ]
         
-        for i, color in enumerate(wave_colors):
+        for layer in layers:
             points = []
-            offset = i * 1.2 # Different phase offset
-            amp_mult = 1.0 - (i * 0.25)
-            freq = 0.3 + (i * 0.1)
+            phase_offset = layer["offset"] * 0.02
             
-            # Width of the waveform
-            width_span = 550
-            
-            for x_idx in range(len(self._waveform_data)):
-                # Normalized x from -1 to 1
-                nx = (x_idx / (len(self._waveform_data) - 1)) * 2 - 1
+            for i in range(num_points):
+                # Normalized position from -1 to 1
+                x_norm = (i / (num_points - 1)) * 2 - 1
+                x = cx + x_norm * width_span
                 
-                # Gaussian-like envelope to taper the ends
-                envelope = math.exp(-4 * nx**2)
+                # Get audio level at this position (with slight delay for wave effect)
+                data_idx = max(0, min(i, num_points - 1))
+                amp = self._waveform_data[data_idx]
                 
-                x = cx + nx * width_span
-                
-                # Current amplitude point
-                amp = self._waveform_data[x_idx]
-                
-                # Sine wave modulation with time offset
-                sine = math.sin(x_idx * freq + self._orb_pulse + offset)
-                
-                # Base movement + audio reaction
-                base_motion = math.sin(self._orb_pulse * 0.5 + offset) * (10 if self._current_state != "idle" else 4)
-                
-                # If idle, use a tiny fixed amplitude for 'breathing' effect
-                effective_amp = amp if self._current_state != "idle" else 0.02
-                
-                y_offset = (effective_amp * 250 + base_motion) * sine * amp_mult * envelope
-                
-                points.extend([x, cy + y_offset])
+                # Calculate Y position
+                y = cy + get_wave_y(x_norm, self._waveform_phase + phase_offset, amp)
+                points.extend([x, y])
             
             if len(points) >= 4:
-                # Use thicker lines for the background waves
-                w = 5 if i == 0 else 3
+                # Calculate color with alpha for layering
+                r, g, b = self._hex_to_rgb(state_color)
+                if layer["alpha"] < 1.0:
+                    # Blend with background for transparency effect
+                    bg_r, bg_g, bg_b = self._hex_to_rgb(self.COLORS["bg"])
+                    r = int(r * layer["alpha"] + bg_r * (1 - layer["alpha"]))
+                    g = int(g * layer["alpha"] + bg_g * (1 - layer["alpha"]))
+                    b = int(b * layer["alpha"] + bg_b * (1 - layer["alpha"]))
+                color = f"#{r:02x}{g:02x}{b:02x}"
+                
                 self._indicator.create_line(
-                    points, fill=color, width=w, smooth=True, tags="wave"
+                    points, fill=color, width=layer["width"], smooth=True, tags="wave"
                 )
 
     def _hex_to_rgb(self, hex_color: str) -> tuple[int, int, int]:

@@ -169,6 +169,8 @@ class VoiceAssistant:
             self._gemini_audio = GeminiAudioClient()
             if self._gemini_audio.is_available():
                 print("[INFO] Using Gemini native audio (gemini-2.5-flash-native-audio-preview)")
+                # Connect tool executor to Gemini for function calling
+                self._gemini_audio.set_tool_executor(self._tool_executor)
             else:
                 print("[INFO] Gemini native audio unavailable, using STT+LLM+TTS pipeline")
                 self._gemini_audio = None
@@ -186,6 +188,7 @@ class VoiceAssistant:
         self._interrupt_playback = False
         self._interrupt_thinking = False
         self._thinking_active = False  # Track if we're in thinking phase
+        self._greeting_playback_active = False  # Flag to allow interruption during greeting
 
         # History for context
         self._conversation_history: list[dict] = []
@@ -221,11 +224,25 @@ class VoiceAssistant:
         import re
         text = text.lower().strip()
         
+        # App aliases for speech recognition errors and slang
+        APP_ALIASES = {
+            "discorre": "discord",
+            "discora": "discord",
+            "discorra": "discord",
+            "spotfy": "spotify",
+            "spotifai": "spotify",
+            "zap": "whatsapp",
+            "zapzap": "whatsapp",
+            "tt": "twitter",
+            "tt": "x (twitter)",
+            "tuite": "twitter",
+        }
+        
         # 1. Open/Close Apps
         # 1. YouTube - MUST be before open_application to catch "abre ... no youtube"
         yt_patterns = [
             r"(?:toca|tocar|play|ouvir|ver)\s+(?:no youtube|no yt)?\s*(.+)",
-            r"(?:abre|abra|abrir)\s+(?:um|uma|o|a)?\s*vid[eé]o\s+(?:no youtube|no yt|de|sobre)\s*(.+)",
+            r"(?:abre|abra|abrir|open|iniciar|lancer)\s+(?:um|uma|o|a)?\s*vid[eé]o\s+(?:no youtube|no yt|de|sobre)\s*(.+)",
             r"(?:abre|abra|abrir)\s+(?:no youtube|no yt)\s*(?:um|uma)?\s*vid[eé]o\s*(?:de|sobre)?\s*(.*)",
             r"(?:youtube|yt)\s+(?:toca|tocar|play)?\s*(.+)",
         ]
@@ -233,27 +250,36 @@ class VoiceAssistant:
             yt_match = re.search(pattern, text)
             if yt_match:
                 query = yt_match.group(1).strip() if yt_match.group(1) else "música relaxante"
-                # Clean up common words
                 for word in ["no youtube", "youtube", "no yt", "yt", "um vídeo de", "uma música de", "vídeo de"]:
                     query = query.replace(word, "").strip()
                 if query:
                     print(f"[FastPath] YouTube: {query}")
-                    self._tool_executor.execute("youtube_search_and_play", {"search_query": query})
-                    return f"Beleza! Vou tocar {query} no YouTube agora mesmo."
+                    self._tool_executor.execute("youtube_search_and_play", {"query": query})
+                    return f"Tocando '{query}' no YouTube."
 
         # 2. Open application (after YouTube check)
-        open_match = re.search(r"(?:abre|abra|abrir|open|iniciar|lancer)\s+(?:o|a|os|as)?\s*([\w\s]+)", text)
-        if open_match:
-            app = open_match.group(1).strip()
-            # Skip if it's a YouTube reference (should have been caught above)
-            if "youtube" in app or "yt" in app:
-                # Fallback to generic YouTube search
-                print(f"[FastPath] YouTube (fallback): {app}")
-                self._tool_executor.execute("youtube_search_and_play", {"search_query": "música relaxante"})
-                return f"Vou tocar algo no YouTube para você."
-            print(f"[FastPath] Opening app: {app}")
-            res = self._tool_executor.execute("open_application", {"app_name": app})
-            return f"Com certeza! Abrindo {app} para você." if res.success else f"Tentei abrir o {app}, mas não consegui encontrá-lo."
+        # Extended regex that catches slang and aliases
+        open_patterns = [
+            r"(?:abre|abra|abrir|open|iniciar|lancer)\s+(?:o|a|os|as)?\s*([\w\s]+?)(?:\s+para|\s+por|\s+me|[\.,!]|$)",
+            r"(?:discorre|discora|discorra)\s*(?:de|da|do|para)?\s*([\w\s]*)",
+            r"(?:abre\s+)?(?:o\s+)?([\w]+)\s+(?:aí|pra|mim|para mim)",
+        ]
+        for pattern in open_patterns:
+            open_match = re.search(pattern, text)
+            if open_match:
+                app = open_match.group(1).strip().lower()
+                # Apply aliases
+                app = APP_ALIASES.get(app, app)
+                # Skip if it's a YouTube reference (should have been caught above)
+                if "youtube" in app or "yt" in app:
+                    print(f"[FastPath] YouTube (fallback): {app}")
+                    self._tool_executor.execute("youtube_search_and_play", {"query": "música relaxante"})
+                    return f"Tocando algo no YouTube."
+                if not app or len(app) < 2:
+                    continue
+                print(f"[FastPath] Opening app: {app}")
+                res = self._tool_executor.execute("open_application", {"app_name": app})
+                return f"Abrindo {app}." if res.success else f"Não consegui abrir {app}."
 
         # 3. Close application
         close_match = re.search(r"(?:fecha|fechar|encerrar|close|quit)\s+(?:o|a|os|as)?\s*([\w\s]+)", text)
@@ -261,7 +287,7 @@ class VoiceAssistant:
             app = close_match.group(1).strip()
             print(f"[FastPath] Closing app: {app}")
             res = self._tool_executor.execute("close_window", {"app_name": app})
-            return f"Feito! Fechei o {app}." if res.success else f"Não consegui fechar o {app}, talvez ele já esteja fechado."
+            return f"Fechado: {app}." if res.success else f"Não consegui fechar {app}."
 
         # 4. Volume
         vol_match = re.search(r"volume\s+(?:no|em|para)?\s*(\d+)", text)
@@ -269,7 +295,7 @@ class VoiceAssistant:
             val = int(vol_match.group(1))
             print(f"[FastPath] Setting volume: {val}")
             self._tool_executor.execute("set_system_volume", {"level": val})
-            return f"Volume ajustado para {val} por cento."
+            return f"Volume em {val}%."
 
         # 5. Time
         if any(w in text for w in ["que horas", "qual a hora", "horas são", "me diga a hora"]):
@@ -365,14 +391,27 @@ class VoiceAssistant:
             "Você é o Sirius, o assistente de voz pessoal do usuário. "
             "Responda de forma curta, natural e conversacional em português. "
             "Não use markdown, não use emojis, não use blocos de código.\n\n"
+            "REGRAS CRÍTICAS:\n"
+            "1. SEMPRE use ferramentas quando o usuário pedir ações específicas como abrir sites, tocar vídeos, controlar o computador.\n"
+            "2. Ferramentas disponíveis: search_web, youtube_search_and_play, open_url, open_application, set_system_volume, get_current_time, close_window, focus_window.\n"
+            "3. Quando o usuário pedir para abrir o YouTube, tocar música, ou qualquer ação - use a ferramenta apropriada imediatamente.\n"
+            "4. Não diga que não pode fazer - simplesmente use a ferramenta.\n\n"
             f"Contexto do usuário (MEMÓRIA):\n{memory_summary}"
         )
-
+        
+        # Get tool definitions for Gemini
+        tool_definitions = self._tool_executor.get_tool_definitions()
+        essential_tools = ["open_url", "open_application", "search_web", 
+                          "get_current_time", "set_system_volume", "focus_window", 
+                          "close_window", "list_running_apps", "youtube_search_and_play"]
+        tools = [t for t in tool_definitions if any(name in str(t) for name in essential_tools)]
+        
         # Send audio to Gemini and get audio back (async)
         print("[Gemini] Sending audio to Live API...")
         audio_response, transcript = asyncio.run(self._gemini_audio.chat_audio(
             audio_data,
             system_prompt=system_prompt,
+            tools=tools,
         ))
 
         # Check if we got a valid response
@@ -577,16 +616,21 @@ class VoiceAssistant:
         memory_summary = self.memory.get_summary_string()
         
         full_system_prompt = (
-            "Você é o Sirius, o assistente de voz pessoal do usuário. "
-            "Responda de forma curta, natural e conversacional em português. "
-            "Não use markdown, não use emojis, não use blocos de código.\n\n"
-            "REGRAS CRÍTICAS:\n"
-            "1. SEMPRE use a ferramenta 'search_web' para qualquer pergunta factual, curiosidade, notícias ou informações que exijam precisão.\n"
-            "2. EXERÇA PENSAMENTO CRÍTICO: Não aceite o primeiro resultado da busca se ele parecer datado ou incompleto. Procure por nomes famosos e recordes mundiais (ex: Felix Baumgartner para queda livre).\n"
-            "3. NUNCA responda fatos com base apenas no seu conhecimento interno se for uma lista de dados ou recordes.\n"
-            "4. Se o usuário pedir para pesquisar, pesquise com profundidade.\n"
-            "5. Use as memórias abaixo para personalizar o tratamento.\n\n"
-            f"Contexto do usuário (MEMÓRIA):\n{memory_summary}"
+            "Você é o Sirius, assistente de voz.\n\n"
+            "FERRAMENTAS DISPONÍVEIS:\n"
+            "- search_web: pesquisar informações na internet\n"
+            "- open_application(nome): abrir apps (discord, chrome, etc)\n"
+            "- open_url(url): abrir site específico\n"
+            "- youtube_search_and_play(query): buscar/tocar no YouTube\n"
+            "- set_system_volume(nível): ajustar volume 0-100\n"
+            "- get_current_time: saber a hora\n"
+            "- close_window(nome): fechar app\n\n"
+            "REGRAS:\n"
+            "1. Para abrir apps: use open_application, não open_url.\n"
+            "2. Para abrir YouTube: use youtube_search_and_play.\n"
+            "3. Ao executar ação: diga apenas 'Abrindo [nome].'\n"
+            "4. SEMPRE use search_web para perguntas factuais.\n\n"
+            f"MEMÓRIA: {memory_summary}"
         )
 
         # Check if model supports tools
@@ -595,12 +639,12 @@ class VoiceAssistant:
         
         # Models that support proper function calling
         supports_tools = any(model in llm_model_lower for model in [
-            "qwen2.5", "qwen3.5", "llama3.2", "mistral", "llama-3.1"
+            "qwen2.5", "qwen3.5", "llama3.2", "llama-3.1", "llama-3.3", "mistral"
         ])
         
-        # Groq: llama-3.3-70b generates malformed XML tool calls, disable tools for it
+        # Groq: llama-3.3-70b with proper tool calling enabled
         # Only use tools with Groq if explicitly using a compatible model
-        groq_supports_tools = isinstance(self.llm, GroqClient) and "llama-3.1" in llm_model_lower
+        groq_supports_tools = isinstance(self.llm, GroqClient) and ("llama-3.1" in llm_model_lower or "llama-3.3" in llm_model_lower)
         
         model_supports_tools = supports_tools or groq_supports_tools
 
@@ -624,7 +668,7 @@ class VoiceAssistant:
                     return
                 
                 # Check if model doesn't support tools (returned 400 error)
-                if response.text == "__TOOLS_NOT_SUPPORTED__":
+                if getattr(response, 'text', '__NOT_FOUND__') == "__TOOLS_NOT_SUPPORTED__":
                     self._thinking_active = False
                     # Fallback to normal streaming without tools
                     response_parts = []
@@ -641,21 +685,29 @@ class VoiceAssistant:
                         if current_response.has_tool_calls:
                             tool_results = []
                             for call in current_response.tool_calls:
+                                # Handle both object and dict formats
+                                if isinstance(call, dict):
+                                    call_name = call.get('name', '')
+                                    call_args = call.get('arguments', {})
+                                else:
+                                    call_name = getattr(call, 'name', '')
+                                    call_args = getattr(call, 'arguments', {})
+                                
                                 # Avoid repeating the same search in one turn
-                                if call.name == "search_web" and any("search_web" in str(tc) for tc in tool_calls_executed):
+                                if call_name == "search_web" and any("search_web" in str(tc) for tc in tool_calls_executed):
                                     continue
-                                    
-                                print(f"Executing tool: {call.name}({call.arguments})")
-                                result = self._tool_executor.execute(call.name, call.arguments)
+                                
+                                print(f"Executing tool: {call_name}({call_args})")
+                                result = self._tool_executor.execute(call_name, call_args)
                                 tool_results.append({
-                                    "tool": call.name,
+                                    "tool": call_name,
                                     "result": result.content,
                                     "success": result.success,
                                 })
-                                tool_calls_executed.append(call.name)
+                                tool_calls_executed.append(call_name)
 
                             if not tool_results:
-                                full_response = current_response.text or "Ação concluída."
+                                full_response = getattr(current_response, 'text', None) or "Ação concluída."
                             else:
                                 # Build a clean summary of tool results
                                 raw_data = " ".join(r['result'] for r in tool_results)
@@ -693,7 +745,7 @@ class VoiceAssistant:
                                         full_response = raw_text[:250]
                         else:
                             # No tool calls, use response text
-                            full_response = current_response.text
+                            full_response = getattr(current_response, 'text', str(current_response)) if isinstance(current_response, object) else current_response.get('text', '') if isinstance(current_response, dict) else ''
 
                     except Exception as e:
                         print(f"Tool calling failed, falling back to normal chat: {e}")
@@ -857,7 +909,7 @@ class VoiceAssistant:
                     self.ui.set_subtitle(full_response)
                     time.sleep(0.3)
                     self.ui.clear_subtitle()
-                    play_audio(audio_response)
+                    self._play_audio_interrupible(audio_response)
             elif hasattr(self.tts, 'play_direct'):
                 # No text for Windows SAPI (can't sync)
                 self.tts.play_direct(full_response)
@@ -883,6 +935,48 @@ class VoiceAssistant:
         """Update UI with response."""
         if self.ui:
             self.ui.set_response(text)
+
+    def _play_audio_interrupible(self, audio_bytes: bytes, sample_rate: int = 24000) -> None:
+        """Play audio bytes with interrupt support."""
+        try:
+            import pygame
+            import tempfile
+
+            tmp_path = None
+            try:
+                with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp:
+                    tmp.write(audio_bytes)
+                    tmp_path = tmp.name
+
+                pygame.mixer.init(frequency=sample_rate)
+                pygame.mixer.music.load(tmp_path)
+                pygame.mixer.music.play()
+
+                start_time = time.time()
+                while pygame.mixer.music.get_busy():
+                    if self._interrupt_playback or self._greeting_playback_active == False:
+                        pygame.mixer.music.stop()
+                        break
+
+                    elapsed = time.time() - start_time
+                    level = 0.4 + 0.4 * abs((elapsed * 3) % 2 - 1) + random.random() * 0.2
+                    self.ui.set_audio_level(min(1.0, level))
+                    time.sleep(0.02)
+
+                self.ui.set_audio_level(0.0)
+            finally:
+                if tmp_path:
+                    try:
+                        os.unlink(tmp_path)
+                    except Exception:
+                        pass
+        except Exception as e:
+            print(f"Interruptible audio playback error: {e}")
+            try:
+                from voice_assistant.audio import play_audio
+                play_audio(audio_bytes, sample_rate)
+            except Exception:
+                pass
 
     def _check_dependencies(self) -> bool:
         """Check if required services are running."""
@@ -1058,25 +1152,25 @@ class VoiceAssistant:
             self._update_ui_response(greeting)
 
             # Play greeting audio using Gemini TTS if available (for voice consistency)
+            self._greeting_playback_active = True
+            
             def speak():
                 try:
-                    # Use Gemini native audio if available for consistent voice
                     if self._gemini_audio and self._gemini_audio.is_available():
-                        print("[Greeting] Using Gemini native audio for greeting")
+                        print(f"[Greeting] Using Gemini native audio for greeting: '{greeting}'")
                         import asyncio
                         audio_bytes = asyncio.run(self._gemini_audio.speak_text(greeting))
-                        if audio_bytes:
-                            self._play_audio_bytes(audio_bytes)
-                        else:
-                            # Fallback to regular TTS
+                        if audio_bytes and self._greeting_playback_active:
+                            self._play_audio_interrupible(audio_bytes)
+                        elif self._greeting_playback_active:
                             self.tts.play_direct(greeting)
-                    else:
-                        # Use regular TTS as fallback
+                    elif self._greeting_playback_active:
                         self.tts.play_direct(greeting)
                 except Exception as e:
                     print(f"[Greeting] Gemini TTS error: {e}, falling back to regular TTS")
                     try:
-                        self.tts.play_direct(greeting)
+                        if self._greeting_playback_active:
+                            self.tts.play_direct(greeting)
                     except Exception as e2:
                         print(f"[Greeting] Fallback TTS error: {e2}")
 
@@ -1273,10 +1367,18 @@ class VoiceAssistant:
                 if response.has_tool_calls:
                     tool_results = []
                     for call in response.tool_calls:
-                        print(f"Executando ferramenta (live): {call.name}({call.arguments})")
-                        result = self._tool_executor.execute(call.name, call.arguments)
+                        # Handle both object and dict formats
+                        if isinstance(call, dict):
+                            call_name = call.get('name', '')
+                            call_args = call.get('arguments', {})
+                        else:
+                            call_name = getattr(call, 'name', '')
+                            call_args = getattr(call, 'arguments', {})
+                        
+                        print(f"Executando ferramenta (live): {call_name}({call_args})")
+                        result = self._tool_executor.execute(call_name, call_args)
                         tool_results.append({
-                            "tool": call.name,
+                            "tool": call_name,
                             "result": result.content,
                             "success": result.success,
                         })
@@ -1289,7 +1391,7 @@ class VoiceAssistant:
                     
                     messages = self._conversation_history[:-1] + [
                         {"role": "user", "content": transcription},
-                        {"role": "assistant", "content": response.text or "Ação concluída."},
+                        {"role": "assistant", "content": response.text if hasattr(response, 'text') else response.get('text', 'Ação concluída.') if isinstance(response, dict) else "Ação concluída."},
                     ]
                     
                     final_answer = self.llm.chat(follow_up, history=messages, system_prompt="Responda de forma concisa.")
@@ -1301,7 +1403,7 @@ class VoiceAssistant:
                         summary = combined.split('.')[0] if '.' in combined else combined
                         full_response = f"Encontrei isso: {summary[:100]}."
                 else:
-                    full_response = response.text
+                    full_response = getattr(response, 'text', None) or "Não consegui processar."
 
             except Exception as e:
                 print(f"Falha no tool calling, usando chat normal: {e}")

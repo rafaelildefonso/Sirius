@@ -7,6 +7,11 @@ from typing import Optional, Any
 from dataclasses import dataclass
 import sys
 
+try:
+    from voice_assistant.user_profile import get_profile_manager
+except ImportError:
+    get_profile_manager = None
+
 
 def _load_env_file():
     """Load .env file from project root if exists."""
@@ -60,27 +65,58 @@ class ChatResponse:
         return len(self.tool_calls) > 0
 
 
+def _load_groq_key_from_credentials() -> Optional[str]:
+    """Load GROQ_API_KEY from centralized credentials.toml (set by frontend)."""
+    try:
+        # Add src to path if needed
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        project_root = os.path.normpath(os.path.join(script_dir, '..'))
+        src_path = os.path.join(project_root, 'src')
+        if src_path not in sys.path:
+            sys.path.append(src_path)
+
+        from openjarvis.core.credentials import get_tool_credential
+        key = get_tool_credential("groq", "GROQ_API_KEY")
+        if key:
+            print(f"[Groq] Loaded API key from credentials.toml (frontend)")
+            return key
+    except Exception as e:
+        print(f"[Groq] Could not load from credentials.toml: {e}")
+    return None
+
+
 class GroqClient:
     """Fast LLM client using Groq API with fallback to local Ollama."""
 
     def __init__(
         self,
         api_key: Optional[str] = None,
-        model: str = "llama-3.3-70b-versatile",
+        model: str = "llama-3.1-70b-versatile",
         fallback_client: Optional[Any] = None,
     ):
         _load_env_file()
+
+        # Try to get API key in order of priority:
+        # 1. Explicitly passed api_key parameter
+        # 2. Environment variable (from .env or system)
+        # 3. Centralized credentials.toml (from frontend)
         self.api_key = api_key or os.getenv("GROQ_API_KEY")
+        if not self.api_key:
+            self.api_key = _load_groq_key_from_credentials()
+            if self.api_key:
+                # Set in env for future use
+                os.environ["GROQ_API_KEY"] = self.api_key
+
         self.model = model
         self.fallback_client = fallback_client
         self._client = None
         self._cooldown_until = 0  # Timestamp until which we should avoid Groq
-        
+
         if self.api_key:
             key_preview = self.api_key[:10] + "..." if len(self.api_key) > 10 else "..."
             print(f"[Groq] Using API key: {key_preview}")
         else:
-            print("[Groq] No API key found. Set GROQ_API_KEY env var.")
+            print("[Groq] No API key found. Add in Frontend Settings or set GROQ_API_KEY env var.")
 
         if self.api_key:
             try:
@@ -112,6 +148,57 @@ class GroqClient:
         else:
             print("[Groq] Cannot create client: GROQ_API_KEY is missing or empty.")
 
+    def _get_system_prompt(self, custom_prompt: Optional[str] = None) -> Optional[str]:
+        """Get personalized system prompt based on user profile."""
+        if custom_prompt:
+            return custom_prompt
+        
+        if get_profile_manager:
+            try:
+                profile_manager = get_profile_manager()
+                base_prompt = (
+                    "REGRAS OBRIGATÓRIAS:\n"
+                    "1. NUNCA use emojis - proibido completamente\n"
+                    "2. NUNCA use formatação markdown - proibido: **, *, _, #, ##, ###, `, ```\n"
+                    "3. NUNCA use listas com bullets ou números - proibido: -, *, 1., 2.\n"
+                    "4. NUNCA use código ou blocos de código\n"
+                    "5. SEMPRE responda em texto simples natural, como conversa\n"
+                    "6. Responda como conversando com uma pessoa, não como máquina\n"
+                    "\n"
+                    "REGRA CRÍTICA - USE FERRAMENTAS:\n"
+                    "Quando o usuário perguntar sobre FATOS, DADOS, ESTATÍSTICAS, ou informações que precisam de verificação "
+                    "(como 'animais mais rápidos', 'capital da França', 'preço do dólar', etc), "
+                    "VOCÊ DEVE usar a ferramenta 'search_web' para buscar a informação correta. "
+                    "NUNCA invente respostas. Sempre use search_web para fatos.\n"
+                    "\n"
+                    "FERRAMENTAS disponíveis:\n"
+                    "- search_web: OBRIGATÓRIO para pesquisar fatos e dados na internet\n"
+                    "- open_url: abrir sites\n"
+                    "- open_application: abrir apps\n"
+                    "- get_current_time: saber hora atual\n"
+                    "- set_system_volume: ajustar volume\n"
+                    "- youtube_search_and_play: buscar e tocar no YouTube\n"
+                    "- browser_search: pesquisar em sites específicos\n"
+                    "- browser_search_and_click: pesquisar e clicar no primeiro resultado\n"
+                    "- focus_window: trazer janela para frente\n"
+                    "- close_window: fechar aplicativo\n"
+                    "- minimize_window: minimizar janela\n"
+                    "- maximize_window: maximizar janela\n"
+                    "- list_running_apps: listar apps abertos\n"
+                    "- send_hotkey: enviar atalhos de teclado\n"
+                    "\n"
+                    "EXEMPLOS:\n"
+                    "- Usuário: 'Quais os animais mais rápidos?' → Use: search_web\n"
+                    "- Usuário: 'Que horas são?' → Use: get_current_time\n"
+                    "- Usuário: 'Abre o YouTube' → Use: open_application\n"
+                    "- Usuário: 'Toca música' → Use: youtube_search_and_play"
+                )
+                return profile_manager.get_full_system_prompt(base_prompt)
+            except Exception as e:
+                print(f"[Groq] Error loading user profile: {e}")
+        
+        return None
+
     def is_available(self) -> bool:
         """Check if Groq is available and not in cooldown."""
         import time
@@ -138,7 +225,7 @@ class GroqClient:
         models = []
         if self.is_available():
             # For simplicity, return the main Groq models we support
-            models = ["llama-3.3-70b-versatile", "mixtral-8x7b-32768", "gemma2-9b-it"]
+            models = ["llama-3.1-70b-versatile", "llama-3.3-70b-versatile", "mixtral-8x7b-32768", "gemma2-9b-it"]
         
         # Also include fallback models if available
         if self.fallback_client and hasattr(self.fallback_client, 'list_models'):
@@ -208,9 +295,12 @@ class GroqClient:
                 return self.fallback_client.chat(message, history, system_prompt)
             return "Desculpe, não consegui processar agora."
 
+        # Get personalized system prompt from user profile if none provided
+        active_system_prompt = system_prompt or self._get_system_prompt()
+        
         messages = []
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
+        if active_system_prompt:
+            messages.append({"role": "system", "content": active_system_prompt})
         if history:
             messages.extend(history)
         messages.append({"role": "user", "content": message})
@@ -236,10 +326,14 @@ class GroqClient:
         history: Optional[list[dict]] = None,
         system_prompt: Optional[str] = None,
     ) -> ChatResponse:
-        """Chat with tool calling support."""
+        """Chat with tool calling support using Groq API.
+
+        Tries Groq first, falls back to local Ollama only on errors.
+        """
         if not self.is_available():
-            if self.fallback_client:
-                print("[Groq] Falling back to local model (Ollama) for tool calling...")
+            # Groq not available, use fallback
+            if self.fallback_client and hasattr(self.fallback_client, 'chat_with_tools'):
+                print("[Groq] Not available, using Ollama local model...")
                 return self.fallback_client.chat_with_tools(message, tools, history, system_prompt)
             return ChatResponse(
                 text="Desculpe, não consegui processar agora.",
@@ -247,9 +341,12 @@ class GroqClient:
                 model="none"
             )
 
+        # Get personalized system prompt from user profile if none provided
+        active_system_prompt = system_prompt or self._get_system_prompt()
+        
         messages = []
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
+        if active_system_prompt:
+            messages.append({"role": "system", "content": active_system_prompt})
         if history:
             messages.extend(history)
         messages.append({"role": "user", "content": message})
@@ -272,11 +369,11 @@ class GroqClient:
                 messages=messages,
                 tools=groq_tools if groq_tools else None,
                 tool_choice="auto" if groq_tools else None,
-                temperature=0.1, # Lower temperature for better tool calling
+                temperature=0.7,
                 max_tokens=1024,
             )
 
-            print(f"[Groq] API request successful (model: {self.model})")
+            print(f"[Groq] ✓ API request successful (model: {self.model})")
             msg = response.choices[0].message
             text = msg.content or ""
 
@@ -284,24 +381,121 @@ class GroqClient:
             tool_calls = []
             if msg.tool_calls:
                 for tc in msg.tool_calls:
-                    tool_calls.append({
-                        "id": tc.id,
-                        "name": tc.function.name,
-                        "arguments": tc.function.arguments,
-                    })
+                    try:
+                        import json
+                        args = tc.function.arguments
+                        if isinstance(args, str):
+                            try:
+                                args = json.loads(args)
+                            except json.JSONDecodeError:
+                                # Try to fix common encoding issues
+                                args_str = args.encode('utf-8').decode('unicode_escape')
+                                try:
+                                    args = json.loads(args_str)
+                                except:
+                                    print(f"[Groq] Warning: Could not parse tool args: {args[:50]}...")
+                                    continue
+                        
+                        # Validate arguments is a dict
+                        if not isinstance(args, dict):
+                            print(f"[Groq] Warning: Tool args not a dict: {type(args)}")
+                            continue
+                            
+                        tool_calls.append({
+                            "id": tc.id,
+                            "name": tc.function.name,
+                            "arguments": args,
+                        })
+                        print(f"[Groq] Parsed tool call: {tc.function.name}")
+                    except Exception as e:
+                        print(f"[Groq] Warning: Could not parse tool call arguments: {e}")
+                        continue
 
             return ChatResponse(
                 text=text,
                 tool_calls=tool_calls,
                 model=self.model,
             )
+
         except Exception as e:
-            print(f"[Groq] Error during chat_with_tools: {e}")
-            self._handle_error(e)
-            if self.fallback_client:
-                print("[Groq] Falling back to local model (Ollama) due to API error...")
+            error_str = str(e).lower()
+            # Only fallback on specific errors (rate limit, auth, server errors)
+            is_recoverable_error = any([
+                "429" in str(e),
+                "rate limit" in error_str,
+                "401" in str(e),
+                "403" in str(e),
+                "500" in str(e),
+                "503" in str(e),
+                "timeout" in error_str,
+                "connection" in error_str,
+            ])
+
+            if is_recoverable_error and self.fallback_client:
+                print(f"[Groq] API error ({e}), falling back to Ollama...")
+                self._handle_error(e)
                 return self.fallback_client.chat_with_tools(message, tools, history, system_prompt)
-            raise e
+            else:
+                # Non-recoverable error or no fallback
+                error_msg = str(e)
+                print(f"[Groq] Error: {error_msg}")
+                
+                # Check if it's a tool use error (model generated malformed tool call)
+                if "tool_use_failed" in error_msg.lower() or "failed to call a function" in error_msg.lower():
+                    print(f"[Groq] Tool call failed, attempting to parse from error...")
+                    
+                    # Try to extract tool call from failed_generation
+                    import re
+                    import json
+                    match = re.search(r'<function=(\w+)\s*\{([^}]+)\}', error_msg)
+                    if match:
+                        tool_name = match.group(1)
+                        raw_args = match.group(2)
+                        try:
+                            # Parse arguments intelligently
+                            args = {}
+                            
+                            # Try full JSON parse first
+                            try:
+                                full_json = '{' + raw_args + '}'
+                                args = json.loads(full_json)
+                            except json.JSONDecodeError:
+                                # Extract individual fields: "key": "value"
+                                for field_match in re.finditer(r'"(\w+)":\s*"([^"]+)"', raw_args):
+                                    args[field_match.group(1)] = field_match.group(2)
+                                # Try integer values
+                                for field_match in re.finditer(r'"(\w+)":\s*(\d+)', raw_args):
+                                    args[field_match.group(1)] = int(field_match.group(2))
+                                # Try boolean values
+                                for field_match in re.finditer(r'"(\w+)":\s*(true|false)', raw_args, re.IGNORECASE):
+                                    args[field_match.group(1)] = field_match.group(2).lower() == 'true'
+                            
+                            if not args:
+                                args = {"raw": raw_args.strip()}
+                            
+                            print(f"[Groq] Extracted tool: {tool_name} with args: {args}")
+                            
+                            # Return a response with the tool call to be executed
+                            return ChatResponse(
+                                text=f"Executando {tool_name}...",
+                                tool_calls=[{"id": "recovered", "name": tool_name, "arguments": args}],
+                                model=self.model,
+                            )
+                        except Exception as parse_err:
+                            print(f"[Groq] Could not parse tool from error: {parse_err}")
+                    
+                    # If we can't parse, return error response
+                    return ChatResponse(
+                        text="Desculpe, tive um problema técnico com as ferramentas. Pode tentar de novo?",
+                        tool_calls=[],
+                        model=self.model,
+                    )
+                
+                return ChatResponse(
+                    text="Desculpe, tive um problema técnico. Pode tentar de novo?",
+                    tool_calls=[],
+                    model=self.model,
+                )
 
     def chat_stream(
         self,
@@ -318,9 +512,12 @@ class GroqClient:
                 yield "Desculpe, não consegui processar agora."
             return
 
+        # Get personalized system prompt from user profile if none provided
+        active_system_prompt = system_prompt or self._get_system_prompt()
+        
         messages = []
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
+        if active_system_prompt:
+            messages.append({"role": "system", "content": active_system_prompt})
         if history:
             messages.extend(history)
         messages.append({"role": "user", "content": message})

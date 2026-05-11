@@ -29,15 +29,25 @@ def start_backend() -> Optional[subprocess.Popen]:
 
 def start_voice_assistant():
     """Start the voice assistant in full-screen mode."""
-    from voice_assistant.main import VoiceAssistant
-
-    assistant = VoiceAssistant()
     try:
+        from voice_assistant.main import VoiceAssistant
+        
+        print("[Voice] Initializing VoiceAssistant...")
+        assistant = VoiceAssistant()
+        print("[Voice] VoiceAssistant created, starting run()...")
         assistant.run()
     except KeyboardInterrupt:
-        assistant.stop()
+        print("[Voice] Interrupted by user")
+        try:
+            assistant.stop()
+        except:
+            pass
     except Exception as e:
-        print(f"Voice assistant error: {e}")
+        print(f"[Voice] CRITICAL ERROR: {e}")
+        import traceback
+        traceback.print_exc()
+        print("\n[Voice] Press Enter to exit...")
+        input()
 
 
 def start_web_interface():

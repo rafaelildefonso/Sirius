@@ -9,6 +9,11 @@ from typing import Any, Dict, Iterator, List, Optional
 
 import httpx
 
+try:
+    from voice_assistant.user_profile import get_profile_manager
+except ImportError:
+    get_profile_manager = None
+
 
 @dataclass
 class ToolCall:
@@ -45,16 +50,16 @@ class OllamaClient:
     ):
         self.base_url = base_url.rstrip("/")
         self.model = model
-        self.system_prompt = system_prompt or (
-            "Você é Sirius, um assistente pessoal de IA com personalidade amigável e conversacional. "
+        
+        # Base prompt with rules
+        base_prompt = (
             "REGRAS OBRIGATÓRIAS:\n"
             "1. NUNCA use emojis - proibido completamente\n"
             "2. NUNCA use formatação markdown - proibido: **, *, _, #, ##, ###, `, ```\n"
             "3. NUNCA use listas com bullets ou números - proibido: -, *, 1., 2.\n"
             "4. NUNCA use código ou blocos de código\n"
             "5. SEMPRE responda em texto simples natural, como conversa\n"
-            "6. Responda de forma amigável, como conversando com um amigo\n"
-            "7. Use expressões coloquiais brasileiras naturais (prontinho, beleza, show, etc.)\n"
+            "6. Responda como conversando com uma pessoa, não como máquina\n"
             "\n"
             "REGRA CRÍTICA - USE FERRAMENTAS:\n"
             "Quando o usuário perguntar sobre FATOS, DADOS, ESTATÍSTICAS, ou informações que precisam de verificação "
@@ -84,6 +89,20 @@ class OllamaClient:
             "- Usuário: 'Abre o YouTube' → Use: open_application\n"
             "- Usuário: 'Toca música' → Use: youtube_search_and_play"
         )
+        
+        # Load user profile and personalize prompt
+        if system_prompt:
+            self.system_prompt = system_prompt
+        elif get_profile_manager:
+            profile_manager = get_profile_manager()
+            self.system_prompt = profile_manager.get_full_system_prompt(base_prompt)
+        else:
+            # Default fallback
+            self.system_prompt = (
+                "Você é Sirius, um assistente pessoal de IA com personalidade amigável e conversacional. "
+                + base_prompt
+            )
+        
         # Longer timeout for slow models (qwen3.5 can take 30-60s on CPU)
         timeout = httpx.Timeout(90.0, connect=10.0)
         self._client = httpx.Client(timeout=timeout)

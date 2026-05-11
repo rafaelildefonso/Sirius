@@ -1152,6 +1152,27 @@ async fn get_cloud_key_status() -> Result<serde_json::Value, String> {
     Ok(serde_json::json!(status))
 }
 
+/// Save assistant profile to voice_assistant folder for the voice call to read.
+#[tauri::command]
+async fn save_assistant_profile(profile_json: String) -> Result<(), String> {
+    // Get project root (parent of src-tauri)
+    let voice_assistant_dir = std::path::PathBuf::from("../voice_assistant");
+    
+    // Create voice_assistant directory if it doesn't exist
+    if !voice_assistant_dir.exists() {
+        std::fs::create_dir_all(&voice_assistant_dir)
+            .map_err(|e| format!("Failed to create voice_assistant directory: {}", e))?;
+    }
+    
+    // Save profile.json in voice_assistant folder
+    let profile_path = voice_assistant_dir.join("profile.json");
+    std::fs::write(&profile_path, profile_json)
+        .map_err(|e| format!("Failed to save profile: {}", e))?;
+    
+    println!("[Tauri] Assistant profile saved to {:?}", profile_path);
+    Ok(())
+}
+
 /// Pull a model via Ollama (called from frontend download button).
 #[tauri::command]
 async fn pull_ollama_model(model_name: String) -> Result<serde_json::Value, String> {
@@ -1629,7 +1650,11 @@ async fn launch_voice_assistant(app: tauri::AppHandle) -> Result<(), String> {
 
     // Launch voice assistant (it will show its own tkinter UI)
     // Pass environment variables including GROQ_API_KEY
-    let result = std::process::Command::new(&python_cmd)
+    println!("[Tauri] Launching voice assistant from: {}", voice_script.display());
+    println!("[Tauri] Using Python: {}", python_cmd.display());
+    
+    // Use tokio::process for async handling
+    let result = tokio::process::Command::new(&python_cmd)
         .arg("voice-assistant.py")
         .current_dir(&project_root)
         .envs(std::env::vars())
@@ -1637,10 +1662,15 @@ async fn launch_voice_assistant(app: tauri::AppHandle) -> Result<(), String> {
 
     match result {
         Ok(mut child) => {
-            // Wait for the voice assistant to exit in a separate task
+            println!("[Tauri] Voice assistant spawned successfully");
+            
+            // Wait for the voice assistant to exit in background
             let app_clone = app.clone();
             tokio::spawn(async move {
-                let _ = child.wait();
+                match child.wait().await {
+                    Ok(status) => println!("[Tauri] Voice assistant exited with: {:?}", status),
+                    Err(e) => eprintln!("[Tauri] Voice assistant error: {}", e),
+                }
                 // When voice assistant closes, show main window again
                 if let Some(main) = app_clone.get_webview_window("main") {
                     let _ = main.show();
@@ -1781,6 +1811,7 @@ pub fn run() {
             delete_ollama_model,
             save_cloud_key,
             get_cloud_key_status,
+            save_assistant_profile,
             toggle_overlay,
             hide_overlay,
             get_overlay_conversation,

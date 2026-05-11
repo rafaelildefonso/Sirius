@@ -58,3 +58,29 @@ class MemoryManager:
         for k, v in self.memory.items():
             summary += f"- {k}: {v}\n"
         return summary
+
+    def save_conversation(self, conversation_history: List[Dict[str, Any]]):
+        """Save conversation history to memory.
+        
+        Extracts and stores key facts from the conversation for future context.
+        """
+        if not conversation_history:
+            return
+            
+        # Store the last few messages as recent context
+        recent = conversation_history[-5:] if len(conversation_history) > 5 else conversation_history
+        self.set("recent_conversation", recent)
+        
+        # Try to extract key facts from assistant responses
+        for msg in conversation_history:
+            if msg.get("role") == "assistant":
+                content = msg.get("content", "")
+                # Look for factual information (dates, names, preferences)
+                if content and len(content) > 10 and not content.startswith("Desculpe"):
+                    # Store significant responses as memory facts
+                    existing_facts = self.get("conversation_facts", [])
+                    if isinstance(existing_facts, list) and content not in existing_facts:
+                        existing_facts.append(content[:200])  # Limit length
+                        if len(existing_facts) > 10:  # Keep only last 10
+                            existing_facts = existing_facts[-10:]
+                        self.set("conversation_facts", existing_facts)

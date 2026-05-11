@@ -16,6 +16,10 @@ import {
   Key,
   Search,
   Brain,
+  User,
+  Bot,
+  Shield,
+  Save,
 } from 'lucide-react';
 import { useAppStore, type ThemeMode } from '../lib/store';
 import { checkHealth, fetchSpeechHealth, getMemoryStats, saveToolCredentials } from '../lib/api';
@@ -118,14 +122,25 @@ const themeOptions: { value: ThemeMode; label: string; icon: typeof Sun }[] = [
   { value: 'system', label: 'System', icon: Monitor },
 ];
 
+const assistantStyleOptions = [
+  { value: 'professional', label: 'Profissional', desc: 'Formal, eficiente, focado em produtividade' },
+  { value: 'friendly', label: 'Amigável', desc: 'Caloroso, acolhedor, conversa leve' },
+  { value: 'technical', label: 'Técnico', desc: 'Preciso, detalhado, explicações completas' },
+  { value: 'creative', label: 'Criativo', desc: 'Imaginativo, inspirador, fora da caixa' },
+];
+
 export function SettingsPage() {
   const settings = useAppStore((s) => s.settings);
   const updateSettings = useAppStore((s) => s.updateSettings);
   const conversations = useAppStore((s) => s.conversations);
   const serverInfo = useAppStore((s) => s.serverInfo);
+  const assistantProfile = useAppStore((s) => s.assistantProfile);
+  const updateAssistantProfile = useAppStore((s) => s.updateAssistantProfile);
+  const exportProfileToFile = useAppStore((s) => s.exportProfileToFile);
   const [healthy, setHealthy] = useState<boolean | null>(null);
   const [speechBackendAvailable, setSpeechBackendAvailable] = useState<boolean | null>(null);
   const [saved, setSaved] = useState(false);
+  const [showAssistantSettings, setShowAssistantSettings] = useState(false);
 
   const [memoryStats, setMemoryStats] = useState<{ entries: number; backend: string } | null>(null);
   const [memoryEnabled, setMemoryEnabled] = useState(() => {
@@ -231,7 +246,7 @@ export function SettingsPage() {
         <div className="flex flex-col gap-4">
           {/* Appearance */}
           <Section title="Appearance">
-            <SettingRow label="Theme" description="Choose how OpenJarvis looks">
+            <SettingRow label="Theme" description="Choose how OpenSirius looks">
               <div className="flex gap-1 p-0.5 rounded-lg" style={{ background: 'var(--color-bg-secondary)' }}>
                 {themeOptions.map((opt) => {
                   const isActive = settings.theme === opt.value;
@@ -269,6 +284,123 @@ export function SettingsPage() {
                 <option value="large">Large</option>
               </select>
             </SettingRow>
+          </Section>
+
+          {/* Assistant Profile */}
+          <Section title="Assistente">
+            <SettingRow 
+              label="Perfil do Sirius" 
+              description={assistantProfile?.userName ? `Configurado para ${assistantProfile.userName}` : 'Configure seu assistente personalizado'}
+            >
+              <button
+                onClick={() => setShowAssistantSettings(!showAssistantSettings)}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors cursor-pointer"
+                style={{
+                  background: 'var(--color-surface)',
+                  color: 'var(--color-text)',
+                  border: '1px solid var(--color-border)',
+                }}
+              >
+                <Bot size={14} />
+                {showAssistantSettings ? 'Ocultar' : 'Editar'}
+              </button>
+            </SettingRow>
+            
+            {showAssistantSettings && (
+              <div className="mt-4 pt-4" style={{ borderTop: '1px solid var(--color-border-subtle)' }}>
+                {/* User Name */}
+                <div className="mb-4">
+                  <label className="text-xs font-medium mb-1.5 block" style={{ color: 'var(--color-text-secondary)' }}>
+                    Seu nome
+                  </label>
+                  <input
+                    type="text"
+                    value={assistantProfile?.userName || ''}
+                    onChange={(e) => {
+                      updateAssistantProfile({ userName: e.target.value });
+                      showSaved();
+                    }}
+                    placeholder="Como devo te chamar?"
+                    className="w-full px-3 py-2 rounded-lg outline-none"
+                    style={{
+                      background: 'var(--color-bg-secondary)',
+                      color: 'var(--color-text)',
+                      border: '1px solid var(--color-border)',
+                    }}
+                  />
+                </div>
+
+                {/* Assistant Name */}
+                <div className="mb-4">
+                  <label className="text-xs font-medium mb-1.5 block" style={{ color: 'var(--color-text-secondary)' }}>
+                    Nome do assistente
+                  </label>
+                  <input
+                    type="text"
+                    value={assistantProfile?.assistantName || 'Sirius'}
+                    onChange={(e) => {
+                      updateAssistantProfile({ assistantName: e.target.value });
+                      showSaved();
+                    }}
+                    placeholder="Nome do assistente"
+                    className="w-full px-3 py-2 rounded-lg outline-none"
+                    style={{
+                      background: 'var(--color-bg-secondary)',
+                      color: 'var(--color-text)',
+                      border: '1px solid var(--color-border)',
+                    }}
+                  />
+                </div>
+
+                {/* Assistant Style */}
+                <div className="mb-4">
+                  <label className="text-xs font-medium mb-2 block" style={{ color: 'var(--color-text-secondary)' }}>
+                    Estilo de personalidade
+                  </label>
+                  <div className="grid grid-cols-2 gap-2">
+                    {assistantStyleOptions.map((style) => (
+                      <button
+                        key={style.value}
+                        onClick={() => {
+                          updateAssistantProfile({ assistantStyle: style.value as any });
+                          showSaved();
+                        }}
+                        className="px-3 py-2 rounded-lg text-xs text-left transition-colors cursor-pointer"
+                        style={{
+                          background: assistantProfile?.assistantStyle === style.value ? 'var(--color-accent)' : 'var(--color-bg-secondary)',
+                          color: assistantProfile?.assistantStyle === style.value ? 'white' : 'var(--color-text)',
+                          border: '1px solid var(--color-border)',
+                        }}
+                      >
+                        <div className="font-medium">{style.label}</div>
+                        <div className="text-[10px] opacity-80 mt-0.5">{style.desc}</div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Save Profile */}
+                <div className="flex items-center justify-between pt-2">
+                  <span className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
+                    Salva as configurações para o voice call
+                  </span>
+                  <button
+                    onClick={() => {
+                      exportProfileToFile();
+                      showSaved();
+                    }}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors cursor-pointer"
+                    style={{
+                      background: 'var(--color-accent)',
+                      color: 'white',
+                    }}
+                  >
+                    <Save size={12} />
+                    Salvar
+                  </button>
+                </div>
+              </div>
+            )}
           </Section>
 
           {/* Connection */}
@@ -516,7 +648,7 @@ export function SettingsPage() {
             {!speechBackendAvailable && speechBackendAvailable !== null && (
               <div className="text-xs mt-2 px-1" style={{ color: 'var(--color-text-tertiary)' }}>
                 Set up a speech backend to use voice input.
-                See the <a href="https://open-jarvis.github.io/OpenJarvis/user-guide/tools/" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--color-accent)' }}>documentation</a> for details.
+                See the <a href="https://open-jarvis.github.io/Sirius/user-guide/tools/" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--color-accent)' }}>documentation</a> for details.
               </div>
             )}
           </Section>
@@ -566,7 +698,7 @@ export function SettingsPage() {
           <Section title="About">
             <div className="text-sm" style={{ color: 'var(--color-text-secondary)' }}>
               <p className="mb-2">
-                <span className="font-semibold" style={{ color: 'var(--color-text)' }}>OpenJarvis</span> — Programming abstractions for on-device AI.
+                <span className="font-semibold" style={{ color: 'var(--color-text)' }}>OpenSirius</span> — Programming abstractions for on-device AI.
               </p>
               <p className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
                 Part of Intelligence Per Watt, a research initiative at Stanford SAIL.
@@ -581,7 +713,7 @@ export function SettingsPage() {
                   Project site
                 </a>
                 <a
-                  href="https://open-jarvis.github.io/OpenJarvis/"
+                  href="https://open-jarvis.github.io/Sirius/"
                   target="_blank"
                   rel="noopener noreferrer"
                   style={{ color: 'var(--color-accent)' }}

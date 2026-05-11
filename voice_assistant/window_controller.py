@@ -161,13 +161,41 @@ class WindowController:
     
     def find_window(self, app_name: str) -> Optional[WindowInfo]:
         """Find a window by application name (partial match)."""
-        app_lower = app_name.lower()
+        app_lower = app_name.lower().strip()
         windows = self.list_running_apps()
         
+        # First try exact partial match in title or process name
         for window in windows:
             if (app_lower in window.title.lower() or 
                 app_lower in window.process_name.lower()):
                 return window
+        
+        # Try with common variations (case insensitive, no spaces)
+        app_no_space = app_lower.replace(" ", "")
+        for window in windows:
+            title_lower = window.title.lower().replace(" ", "")
+            process_lower = window.process_name.lower().replace(" ", "")
+            if (app_no_space in title_lower or 
+                app_no_space in process_lower or
+                title_lower in app_no_space or
+                process_lower in app_no_space):
+                return window
+        
+        # Try without .exe extension
+        if app_lower.endswith(".exe"):
+            app_no_exe = app_lower[:-4]
+            for window in windows:
+                if (app_no_exe in window.title.lower() or 
+                    app_no_exe in window.process_name.lower()):
+                    return window
+        
+        # Debug: print all windows if not found
+        if not windows:
+            print(f"[WindowController] No windows found")
+        else:
+            print(f"[WindowController] Looking for '{app_name}', found windows:")
+            for w in windows[:10]:  # First 10
+                print(f"  - Title: '{w.title}', Process: '{w.process_name}'")
         
         return None
     
