@@ -947,7 +947,7 @@ class SiriusLive:
                             f"Olá {user_name}, {period.lower()}. O relógio marca {time_str}. O que vamos realizar hoje?",
                             f"{period}, {user_name}. São {time_str}. Como posso ajudar com seus planos?",
                             f"Sirius online. {period}, {user_name}. O horário atual é {time_str}. Quais são as ordens?",
-                            f"Sistema pronto. {period}, {user_name}. São {time_str}. O que temos na agenda?",
+                            f"Sistema pronto. {period}, {user_name}. São {time_str}. O que temos para hoje?",
                         ]
                         text = random.choice(greetings)
                         greeting = f"Diga exatamente estas frases: {text}"
