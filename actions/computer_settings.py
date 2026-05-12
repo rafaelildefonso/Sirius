@@ -23,6 +23,12 @@ except ImportError:
 
 _OS = platform.system()  # "Windows" | "Darwin" | "Linux"
 
+try:
+    import pygetwindow as gw
+    _GW = True
+except ImportError:
+    _GW = False
+
 
 def _get_base_dir() -> Path:
     if getattr(sys, "frozen", False):
@@ -167,7 +173,27 @@ def brightness_down():
         except Exception as e:
             print(f"[Settings] Brightness down failed on Windows: {e}")
 
-def close_app():
+def _find_window(target: str):
+    if not target or not _GW: return None
+    # 1. Try exact/partial title match (case-sensitive as per pygetwindow)
+    wins = gw.getWindowsWithTitle(target)
+    if wins: return wins[0]
+    
+    # 2. Try case-insensitive fuzzy match among all windows
+    target_low = target.lower().replace(" ", "")
+    for w in gw.getAllWindows():
+        if not w.title: continue
+        title_low = w.title.lower().replace(" ", "")
+        if target_low in title_low or title_low in target_low:
+            return w
+    return None
+
+def close_app(target: str = None):
+    if target and _OS == "Windows":
+        win = _find_window(target)
+        if win:
+            win.close()
+            return
     if _OS == "Darwin": pyautogui.hotkey("command", "q")
     else:               pyautogui.hotkey("alt", "f4")
 
@@ -179,11 +205,21 @@ def full_screen():
     if _OS == "Darwin": pyautogui.hotkey("ctrl", "command", "f")
     else:               pyautogui.press("f11")
 
-def minimize_window():
+def minimize_window(target: str = None):
+    if target and _OS == "Windows":
+        win = _find_window(target)
+        if win:
+            win.minimize()
+            return
     if _OS == "Darwin": pyautogui.hotkey("command", "m")
     else:               pyautogui.hotkey("win", "down")
 
-def maximize_window():
+def maximize_window(target: str = None):
+    if target and _OS == "Windows":
+        win = _find_window(target)
+        if win:
+            win.maximize()
+            return
     if _OS == "Darwin":
         subprocess.run(["osascript", "-e",
             'tell application "System Events" to keystroke "f" '
@@ -592,6 +628,7 @@ Rules:
 - For type_text: value is the exact text to type.
 - For press_key: value is the key name (e.g. "f5", "tab", "enter").
 - For reload_n: value is an integer (number of times to reload).
+- For minimize, maximize, close_app: value is the app name. TRY TO FIX TRANSCRIPTION ERRORS (e.g. "no tion" -> "Notion", "vessy code" -> "VSCode", "brevy" -> "Brave").
 - If no clear match, pick the closest action.
 - Return ONLY the JSON, no explanation, no markdown."""
 
@@ -682,7 +719,10 @@ def computer_settings(
         return f"Unknown action: '{raw_action}'."
 
     try:
-        func()
+        if action in ("minimize", "maximize", "close_app"):
+            func(value)
+        else:
+            func()
         return f"Done: {action}."
     except Exception as e:
         print(f"[Settings] Action failed ({action}): {e}")

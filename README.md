@@ -41,8 +41,8 @@ It's not just an assistant — it's an extension of your digital life.
 ## ⚡ Quick Start
 
 ```bash
-git clone https://github.com/rafaelildefonso/sirius.git
-cd sirius
+git clone https://github.com/rafaelildefonso/Sirius.git
+cd Sirius
 pip install -r requirements.txt
 playwright install
 python main.py

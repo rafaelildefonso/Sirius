@@ -194,7 +194,7 @@ TOOL_DECLARATIONS = [
             "properties": {
                 "action":      {"type": "STRING", "description": "The action to perform"},
                 "description": {"type": "STRING", "description": "Natural language description of what to do"},
-                "value":       {"type": "STRING", "description": "Optional value: volume level, text to type, etc."}
+                "value":       {"type": "STRING", "description": "Optional value: volume level, text to type, application name for minimize/maximize/close, etc."}
             },
             "required": []
         }
@@ -514,6 +514,18 @@ TOOL_DECLARATIONS = [
             "required": ["action"]
         }
     },
+    {
+        "name": "workspaces",
+        "description": "Salva ou abre conjuntos de aplicativos (espaços de trabalho).",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {"type": "STRING", "description": "save | open | list | delete"},
+                "name":   {"type": "STRING", "description": "Nome do espaço (ex: trabalho, estudo, filmes)"}
+            },
+            "required": ["action", "name"]
+        }
+    },
 ]
 
 class SiriusLive:
@@ -718,7 +730,12 @@ class SiriusLive:
                 r = await loop.run_in_executor(None, lambda: gmail_action(parameters=args, player=self.ui))
                 result = r or "Done."
 
-            elif name == "shutdown_jarvis":
+            elif name == "workspaces":
+                from actions.workspaces import workspaces
+                r = await loop.run_in_executor(None, lambda: workspaces(parameters=args, player=self.ui))
+                result = r or "Done."
+
+            elif name == "shutdown_sirius":
                 self.ui.write_log("SYS: Shutdown requested.")
                 self.speak("Goodbye, sir.")
                 def _shutdown():

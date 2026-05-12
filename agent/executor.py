@@ -250,6 +250,10 @@ def _call_tool(tool: str, parameters: dict, speak: Callable | None) -> str:
         from actions.gmail import gmail_action
         return gmail_action(parameters=parameters, player=None) or "Done."
 
+    elif tool == "workspaces":
+        from actions.workspaces import workspaces
+        return workspaces(parameters=parameters, player=None) or "Done."
+
     else:
         print(f"[Executor] ⚠️ Unknown tool '{tool}' — falling back to generated_code")
         return _run_generated_code(f"Accomplish this task: {parameters}", speak=speak)
