@@ -754,7 +754,7 @@ class _DropCanvas(QWidget):
 
 
 class SetupOverlay(QWidget):
-    done = pyqtSignal(str, str)
+    done = pyqtSignal(str, str, str) # Added or_key
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -808,6 +808,23 @@ class SetupOverlay(QWidget):
             QLineEdit:focus {{ border: 1px solid {C.PRI}; }}
         """)
         layout.addWidget(self._key_input)
+        layout.addSpacing(8)
+
+        layout.addWidget(_lbl("OPENROUTER API KEY (Optional for memory)", 8, color=C.TEXT_DIM,
+                               align=Qt.AlignmentFlag.AlignLeft))
+        self._or_input = QLineEdit()
+        self._or_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self._or_input.setPlaceholderText("sk-or-…")
+        self._or_input.setFont(QFont("Courier New", 10))
+        self._or_input.setFixedHeight(32)
+        self._or_input.setStyleSheet(f"""
+            QLineEdit {{
+                background: #000d12; color: {C.TEXT};
+                border: 1px solid {C.BORDER}; border-radius: 3px; padding: 4px 8px;
+            }}
+            QLineEdit:focus {{ border: 1px solid {C.PRI}; }}
+        """)
+        layout.addWidget(self._or_input)
         layout.addSpacing(12)
 
         sep2 = QFrame(); sep2.setFrameShape(QFrame.Shape.HLine)
@@ -873,13 +890,14 @@ class SetupOverlay(QWidget):
 
     def _submit(self):
         key = self._key_input.text().strip()
+        or_key = self._or_input.text().strip()
         if not key:
             self._key_input.setStyleSheet(
                 self._key_input.styleSheet() +
                 f" QLineEdit {{ border: 1px solid {C.RED}; }}"
             )
             return
-        self.done.emit(key, self._sel_os)
+        self.done.emit(key, or_key, self._sel_os)
 
 
 class SettingsOverlay(QWidget):
@@ -923,6 +941,21 @@ class SettingsOverlay(QWidget):
             QLineEdit:focus {{ border: 1px solid {C.PRI}; }}
         """)
         layout.addWidget(self._key_input)
+
+        # OpenRouter Section
+        layout.addWidget(_lbl("OPENROUTER API KEY", 8, color=C.TEXT_DIM))
+        self._or_input = QLineEdit()
+        self._or_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self._or_input.setFont(QFont("Courier New", 9))
+        self._or_input.setFixedHeight(30)
+        self._or_input.setStyleSheet(f"""
+            QLineEdit {{
+                background: #080808; color: {C.TEXT};
+                border: 1px solid {C.BORDER}; border-radius: 4px; padding: 4px 8px;
+            }}
+            QLineEdit:focus {{ border: 1px solid {C.PRI}; }}
+        """)
+        layout.addWidget(self._or_input)
 
         # OS Section
         layout.addWidget(_lbl("SISTEMA OPERACIONAL", 8, color=C.TEXT_DIM))
@@ -1010,6 +1043,7 @@ class SettingsOverlay(QWidget):
             try:
                 d = json.loads(API_FILE.read_text(encoding="utf-8"))
                 self._key_input.setText(d.get("gemini_api_key", ""))
+                self._or_input.setText(d.get("openrouter_api_key", ""))
                 self._set_os(d.get("os_system", "windows"))
                 g = d.get("google_creds", {})
                 self._g_id.setText(g.get("client_id", ""))
@@ -1059,6 +1093,7 @@ class SettingsOverlay(QWidget):
             except Exception: pass
         
         d["gemini_api_key"] = key
+        d["openrouter_api_key"] = self._or_input.text().strip()
         d["os_system"] = os_name
         d["google_creds"] = {
             "client_id": g_id,
@@ -1420,10 +1455,14 @@ class MainWindow(QMainWindow):
         ov.show()
         self._overlay = ov
 
-    def _on_setup_done(self, key: str, os_name: str):
+    def _on_setup_done(self, key: str, or_key: str, os_name: str):
         os.makedirs(CONFIG_DIR, exist_ok=True)
         API_FILE.write_text(
-            json.dumps({"gemini_api_key": key, "os_system": os_name}, indent=4),
+            json.dumps({
+                "gemini_api_key": key, 
+                "openrouter_api_key": or_key,
+                "os_system": os_name
+            }, indent=4),
             encoding="utf-8",
         )
         self._ready = True

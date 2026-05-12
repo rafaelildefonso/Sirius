@@ -3,3 +3,7 @@ venv/
 
 config/*.json
 memory/*.json
+
+__pycache__/
+__pycache__
+*.pyc
