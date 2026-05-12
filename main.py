@@ -14,6 +14,7 @@ from google.genai import types
 from ui import SiriusUI
 from memory.memory_manager import (
     load_memory, update_memory, format_memory_for_prompt,
+    should_extract_memory, extract_memory
 )
 
 from actions.file_processor import file_processor
@@ -56,6 +57,30 @@ def _get_api_key() -> str:
     with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
         return json.load(f)["gemini_api_key"]
 
+
+_last_memory_input = ""
+
+def _update_memory_async(user_text: str, sirius_text: str) -> None:
+    global _last_memory_input
+
+    user_text   = (user_text   or "").strip()
+    sirius_text = (sirius_text or "").strip()
+
+    if len(user_text) < 5 or user_text == _last_memory_input:
+        return
+    _last_memory_input = user_text
+
+    try:
+        api_key = _get_api_key()
+        if not should_extract_memory(user_text, sirius_text, api_key):
+            return
+        data = extract_memory(user_text, sirius_text, api_key)
+        if data:
+            update_memory(data)
+            print(f"[Memory] ✅ {list(data.keys())}")
+    except Exception as e:
+        if "429" not in str(e):
+            print(f"[Memory] ⚠️ {e}")
 
 def _load_system_prompt() -> str:
     try:
@@ -841,6 +866,12 @@ class SiriusLive:
                             full_out = " ".join(out_buf).strip()
                             if full_out:
                                 self.ui.write_log(f"Sirius: {full_out}")
+                                # Trigger background memory extraction
+                                threading.Thread(
+                                    target=_update_memory_async,
+                                    args=(full_in, full_out),
+                                    daemon=True
+                                ).start()
                             out_buf = []
 
                     if response.tool_call:
