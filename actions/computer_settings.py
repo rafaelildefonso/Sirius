@@ -429,17 +429,9 @@ def open_system_settings():
                 subprocess.Popen(cmd)
                 return
 
-def open_file_explorer():
-    if _OS == "Windows":
-        pyautogui.hotkey("win", "e")
-    elif _OS == "Darwin":
-        subprocess.Popen(["open", str(Path.home())])
-    else:
-        for cmd in [["nautilus"], ["thunar"], ["dolphin"], ["nemo"]]:
-            if subprocess.run(["which", cmd[0]], capture_output=True).returncode == 0:
-                subprocess.Popen(cmd)
-                return
-        subprocess.Popen(["xdg-open", str(Path.home())])
+def open_file_explorer(path: str = "downloads"):
+    from actions.open_app import open_app
+    open_app(parameters={"app_name": "explorer", "path": path})
 
 def sleep_display():
     if _OS == "Windows":
@@ -719,8 +711,8 @@ def computer_settings(
         return f"Unknown action: '{raw_action}'."
 
     try:
-        if action in ("minimize", "maximize", "close_app"):
-            func(value)
+        if action in ("minimize", "maximize", "close_app", "file_explorer"):
+            func(value or "downloads")
         else:
             func()
         return f"Done: {action}."

@@ -2,6 +2,7 @@ import time
 import subprocess
 import platform
 import shutil
+from actions.file_controller import resolve_path
 
 try:
     import psutil
@@ -77,22 +78,29 @@ def _normalize(raw: str) -> str:
 
     return raw  
 
-def _launch_windows(app_name: str) -> bool:
-
-    if shutil.which(app_name) or shutil.which(app_name.split(".")[0]):
+def _launch_windows(app_name: str, args: str = "") -> bool:
+    # If app_name is a full path or just exe name, shutil.which helps
+    executable = shutil.which(app_name) or shutil.which(app_name.split(".")[0])
+    
+    if executable:
         try:
-            subprocess.Popen(
-                app_name,
-                shell=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
+            # For Explorer, we might need a different approach if args are paths
+            if "explorer.exe" in app_name.lower() and args:
+                subprocess.Popen(f'explorer.exe "{args}"', shell=True)
+            else:
+                cmd = f'"{executable}" {args}'.strip()
+                subprocess.Popen(
+                    cmd,
+                    shell=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
             time.sleep(1.5)
             return True
         except Exception as e:
             print(f"[open_app] subprocess failed: {e}")
 
-    if ":" in app_name:
+    if ":" in app_name and not args:
         try:
             subprocess.Popen(f"start {app_name}", shell=True)
             time.sleep(1.0)
@@ -109,6 +117,12 @@ def _launch_windows(app_name: str) -> bool:
         time.sleep(0.9)
         pyautogui.press("enter")
         time.sleep(2.5)
+        
+        if args:
+            # If we used the Start Menu, we can't easily pass args unless we type them
+            # This is a fallback and might not work for all apps
+            pass
+            
         return True
     except Exception as e:
         print(f"[open_app] Start Menu search failed: {e}")
@@ -227,7 +241,10 @@ def open_app(
     player=None,
     session_memory=None,
 ) -> str:
-    app_name = (parameters or {}).get("app_name", "").strip()
+    params   = parameters or {}
+    app_name = params.get("app_name", "").strip()
+    path     = params.get("path", "").strip()
+    content  = params.get("content", "").strip()
 
     if not app_name:
         return "No application name provided."
@@ -243,11 +260,40 @@ def open_app(
         player.write_log(f"[open_app] {app_name}")
 
     try:
-        if launcher(normalized):
+        # Special case for Explorer with path
+        args = ""
+        if "explorer" in app_name.lower() or "explorer" in normalized.lower():
+            if path:
+                args = str(resolve_path(path))
+
+        success = False
+        if _SYSTEM == "Windows":
+            success = _launch_windows(normalized, args=args)
+        else:
+            success = launcher(normalized)
+
+        if success:
+            # Special case for Notepad with content
+            if ("notepad" in app_name.lower() or "notepad" in normalized.lower()) and content:
+                try:
+                    import pyperclip
+                    import pyautogui
+                    pyperclip.copy(content)
+                    time.sleep(1.0) # Wait for notepad to open
+                    pyautogui.hotkey("ctrl", "v")
+                    return f"Opened {app_name} and pasted content."
+                except Exception as paste_err:
+                    return f"Opened {app_name}, but failed to paste content: {paste_err}"
+            
             return f"Opened {app_name}."
+
         if normalized.lower() != app_name.lower():
-            if launcher(app_name):
+            if _SYSTEM == "Windows":
+                if _launch_windows(app_name, args=args):
+                    return f"Opened {app_name}."
+            elif launcher(app_name):
                 return f"Opened {app_name}."
+
         return (
             f"Could not confirm that {app_name} launched. "
             f"It may still be loading, or it might not be installed."

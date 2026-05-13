@@ -27,42 +27,42 @@ def _is_safe_path(target: Path) -> bool:
     except Exception:
         return False
 
-def _get_desktop() -> Path:
+def get_desktop() -> Path:
     if _OS == "Linux":
         xdg = os.environ.get("XDG_DESKTOP_DIR", "")
         if xdg and Path(xdg).exists():
             return Path(xdg)
     return Path.home() / "Desktop"
 
-def _get_downloads() -> Path:
+def get_downloads() -> Path:
     if _OS == "Linux":
         xdg = os.environ.get("XDG_DOWNLOAD_DIR", "")
         if xdg and Path(xdg).exists():
             return Path(xdg)
     return Path.home() / "Downloads"
 
-def _get_documents() -> Path:
+def get_documents() -> Path:
     if _OS == "Linux":
         xdg = os.environ.get("XDG_DOCUMENTS_DIR", "")
         if xdg and Path(xdg).exists():
             return Path(xdg)
     return Path.home() / "Documents"
 
-def _get_pictures() -> Path:
+def get_pictures() -> Path:
     if _OS == "Linux":
         xdg = os.environ.get("XDG_PICTURES_DIR", "")
         if xdg and Path(xdg).exists():
             return Path(xdg)
     return Path.home() / "Pictures"
 
-def _get_music() -> Path:
+def get_music() -> Path:
     if _OS == "Linux":
         xdg = os.environ.get("XDG_MUSIC_DIR", "")
         if xdg and Path(xdg).exists():
             return Path(xdg)
     return Path.home() / "Music"
 
-def _get_videos() -> Path:
+def get_videos() -> Path:
     if _OS == "Linux":
         xdg = os.environ.get("XDG_VIDEOS_DIR", "")
         if xdg and Path(xdg).exists():
@@ -70,14 +70,14 @@ def _get_videos() -> Path:
     return Path.home() / "Videos"
 
 
-def _resolve_path(raw: str) -> Path:
+def resolve_path(raw: str) -> Path:
     shortcuts: dict[str, Path] = {
-        "desktop":   _get_desktop(),
-        "downloads": _get_downloads(),
-        "documents": _get_documents(),
-        "pictures":  _get_pictures(),
-        "music":     _get_music(),
-        "videos":    _get_videos(),
+        "desktop":   get_desktop(),
+        "downloads": get_downloads(),
+        "documents": get_documents(),
+        "pictures":  get_pictures(),
+        "music":     get_music(),
+        "videos":    get_videos(),
         "home":      Path.home(),
     }
     lower = raw.strip().lower()
@@ -106,7 +106,7 @@ def _safe_trash(target: Path) -> str:
 
 def list_files(path: str = "desktop", show_hidden: bool = False) -> str:
     try:
-        target = _resolve_path(path)
+        target = resolve_path(path)
         if not _is_safe_path(target):
             return f"Access denied: {target}"
         if not target.exists():
@@ -137,7 +137,7 @@ def list_files(path: str = "desktop", show_hidden: bool = False) -> str:
 
 def create_file(path: str, name: str = "", content: str = "") -> str:
     try:
-        base   = _resolve_path(path)
+        base   = resolve_path(path)
         target = (base / name) if name else base
         if not _is_safe_path(target):
             return f"Access denied: {target}"
@@ -150,7 +150,7 @@ def create_file(path: str, name: str = "", content: str = "") -> str:
 
 def create_folder(path: str, name: str = "") -> str:
     try:
-        base   = _resolve_path(path)
+        base   = resolve_path(path)
         target = (base / name) if name else base
         if not _is_safe_path(target):
             return f"Access denied: {target}"
@@ -162,7 +162,7 @@ def create_folder(path: str, name: str = "") -> str:
 
 def delete_file(path: str, name: str = "") -> str:
     try:
-        base   = _resolve_path(path)
+        base   = resolve_path(path)
         target = (base / name) if name else base
         if not _is_safe_path(target):
             return f"Access denied: {target}"
@@ -171,8 +171,8 @@ def delete_file(path: str, name: str = "") -> str:
 
         # Güvenli dizin kontrolü — kritik kullanıcı klasörlerini koru
         protected = {
-            _get_desktop(), _get_downloads(), _get_documents(),
-            _get_pictures(), _get_music(), _get_videos(), Path.home()
+            get_desktop(), get_downloads(), get_documents(),
+            get_pictures(), get_music(), get_videos(), Path.home()
         }
         if target.resolve() in {p.resolve() for p in protected}:
             return f"Protected directory, cannot delete: {target.name}"
@@ -187,9 +187,9 @@ def delete_file(path: str, name: str = "") -> str:
 
 def move_file(path: str, name: str = "", destination: str = "") -> str:
     try:
-        base   = _resolve_path(path)
+        base   = resolve_path(path)
         src    = (base / name) if name else base
-        dst    = _resolve_path(destination) if destination else None
+        dst    = resolve_path(destination) if destination else None
 
         if not src.exists():
             return f"Source not found: {src.name}"
@@ -213,9 +213,9 @@ def move_file(path: str, name: str = "", destination: str = "") -> str:
 
 def copy_file(path: str, name: str = "", destination: str = "") -> str:
     try:
-        base = _resolve_path(path)
+        base = resolve_path(path)
         src  = (base / name) if name else base
-        dst  = _resolve_path(destination) if destination else None
+        dst  = resolve_path(destination) if destination else None
 
         if not src.exists():
             return f"Source not found: {src.name}"
@@ -244,7 +244,7 @@ def copy_file(path: str, name: str = "", destination: str = "") -> str:
 
 def rename_file(path: str, name: str = "", new_name: str = "") -> str:
     try:
-        base     = _resolve_path(path)
+        base     = resolve_path(path)
         target   = (base / name) if name else base
         if not _is_safe_path(target):
             return f"Access denied: {target}"
@@ -266,7 +266,7 @@ def rename_file(path: str, name: str = "", new_name: str = "") -> str:
 
 def read_file(path: str, name: str = "", max_chars: int = 4000) -> str:
     try:
-        base   = _resolve_path(path)
+        base   = resolve_path(path)
         target = (base / name) if name else base
         if not _is_safe_path(target):
             return f"Access denied: {target}"
@@ -287,7 +287,7 @@ def read_file(path: str, name: str = "", max_chars: int = 4000) -> str:
 def write_file(path: str, name: str = "", content: str = "",
                append: bool = False) -> str:
     try:
-        base   = _resolve_path(path)
+        base   = resolve_path(path)
         target = (base / name) if name else base
         if not _is_safe_path(target):
             return f"Access denied: {target}"
@@ -304,7 +304,7 @@ def write_file(path: str, name: str = "", content: str = "",
 def find_files(name: str = "", extension: str = "",
                path: str = "home", max_results: int = 20) -> str:
     try:
-        search_path = _resolve_path(path)
+        search_path = resolve_path(path)
         if not _is_safe_path(search_path):
             return f"Access denied: {search_path}"
         if not search_path.exists():
@@ -344,7 +344,7 @@ def find_files(name: str = "", extension: str = "",
 def get_largest_files(path: str = "downloads", count: int = 10) -> str:
     count = min(count, 50)  # maksimum 50
     try:
-        search_path = _resolve_path(path)
+        search_path = resolve_path(path)
         if not _is_safe_path(search_path):
             return f"Access denied: {search_path}"
         if not search_path.exists():
@@ -376,7 +376,7 @@ def get_largest_files(path: str = "downloads", count: int = 10) -> str:
 
 def get_disk_usage(path: str = "home") -> str:
     try:
-        target = _resolve_path(path)
+        target = resolve_path(path)
         usage  = shutil.disk_usage(target)
         pct    = usage.used / usage.total * 100
         return (
@@ -401,7 +401,7 @@ def organize_desktop() -> str:
                       ".cpp", ".java", ".cs", ".go", ".rs", ".sh"},
     }
 
-    desktop = _get_desktop()
+    desktop = get_desktop()
     moved, skipped = [], []
 
     try:
@@ -445,7 +445,7 @@ def organize_desktop() -> str:
 
 def get_file_info(path: str, name: str = "") -> str:
     try:
-        base   = _resolve_path(path)
+        base   = resolve_path(path)
         target = (base / name) if name else base
         if not _is_safe_path(target):
             return f"Access denied: {target}"
@@ -475,7 +475,7 @@ def file_controller(
 ) -> str:
     params = parameters or {}
     action = params.get("action", "").lower().strip()
-    path   = params.get("path", "desktop")
+    path   = params.get("path", "downloads")
     name   = params.get("name", "")
 
     if player:

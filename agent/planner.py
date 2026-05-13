@@ -27,7 +27,9 @@ ABSOLUTE RULES:
 AVAILABLE TOOLS AND THEIR PARAMETERS:
 
 open_app
-  app_name: string (required) — use for non-browser apps (Spotify, Discord). NEVER use for websites.
+  app_name: string (required) — use for non-browser apps (Spotify, Discord, Notepad, Explorer).
+  path: string (optional) — folder to open in File Explorer (use "downloads" as default).
+  content: string (optional) — text to paste into Notepad if opening it.
 
 web_search
   query: string (required) — write a clear, focused search query
@@ -52,14 +54,14 @@ browser_control
 
 file_controller
   action: "write" | "create_file" | "read" | "list" | "delete" | "move" | "copy" | "find" | "disk_usage" (required)
-  path: string — use "desktop" for Desktop folder
+  path: string — folder location. ALWAYS use "downloads" as default.
   name: string — filename
   content: string — file content (for write/create_file)
 
 computer_settings
-  action: string (required)
+  action: string (required) — e.g. "volume_up", "mute", "screenshot", "file_explorer" (opens "downloads" by default).
   description: string — natural language description
-  value: string (optional)
+  value: string (optional) — value for setting or folder path for file_explorer.
 
 computer_control
   action: "type" | "click" | "hotkey" | "press" | "scroll" | "screenshot" | "screen_find" | "screen_click" (required)
