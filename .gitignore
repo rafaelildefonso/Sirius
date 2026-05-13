@@ -3,7 +3,37 @@ venv/
 
 config/*.json
 memory/*.json
+memory/long_term.json
 
+# Python Bytecode
 __pycache__/
 __pycache__
 *.pyc
+*.py[cod]
+*$py.class
+
+# Distribuição e Build
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+
+# Testes e Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# Pytest
+.pytest_cache/
+
+# Mypy
+.mypy_cache/
+
+# Jupyter
+.ipynb_checkpoints
+
+# Logs
+*.log
