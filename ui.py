@@ -24,8 +24,8 @@ from PyQt6.QtGui import (
 )
 from PyQt6.QtWidgets import (
     QApplication, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
-    QMainWindow, QPushButton, QScrollArea, QSizePolicy, QTextEdit,
-    QVBoxLayout, QWidget, QProgressBar,
+    QMainWindow, QPushButton, QScrollArea, QSizePolicy, QStackedWidget,
+    QTextEdit, QVBoxLayout, QWidget, QProgressBar,
 )
 
 def _base_dir() -> Path:
@@ -900,6 +900,78 @@ class SetupOverlay(QWidget):
         self.done.emit(key, or_key, self._sel_os)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# ToggleSwitch – animated pill-style boolean switch
+# ─────────────────────────────────────────────────────────────────────────────
+class ToggleSwitch(QWidget):
+    """Smooth animated toggle switch (pill style)."""
+    toggled = pyqtSignal(bool)
+
+    def __init__(self, checked: bool = True, parent=None):
+        super().__init__(parent)
+        self._checked = checked
+        self._pos     = 1.0 if checked else 0.0
+        self._target  = self._pos
+        self.setFixedSize(46, 24)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._tmr = QTimer(self)
+        self._tmr.timeout.connect(self._step)
+
+    def set_checked(self, v: bool):
+        if v == self._checked:
+            return
+        self._checked = v
+        self._target  = 1.0 if v else 0.0
+        if not self._tmr.isActive():
+            self._tmr.start(16)
+
+    def is_checked(self) -> bool:
+        return self._checked
+
+    def _step(self):
+        diff = self._target - self._pos
+        if abs(diff) < 0.03:
+            self._pos = self._target
+            self._tmr.stop()
+        else:
+            self._pos += diff * 0.25
+        self.update()
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            self._checked = not self._checked
+            self._target  = 1.0 if self._checked else 0.0
+            if not self._tmr.isActive():
+                self._tmr.start(16)
+            self.toggled.emit(self._checked)
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        W, H = self.width(), self.height()
+        r    = H / 2
+        # Interpolate track colour
+        c_off = QColor(C.BORDER_B)
+        c_on  = QColor(C.GREEN_D)
+        t     = self._pos
+        track = QColor(
+            int(c_off.red()   + (c_on.red()   - c_off.red())   * t),
+            int(c_off.green() + (c_on.green() - c_off.green()) * t),
+            int(c_off.blue()  + (c_on.blue()  - c_off.blue())  * t),
+        )
+        p.setBrush(QBrush(track))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawRoundedRect(QRectF(0, 0, W, H), r, r)
+        mg = 3
+        kd = H - mg * 2
+        kx = mg + self._pos * (W - kd - mg * 2)
+        p.setBrush(QBrush(qcol(C.WHITE)))
+        p.drawEllipse(QRectF(kx, mg, kd, kd))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SettingsOverlay  –  redesigned with sidebar (Geral / Permissões)
+# ─────────────────────────────────────────────────────────────────────────────
 class SettingsOverlay(QWidget):
     done = pyqtSignal()
 
@@ -908,129 +980,306 @@ class SettingsOverlay(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setStyleSheet(f"""
             SettingsOverlay {{
-                background: rgba(0, 6, 10, 250);
+                background: rgba(5, 8, 14, 252);
                 border: 1px solid {C.BORDER_B};
-                border-radius: 8px;
+                border-radius: 10px;
             }}
         """)
+        self._perm_toggles: dict = {}
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(25, 20, 25, 20)
-        layout.setSpacing(10)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-        def _lbl(txt, font_size=10, bold=False, color=C.PRI, align=Qt.AlignmentFlag.AlignLeft):
+        # ── Header ────────────────────────────────────────────
+        hdr = QWidget()
+        hdr.setFixedHeight(46)
+        hdr.setStyleSheet(f"""
+            background: {C.DARK};
+            border-top-left-radius: 10px;
+            border-top-right-radius: 10px;
+            border-bottom: 1px solid {C.BORDER};
+        """)
+        hdr_lay = QHBoxLayout(hdr)
+        hdr_lay.setContentsMargins(18, 0, 12, 0)
+        title_lbl = QLabel("⚙  CONFIGURAÇÕES")
+        title_lbl.setFont(QFont("Inter", 10, QFont.Weight.Bold))
+        title_lbl.setStyleSheet(f"color: {C.TEXT}; background: transparent;")
+        hdr_lay.addWidget(title_lbl)
+        hdr_lay.addStretch()
+        close_btn = QPushButton("✕")
+        close_btn.setFixedSize(28, 28)
+        close_btn.setFont(QFont("Inter", 9))
+        close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        close_btn.setStyleSheet(f"""
+            QPushButton {{ background: transparent; color: {C.TEXT_DIM}; border: none; border-radius: 4px; }}
+            QPushButton:hover {{ color: {C.RED}; background: rgba(255,51,85,0.10); }}
+        """)
+        close_btn.clicked.connect(self._save)
+        hdr_lay.addWidget(close_btn)
+        root.addWidget(hdr)
+
+        # ── Body: Sidebar + Stack ──────────────────────────────
+        body = QHBoxLayout()
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(0)
+
+        # Sidebar
+        sidebar = QWidget()
+        sidebar.setFixedWidth(120)
+        sidebar.setStyleSheet(f"""
+            background: {C.PANEL};
+            border-right: 1px solid {C.BORDER};
+            border-bottom-left-radius: 10px;
+        """)
+        sb_lay = QVBoxLayout(sidebar)
+        sb_lay.setContentsMargins(8, 14, 8, 14)
+        sb_lay.setSpacing(5)
+        self._tabs: dict = {}
+        for key, icon, label in [
+            ("general",     "◈", "GERAL"),
+            ("permissions", "🛡", "PERMISSÕES"),
+        ]:
+            btn = QPushButton(f"  {icon}  {label}")
+            btn.setFixedHeight(36)
+            btn.setFont(QFont("Inter", 7, QFont.Weight.Bold))
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.clicked.connect(lambda _, k=key: self._switch_tab(k))
+            sb_lay.addWidget(btn)
+            self._tabs[key] = btn
+        sb_lay.addStretch()
+        body.addWidget(sidebar)
+
+        # Content stack
+        self._stack = QStackedWidget()
+        self._stack.setStyleSheet("background: transparent;")
+        body.addWidget(self._stack, stretch=1)
+        root.addLayout(body, stretch=1)
+
+        # Build pages
+        self._stack.addWidget(self._build_general_page())
+        self._stack.addWidget(self._build_permissions_page())
+        self._switch_tab("general")
+        self._load()
+
+    # ── Tab switching ──────────────────────────────────────────
+    def _switch_tab(self, key: str):
+        self._stack.setCurrentIndex({"general": 0, "permissions": 1}.get(key, 0))
+        for k, btn in self._tabs.items():
+            if k == key:
+                btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background: {C.PRI_GHO}; color: {C.PRI};
+                        border: 1px solid {C.PRI_DIM}; border-radius: 6px; text-align: left;
+                    }}
+                """)
+            else:
+                btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background: transparent; color: {C.TEXT_DIM};
+                        border: 1px solid transparent; border-radius: 6px; text-align: left;
+                    }}
+                    QPushButton:hover {{ background: {C.PANEL2}; color: {C.TEXT_MED}; }}
+                """)
+
+    # ── General page ───────────────────────────────────────────
+    def _build_general_page(self) -> QWidget:
+        page = QWidget(); page.setStyleSheet("background: transparent;")
+        scroll = QScrollArea(); scroll.setWidgetResizable(True)
+        scroll.setStyleSheet(f"""
+            QScrollArea {{ border: none; background: transparent; }}
+            QScrollBar:vertical {{ background: #080808; width: 6px; border-radius: 3px; }}
+            QScrollBar::handle:vertical {{ background: {C.BORDER}; border-radius: 3px; }}
+            QScrollBar::handle:vertical:hover {{ background: {C.PRI}; }}
+        """)
+        content = QWidget(); content.setStyleSheet("background: transparent;")
+        layout  = QVBoxLayout(content)
+        layout.setContentsMargins(20, 16, 20, 16)
+        layout.setSpacing(8)
+
+        def _lbl(txt, sz=8, bold=False, color=C.TEXT_DIM, align=Qt.AlignmentFlag.AlignLeft):
             w = QLabel(txt); w.setAlignment(align)
-            w.setFont(QFont("Inter", font_size, QFont.Weight.Bold if bold else QFont.Weight.Normal))
+            w.setFont(QFont("Inter", sz, QFont.Weight.Bold if bold else QFont.Weight.Normal))
             w.setStyleSheet(f"color: {color}; background: transparent;")
             return w
 
-        layout.addWidget(_lbl("⚙ CONFIGURAÇÕES", 12, True, C.WHITE, Qt.AlignmentFlag.AlignCenter))
-        layout.addSpacing(10)
+        def _inp(password=True, ph=""):
+            e = QLineEdit()
+            if password: e.setEchoMode(QLineEdit.EchoMode.Password)
+            e.setFont(QFont("Courier New", 9))
+            e.setFixedHeight(30); e.setPlaceholderText(ph)
+            e.setStyleSheet(f"""
+                QLineEdit {{ background: #080808; color: {C.TEXT};
+                    border: 1px solid {C.BORDER}; border-radius: 4px; padding: 4px 8px; }}
+                QLineEdit:focus {{ border: 1px solid {C.PRI}; }}
+            """)
+            return e
 
-        # Gemini Section
-        layout.addWidget(_lbl("GEMINI API KEY", 8, color=C.TEXT_DIM))
-        self._key_input = QLineEdit()
-        self._key_input.setEchoMode(QLineEdit.EchoMode.Password)
-        self._key_input.setFont(QFont("Courier New", 9))
-        self._key_input.setFixedHeight(30)
-        self._key_input.setStyleSheet(f"""
-            QLineEdit {{
-                background: #080808; color: {C.TEXT};
-                border: 1px solid {C.BORDER}; border-radius: 4px; padding: 4px 8px;
-            }}
-            QLineEdit:focus {{ border: 1px solid {C.PRI}; }}
-        """)
+        def _sep():
+            f = QFrame(); f.setFrameShape(QFrame.Shape.HLine)
+            f.setStyleSheet(f"color: {C.BORDER}; margin: 6px 0;"); return f
+
+        layout.addWidget(_lbl("GEMINI API KEY", bold=True, color=C.PRI))
+        self._key_input = _inp(ph="AIza…")
         layout.addWidget(self._key_input)
 
-        # OpenRouter Section
-        layout.addWidget(_lbl("OPENROUTER API KEY", 8, color=C.TEXT_DIM))
-        self._or_input = QLineEdit()
-        self._or_input.setEchoMode(QLineEdit.EchoMode.Password)
-        self._or_input.setFont(QFont("Courier New", 9))
-        self._or_input.setFixedHeight(30)
-        self._or_input.setStyleSheet(f"""
-            QLineEdit {{
-                background: #080808; color: {C.TEXT};
-                border: 1px solid {C.BORDER}; border-radius: 4px; padding: 4px 8px;
-            }}
-            QLineEdit:focus {{ border: 1px solid {C.PRI}; }}
-        """)
+        layout.addWidget(_lbl("OPENROUTER API KEY"))
+        self._or_input = _inp(ph="sk-or-…")
         layout.addWidget(self._or_input)
 
-        # OS Section
-        layout.addWidget(_lbl("SISTEMA OPERACIONAL", 8, color=C.TEXT_DIM))
-        self._os_combo = QHBoxLayout(); self._os_combo.setSpacing(5)
+        layout.addWidget(_sep())
+        layout.addWidget(_lbl("DEEP RESEARCH APIs (Opcional)", bold=True, color=C.ACC2))
+        layout.addWidget(_lbl("TAVILY API KEY"))
+        self._tavily_input = _inp(ph="Opcional - para busca avançada")
+        layout.addWidget(self._tavily_input)
+        layout.addWidget(_lbl("SERPAPI KEY"))
+        self._serpapi_input = _inp(ph="Opcional - para Google Places/Maps")
+        layout.addWidget(self._serpapi_input)
+
+        layout.addWidget(_sep())
+        layout.addWidget(_lbl("SISTEMA OPERACIONAL", bold=True, color=C.TEXT_MED))
+        os_row = QHBoxLayout(); os_row.setSpacing(5)
         self._os_btns = {}
-        for k, v in [("windows", "Win"), ("mac", "Mac"), ("linux", "Lin")]:
-            btn = QPushButton(v); btn.setFixedHeight(26)
+        for k, v in [("windows", "⊞  Win"), ("mac", "  Mac"), ("linux", "🐧  Lin")]:
+            btn = QPushButton(v); btn.setFixedHeight(28)
+            btn.setFont(QFont("Inter", 7, QFont.Weight.Medium))
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.clicked.connect(lambda _, x=k: self._set_os(x))
-            self._os_combo.addWidget(btn); self._os_btns[k] = btn
-        layout.addLayout(self._os_combo)
+            os_row.addWidget(btn); self._os_btns[k] = btn
+        layout.addLayout(os_row)
 
-        sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setStyleSheet(f"color: {C.BORDER}; margin: 5px 0;"); layout.addWidget(sep)
-
-        # Google Integration Section
-        layout.addWidget(_lbl("INTEGRAÇÕES", 9, True, C.ACC2))
-        
-        # Google Credentials (hidden by default or expandable?)
-        # Let's show them as small inputs
-        layout.addWidget(_lbl("GOOGLE CLIENT ID", 7, color=C.TEXT_DIM))
-        self._g_id = QLineEdit()
-        self._g_id.setFont(QFont("Courier New", 8))
-        self._g_id.setFixedHeight(24)
-        self._g_id.setStyleSheet(f"background: #080808; color: {C.TEXT_MED}; border: 1px solid {C.BORDER};")
+        layout.addWidget(_sep())
+        layout.addWidget(_lbl("INTEGRAÇÕES", bold=True, color=C.ACC2))
+        layout.addWidget(_lbl("GOOGLE CLIENT ID"))
+        self._g_id = _inp(password=False)
         layout.addWidget(self._g_id)
-
-        layout.addWidget(_lbl("GOOGLE CLIENT SECRET", 7, color=C.TEXT_DIM))
-        self._g_secret = QLineEdit()
-        self._g_secret.setEchoMode(QLineEdit.EchoMode.Password)
-        self._g_secret.setFont(QFont("Courier New", 8))
-        self._g_secret.setFixedHeight(24)
-        self._g_secret.setStyleSheet(f"background: #080808; color: {C.TEXT_MED}; border: 1px solid {C.BORDER};")
+        layout.addWidget(_lbl("GOOGLE CLIENT SECRET"))
+        self._g_secret = _inp()
         layout.addWidget(self._g_secret)
 
-        layout.addSpacing(5)
-        
-        g_row = QHBoxLayout(); g_row.setSpacing(10)
-        layout.addLayout(g_row)
-        
         self._g_btn = QPushButton("Connect Google Account")
-        self._g_btn.setFixedHeight(32)
+        self._g_btn.setFixedHeight(30)
+        self._g_btn.setFont(QFont("Inter", 8))
         self._g_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._g_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: {C.PANEL2}; color: {C.WHITE};
-                border: 1px solid {C.BORDER_B}; border-radius: 4px; font-size: 9pt;
-            }}
+            QPushButton {{ background: {C.PANEL2}; color: {C.WHITE};
+                border: 1px solid {C.BORDER_B}; border-radius: 4px; }}
             QPushButton:hover {{ background: {C.PRI_DIM}; border: 1px solid {C.PRI}; }}
         """)
         self._g_btn.clicked.connect(self._google_auth)
-        g_row.addWidget(self._g_btn)
-
+        layout.addWidget(self._g_btn)
         self._g_status = QLabel("Not connected")
         self._g_status.setFont(QFont("Inter", 7))
-        self._g_status.setStyleSheet(f"color: {C.TEXT_DIM};")
+        self._g_status.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent;")
         layout.addWidget(self._g_status)
 
         layout.addStretch()
-
         save_btn = QPushButton("SALVAR E FECHAR")
-        save_btn.setFixedHeight(36); save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        save_btn.setFixedHeight(34); save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        save_btn.setFont(QFont("Inter", 8, QFont.Weight.Bold))
         save_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: {C.PRI}; color: {C.BG};
-                border: none; border-radius: 4px; font-weight: bold;
-            }}
+            QPushButton {{ background: {C.PRI}; color: {C.BG}; border: none; border-radius: 4px; }}
             QPushButton:hover {{ background: {C.WHITE}; }}
         """)
         save_btn.clicked.connect(self._save)
         layout.addWidget(save_btn)
 
-        self._load()
+        scroll.setWidget(content)
+        outer = QVBoxLayout(page); outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(scroll)
+        return page
 
-    def _set_os(self, key):
+    # ── Permissions page ───────────────────────────────────────
+    def _build_permissions_page(self) -> QWidget:
+        from config.permissions import PERMISSION_META, get_permissions
+        page = QWidget(); page.setStyleSheet("background: transparent;")
+        outer = QVBoxLayout(page); outer.setContentsMargins(0, 0, 0, 0); outer.setSpacing(0)
+
+        # Top bar with bulk-toggle buttons
+        top = QWidget()
+        top.setStyleSheet(f"background: {C.PANEL}; border-bottom: 1px solid {C.BORDER};")
+        top_lay = QHBoxLayout(top); top_lay.setContentsMargins(16, 8, 16, 8)
+        desc = QLabel("Controle o que o Sirius pode fazer no seu computador.")
+        desc.setFont(QFont("Inter", 7))
+        desc.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent;")
+        top_lay.addWidget(desc, stretch=1)
+        for label, color, val in [("Marcar Todos", C.GREEN, True), ("Desmarcar Todos", C.RED, False)]:
+            b = QPushButton(label); b.setFixedHeight(24)
+            b.setFont(QFont("Inter", 7, QFont.Weight.Medium))
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setStyleSheet(f"""
+                QPushButton {{ background: transparent; color: {color};
+                    border: 1px solid {color}44; border-radius: 4px; padding: 0 8px; }}
+                QPushButton:hover {{ background: {color}22; border: 1px solid {color}; }}
+            """)
+            b.clicked.connect(lambda _, v=val: self._toggle_all(v))
+            top_lay.addWidget(b)
+        outer.addWidget(top)
+
+        # Scrollable list
+        scroll = QScrollArea(); scroll.setWidgetResizable(True)
+        scroll.setStyleSheet(f"""
+            QScrollArea {{ border: none; background: transparent; }}
+            QScrollBar:vertical {{ background: #080808; width: 6px; border-radius: 3px; }}
+            QScrollBar::handle:vertical {{ background: {C.BORDER}; border-radius: 3px; }}
+            QScrollBar::handle:vertical:hover {{ background: {C.PRI}; }}
+        """)
+        content = QWidget(); content.setStyleSheet("background: transparent;")
+        lay = QVBoxLayout(content)
+        lay.setContentsMargins(12, 10, 12, 12); lay.setSpacing(7)
+        perms = get_permissions()
+        for perm_key, meta in PERMISSION_META.items():
+            lay.addWidget(self._build_perm_row(perm_key, meta, perms.get(perm_key, True)))
+        lay.addStretch()
+        scroll.setWidget(content)
+        outer.addWidget(scroll, stretch=1)
+        return page
+
+    def _build_perm_row(self, perm_key: str, meta: dict, enabled: bool) -> QWidget:
+        row = QWidget()
+        row.setFixedHeight(64)
+        row.setStyleSheet(f"""
+            QWidget {{ background: {C.PANEL2}; border: 1px solid {C.BORDER}; border-radius: 8px; }}
+            QWidget:hover {{ border: 1px solid {C.BORDER_B}; }}
+        """)
+        lay = QHBoxLayout(row); lay.setContentsMargins(12, 0, 12, 0); lay.setSpacing(10)
+
+        icon_lbl = QLabel(meta.get("icon", "●"))
+        icon_lbl.setFont(QFont("Segoe UI Emoji", 18) if _OS == "Windows" else QFont("Arial", 18))
+        icon_lbl.setFixedWidth(32)
+        icon_lbl.setStyleSheet("background: transparent;")
+        icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(icon_lbl)
+
+        txt_col = QVBoxLayout(); txt_col.setSpacing(2)
+        name_lbl = QLabel(meta.get("label", perm_key))
+        name_lbl.setFont(QFont("Inter", 8, QFont.Weight.Bold))
+        name_lbl.setStyleSheet(f"color: {C.TEXT}; background: transparent;")
+        desc_lbl = QLabel(meta.get("description", ""))
+        desc_lbl.setFont(QFont("Inter", 7))
+        desc_lbl.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent;")
+        txt_col.addWidget(name_lbl); txt_col.addWidget(desc_lbl)
+        lay.addLayout(txt_col, stretch=1)
+
+        toggle = ToggleSwitch(checked=enabled)
+        toggle.toggled.connect(lambda v, k=perm_key: self._on_perm_toggle(k, v))
+        lay.addWidget(toggle)
+        self._perm_toggles[perm_key] = toggle
+        return row
+
+    def _on_perm_toggle(self, perm_key: str, value: bool):
+        from config.permissions import get_permissions, save_permissions
+        perms = get_permissions(); perms[perm_key] = value; save_permissions(perms)
+
+    def _toggle_all(self, value: bool):
+        from config.permissions import get_permissions, save_permissions
+        perms = get_permissions()
+        for k in perms: perms[k] = value
+        save_permissions(perms)
+        for toggle in self._perm_toggles.values(): toggle.set_checked(value)
+
+    # ── OS selection ───────────────────────────────────────────
+    def _set_os(self, key: str):
         self._os_name = key
         for k, b in self._os_btns.items():
             if k == key:
@@ -1038,17 +1287,19 @@ class SettingsOverlay(QWidget):
             else:
                 b.setStyleSheet(f"background: #080808; color: {C.TEXT_DIM}; border: 1px solid {C.BORDER}; border-radius: 3px;")
 
+    # ── Load / Save ────────────────────────────────────────────
     def _load(self):
         if API_FILE.exists():
             try:
                 d = json.loads(API_FILE.read_text(encoding="utf-8"))
                 self._key_input.setText(d.get("gemini_api_key", ""))
                 self._or_input.setText(d.get("openrouter_api_key", ""))
+                self._tavily_input.setText(d.get("tavily_api_key", ""))
+                self._serpapi_input.setText(d.get("serpapi_key", ""))
                 self._set_os(d.get("os_system", "windows"))
                 g = d.get("google_creds", {})
                 self._g_id.setText(g.get("client_id", ""))
                 self._g_secret.setText(g.get("client_secret", ""))
-                
                 if (BASE_DIR / "config" / "google_token.json").exists():
                     self._g_status.setText("✅ Google Connected")
                     self._g_status.setStyleSheet(f"color: {C.GREEN};")
@@ -1056,14 +1307,10 @@ class SettingsOverlay(QWidget):
                 pass
 
     def _google_auth(self):
-        # Save current keys first
         self._save_keys_only()
-        
         self._g_status.setText("⌛ Authorizing in browser...")
         self._g_status.setStyleSheet(f"color: {C.ACC2};")
         QApplication.processEvents()
-        
-        # We need to run this in a thread to not block UI
         def _run():
             from core.google_auth import run_auth_flow
             ok, msg = run_auth_flow()
@@ -1073,7 +1320,6 @@ class SettingsOverlay(QWidget):
             else:
                 self._g_status.setText(f"❌ {msg}")
                 self._g_status.setStyleSheet(f"color: {C.RED};")
-        
         threading.Thread(target=_run, daemon=True).start()
 
     def _save(self):
@@ -1082,31 +1328,131 @@ class SettingsOverlay(QWidget):
         self.hide()
 
     def _save_keys_only(self):
-        key = self._key_input.text().strip()
-        os_name = getattr(self, "_os_name", "windows")
-        g_id = self._g_id.text().strip()
+        key      = self._key_input.text().strip()
+        os_name  = getattr(self, "_os_name", "windows")
+        g_id     = self._g_id.text().strip()
         g_secret = self._g_secret.text().strip()
-        
         d = {}
         if API_FILE.exists():
             try: d = json.loads(API_FILE.read_text(encoding="utf-8"))
             except Exception: pass
-        
-        d["gemini_api_key"] = key
+        d["gemini_api_key"]    = key
         d["openrouter_api_key"] = self._or_input.text().strip()
-        d["os_system"] = os_name
-        d["google_creds"] = {
-            "client_id": g_id,
-            "client_secret": g_secret
-        }
-        
+        d["tavily_api_key"]    = self._tavily_input.text().strip()
+        d["serpapi_key"]       = self._serpapi_input.text().strip()
+        d["os_system"]         = os_name
+        d["google_creds"]      = {"client_id": g_id, "client_secret": g_secret}
         os.makedirs(CONFIG_DIR, exist_ok=True)
         API_FILE.write_text(json.dumps(d, indent=4), encoding="utf-8")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PermissionRequestDialog  –  runtime permission popup
+# ─────────────────────────────────────────────────────────────────────────────
+class PermissionRequestDialog(QWidget):
+    """Floating card shown when a tool's permission is currently disabled."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setStyleSheet(f"""
+            PermissionRequestDialog {{
+                background: rgba(6, 10, 18, 248);
+                border: 1px solid {C.PRI_DIM};
+                border-radius: 12px;
+            }}
+        """)
+        self._callback = None
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(18, 14, 18, 14)
+        lay.setSpacing(8)
+
+        # Header row
+        hdr_row = QHBoxLayout()
+        self._icon_lbl = QLabel("🔑")
+        self._icon_lbl.setFont(QFont("Segoe UI Emoji", 20) if _OS == "Windows" else QFont("Arial", 20))
+        self._icon_lbl.setStyleSheet("background: transparent;")
+        self._icon_lbl.setFixedWidth(34)
+        hdr_row.addWidget(self._icon_lbl)
+        hdr_txt = QVBoxLayout(); hdr_txt.setSpacing(1)
+        title_lbl = QLabel("SOLICITAÇÃO DE PERMISSÃO")
+        title_lbl.setFont(QFont("Inter", 8, QFont.Weight.Bold))
+        title_lbl.setStyleSheet(f"color: {C.PRI}; background: transparent;")
+        hdr_txt.addWidget(title_lbl)
+        self._sub_lbl = QLabel("")
+        self._sub_lbl.setFont(QFont("Inter", 7))
+        self._sub_lbl.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent;")
+        hdr_txt.addWidget(self._sub_lbl)
+        hdr_row.addLayout(hdr_txt, stretch=1)
+        lay.addLayout(hdr_row)
+
+        sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet(f"color: {C.BORDER};")
+        lay.addWidget(sep)
+
+        self._perm_lbl = QLabel("")
+        self._perm_lbl.setFont(QFont("Inter", 9, QFont.Weight.Bold))
+        self._perm_lbl.setStyleSheet(f"color: {C.WHITE}; background: transparent;")
+        lay.addWidget(self._perm_lbl)
+
+        self._detail_lbl = QLabel("")
+        self._detail_lbl.setFont(QFont("Inter", 7))
+        self._detail_lbl.setStyleSheet(f"color: {C.TEXT_MED}; background: transparent;")
+        self._detail_lbl.setWordWrap(True)
+        lay.addWidget(self._detail_lbl)
+
+        # Action buttons
+        btn_row = QHBoxLayout(); btn_row.setSpacing(6)
+        for label, color, decision in [
+            ("Permitir uma vez", C.PRI,   "once"),
+            ("Permitir sempre",  C.GREEN, "always"),
+            ("Recusar",          C.RED,   "deny"),
+        ]:
+            btn = QPushButton(label)
+            btn.setFixedHeight(28)
+            btn.setFont(QFont("Inter", 7, QFont.Weight.Medium))
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: transparent; color: {color};
+                    border: 1px solid {color}55; border-radius: 5px; padding: 0 8px;
+                }}
+                QPushButton:hover {{ background: {color}22; border: 1px solid {color}; }}
+            """)
+            btn.clicked.connect(lambda _, d=decision: self._respond(d))
+            btn_row.addWidget(btn)
+        lay.addLayout(btn_row)
+        self.hide()
+
+    def request(self, perm_key: str, label: str, tool_name: str, callback):
+        """Populate and show the dialog."""
+        try:
+            from config.permissions import PERMISSION_META
+            meta = PERMISSION_META.get(perm_key, {})
+            icon = meta.get("icon", "🔑")
+            desc = meta.get("description", "")
+        except Exception:
+            icon, desc = "🔑", ""
+        self._icon_lbl.setText(icon)
+        self._sub_lbl.setText(f"Ferramenta: {tool_name}")
+        self._perm_lbl.setText(f'"{label}"')
+        self._detail_lbl.setText(desc)
+        self._callback = callback
+        self.show()
+        self.raise_()
+
+    def _respond(self, decision: str):
+        self.hide()
+        if self._callback:
+            cb, self._callback = self._callback, None
+            cb(decision)
 
 
 class MainWindow(QMainWindow):
     _log_sig   = pyqtSignal(str)
     _state_sig = pyqtSignal(str)
+    _perm_sig  = pyqtSignal(str, str, str)  # perm_key, label, tool_name
 
     def __init__(self, face_path: str):
         super().__init__()
@@ -1148,6 +1494,10 @@ class MainWindow(QMainWindow):
         root.addWidget(self._build_footer())
 
         self._settings_overlay: SettingsOverlay | None = None
+        self._perm_dialog:      PermissionRequestDialog | None = None
+        self._perm_event  = threading.Event()
+        self._perm_result = "deny"
+        self._perm_sig.connect(self._show_perm_request)
 
         self._clock_tmr = QTimer(self)
         self._clock_tmr.timeout.connect(self._tick_clock)
@@ -1184,12 +1534,20 @@ class MainWindow(QMainWindow):
                 ow, oh,
             )
         if self._settings_overlay and self._settings_overlay.isVisible():
-            ow, oh = 480, 420
+            ow, oh = 600, 560
             cw = self.centralWidget()
             self._settings_overlay.setGeometry(
                 (cw.width()  - ow) // 2,
                 (cw.height() - oh) // 2,
                 ow, oh,
+            )
+        if self._perm_dialog and self._perm_dialog.isVisible():
+            pw, ph = 420, 168
+            cw = self.centralWidget()
+            self._perm_dialog.setGeometry(
+                (cw.width() - pw) // 2,
+                cw.height() - ph - 26,
+                pw, ph,
             )
 
 
@@ -1364,9 +1722,9 @@ class MainWindow(QMainWindow):
         if not self._settings_overlay:
             self._settings_overlay = SettingsOverlay(self.centralWidget())
             self._settings_overlay.hide()
-        
+
         cw = self.centralWidget()
-        ow, oh = 480, 420
+        ow, oh = 600, 560
         self._settings_overlay.setGeometry(
             (cw.width()  - ow) // 2,
             (cw.height() - oh) // 2,
@@ -1374,6 +1732,22 @@ class MainWindow(QMainWindow):
         )
         self._settings_overlay.show()
         self._settings_overlay.raise_()
+
+    def _show_perm_request(self, perm_key: str, label: str, tool_name: str):
+        """Called on the main thread via signal. Shows the PermissionRequestDialog."""
+        if not self._perm_dialog:
+            self._perm_dialog = PermissionRequestDialog(self.centralWidget())
+        pw, ph = 420, 168
+        cw = self.centralWidget()
+        self._perm_dialog.setGeometry(
+            (cw.width() - pw) // 2,
+            cw.height() - ph - 26,
+            pw, ph,
+        )
+        def _callback(decision: str):
+            self._perm_result = decision
+            self._perm_event.set()
+        self._perm_dialog.request(perm_key, label, tool_name, _callback)
 
     def _on_file_selected(self, path: str):
         self._current_file = path
@@ -1531,3 +1905,12 @@ class SiriusUI:
     def stop_speaking(self):
         if not self.muted:
             self.set_state("LISTENING")
+
+    def ask_permission_sync(self, perm_key: str, label: str, tool_name: str) -> str:
+        """Block a background thread until the user responds to a permission request.
+        Returns: 'once' | 'always' | 'deny'.  Times out (deny) after 60 seconds."""
+        self._win._perm_event.clear()
+        self._win._perm_result = "deny"
+        self._win._perm_sig.emit(perm_key, label, tool_name)
+        self._win._perm_event.wait(timeout=60)
+        return self._win._perm_result

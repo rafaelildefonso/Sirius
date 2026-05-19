@@ -36,6 +36,10 @@ from actions.computer_control  import computer_control
 from actions.game_updater      import game_updater
 from actions.google_calendar  import google_calendar as calendar_action
 from actions.gmail            import gmail_action
+from actions.deep_research    import deep_research
+from config.permissions import (
+    is_granted, get_category, grant_permission, PERMISSION_META,
+)
 
 
 def get_base_dir():
@@ -551,6 +555,25 @@ TOOL_DECLARATIONS = [
             "required": ["action", "name"]
         }
     },
+    {
+        "name": "deep_research",
+        "description": (
+            "Performs deep web research to find potential freelance clients or businesses "
+            "based on the user's competencies, target audience, and region. Returns a structured list. "
+            "IMPORTANT: Use what you know about the user from memory/context. Only ask for clarification "
+            "on a specific parameter if you are truly uncertain about it. Prefer to make reasonable assumptions "
+            "based on previous conversations rather than asking upfront."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "competencies":    {"type": "STRING", "description": "User's skills or competencies (e.g. 'Web Developer', 'React')"},
+                "target_audience": {"type": "STRING", "description": "Target business or niche (e.g. 'clínicas médicas', 'e-commerce')"},
+                "region":          {"type": "STRING", "description": "Target location (e.g. 'São Paulo', 'Brasil', 'remoto')"}
+            },
+            "required": ["competencies", "target_audience", "region"]
+        }
+    },
 ]
 
 class SiriusLive:
@@ -662,6 +685,29 @@ class SiriusLive:
         loop   = asyncio.get_event_loop()
         result = "Done."
 
+        # ── Permission gate ──────────────────────────────────────────────
+        _NO_PERM_CHECK = {"save_memory", "shutdown_sirius"}
+        if name not in _NO_PERM_CHECK:
+            _perm_key = get_category(name)
+            if _perm_key and not is_granted(name):
+                _meta     = PERMISSION_META.get(_perm_key, {})
+                _label    = _meta.get("label", _perm_key)
+                _decision = await loop.run_in_executor(
+                    None,
+                    lambda pk=_perm_key, lb=_label, n=name: self.ui.ask_permission_sync(pk, lb, n)
+                )
+                if _decision == "always":
+                    grant_permission(_perm_key)
+                    self.ui.write_log(f"SYS: Permissão '{_label}' ativada permanentemente.")
+                elif _decision == "deny":
+                    if not self.ui.muted:
+                        self.ui.set_state("LISTENING")
+                    return types.FunctionResponse(
+                        id=fc.id, name=name,
+                        response={"error": f"Permissão negada pelo usuário: '{_label}'."}
+                    )
+                # 'once' → proceed without saving
+
         try:
             if name == "open_app":
                 r = await loop.run_in_executor(None, lambda: open_app(parameters=args, response=None, player=self.ui))
@@ -758,6 +804,10 @@ class SiriusLive:
             elif name == "workspaces":
                 from actions.workspaces import workspaces
                 r = await loop.run_in_executor(None, lambda: workspaces(parameters=args, player=self.ui))
+                result = r or "Done."
+
+            elif name == "deep_research":
+                r = await loop.run_in_executor(None, lambda: deep_research(parameters=args, player=self.ui))
                 result = r or "Done."
 
             elif name == "shutdown_sirius":
