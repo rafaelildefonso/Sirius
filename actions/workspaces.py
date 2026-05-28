@@ -120,9 +120,14 @@ def workspaces(
                 continue
                 
             try:
-                # Use start command to handle various executable types and associations
                 if _SYSTEM == "Windows":
-                    subprocess.Popen(f'start "" "{app_path}"', shell=True)
+                    _console_apps = {"cmd.exe", "powershell.exe", "pwsh.exe", "git-bash.exe", "wsl.exe"}
+                    base = os.path.basename(app_path).lower()
+                    if base in _console_apps:
+                        flags = subprocess.CREATE_NEW_CONSOLE
+                    else:
+                        flags = subprocess.CREATE_NO_WINDOW
+                    subprocess.Popen(app_path, creationflags=flags)
                 else:
                     subprocess.Popen(app_path, shell=True)
                 opened.append(app_name)

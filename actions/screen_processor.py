@@ -87,6 +87,7 @@ _SYSTEM_PROMPT = (
     "Be concise and direct — maximum two sentences unless the user's question "
     "requires more detail. "
     "Address the user respectfully. "
+    "Always respond in the SAME LANGUAGE the user used in their question. "
     "Always call the appropriate tool; never simulate results."
 )
 

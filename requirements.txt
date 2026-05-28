@@ -22,6 +22,7 @@ youtube-transcript-api
 pywinauto
 python-pptx
 PyQt6
+qtawesome
 
 google-api-python-client
 google-auth-httplib2

@@ -1,8 +1,14 @@
 # config/__init__.py
-import json, os
+import json, os, sys
 from pathlib import Path
 
-_CONFIG_PATH = Path(__file__).parent / "api_keys.json"
+def _get_config_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).parent / "config"
+    return Path(__file__).resolve().parent
+
+_CONFIG_DIR = _get_config_dir()
+_CONFIG_PATH = _CONFIG_DIR / "api_keys.json"
 
 def get_config() -> dict:
     with open(_CONFIG_PATH, "r", encoding="utf-8") as f:

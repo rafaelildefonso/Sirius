@@ -24,10 +24,13 @@ def _is_running(name: str) -> bool:
     """Checks if a process with the given name is running."""
     try:
         if _OS == "Windows":
-            # Use tasklist to check for process
-            cmd = f'tasklist /FI "IMAGENAME eq {name}" /NH'
-            out = subprocess.check_output(cmd, shell=True, stderr=subprocess.STDOUT).decode(errors="ignore")
-            return name.lower() in out.lower()
+            _nw = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+            r = subprocess.run(
+                ["tasklist", "/FI", f"IMAGENAME eq {name}", "/NH"],
+                capture_output=True, text=True, timeout=5,
+                creationflags=_nw,
+            )
+            return name.lower() in r.stdout.lower()
         else:
             # Use pgrep on Unix/Mac
             subprocess.check_call(["pgrep", "-f", name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -39,8 +42,9 @@ def _system_open(url: str, browser_exe: str | None = None):
     """Opens a URL using the system default or a specific browser executable."""
     try:
         if _OS == "Windows":
+            _nw = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
             if browser_exe and Path(browser_exe).exists():
-                subprocess.Popen([browser_exe, url], start_new_session=True)
+                subprocess.Popen([browser_exe, url], start_new_session=True, creationflags=_nw)
             else:
                 os.startfile(url)
         elif _OS == "Darwin":

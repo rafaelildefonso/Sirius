@@ -1,3 +1,4 @@
+import os
 import time
 import subprocess
 import platform
@@ -79,30 +80,32 @@ def _normalize(raw: str) -> str:
     return raw  
 
 def _launch_windows(app_name: str, args: str = "") -> bool:
-    # If app_name is a full path or just exe name, shutil.which helps
     executable = shutil.which(app_name) or shutil.which(app_name.split(".")[0])
     
     if executable:
         try:
-            # For Explorer, we might need a different approach if args are paths
             if "explorer.exe" in app_name.lower() and args:
-                subprocess.Popen(f'explorer.exe "{args}"', shell=True)
+                subprocess.Popen(["explorer.exe", args])
             else:
-                cmd = f'"{executable}" {args}'.strip()
+                _console_apps = {"cmd.exe", "powershell.exe", "pwsh.exe", "git-bash.exe", "wsl.exe"}
+                base = os.path.basename(executable).lower()
+                if base in _console_apps:
+                    flags = subprocess.CREATE_NEW_CONSOLE
+                else:
+                    flags = subprocess.CREATE_NO_WINDOW
                 subprocess.Popen(
-                    cmd,
-                    shell=True,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
+                    [executable] + (args.split() if args else []),
+                    creationflags=flags,
                 )
             time.sleep(1.5)
             return True
         except Exception as e:
             print(f"[open_app] subprocess failed: {e}")
 
+    # URI scheme (e.g. ms-settings:) or just open with default handler
     if ":" in app_name and not args:
         try:
-            subprocess.Popen(f"start {app_name}", shell=True)
+            os.startfile(app_name)
             time.sleep(1.0)
             return True
         except Exception:

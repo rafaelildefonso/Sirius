@@ -18,7 +18,7 @@ from PyQt6.QtCore import (
     QTimer, QUrl, pyqtSignal,
 )
 from PyQt6.QtGui import (
-    QBrush, QColor, QDragEnterEvent, QDropEvent, QFont, QFontDatabase,
+    QBrush, QColor, QDragEnterEvent, QDropEvent, QFont,
     QKeySequence, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap,
     QRadialGradient, QShortcut,
 )
@@ -27,6 +27,8 @@ from PyQt6.QtWidgets import (
     QMainWindow, QPushButton, QScrollArea, QSizePolicy, QStackedWidget,
     QTextEdit, QVBoxLayout, QWidget, QProgressBar,
 )
+
+import qtawesome as qta
 
 def _base_dir() -> Path:
     if getattr(sys, "frozen", False):
@@ -123,12 +125,14 @@ class _SysMetrics:
             self.tmp = tmp
 
     def _get_gpu(self) -> float:
+        _nw = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
         # NVIDIA
         try:
             r = subprocess.run(
                 ["nvidia-smi", "--query-gpu=utilization.gpu",
                  "--format=csv,noheader,nounits"],
-                capture_output=True, text=True, timeout=2
+                capture_output=True, text=True, timeout=2,
+                creationflags=_nw,
             )
             if r.returncode == 0:
                 vals = [float(v.strip()) for v in r.stdout.strip().split("\n") if v.strip()]
@@ -220,7 +224,8 @@ class _SysMetrics:
                 r = subprocess.run(
                     ["powershell", "-Command",
                      "(Get-WmiObject MSAcpi_ThermalZoneTemperature -Namespace root/wmi).CurrentTemperature"],
-                    capture_output=True, text=True, timeout=3
+                    capture_output=True, text=True, timeout=3,
+                    creationflags=_nw,
                 )
                 if r.returncode == 0 and r.stdout.strip():
                     raw = float(r.stdout.strip().split("\n")[0])
@@ -244,7 +249,7 @@ class _SysMetrics:
 _metrics = _SysMetrics()
 
 class HudCanvas(QWidget):
-    def __init__(self, face_path: str, parent=None):
+    def __init__(self, parent=None):
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent)
         self.setMinimumSize(300, 300)
@@ -262,8 +267,6 @@ class HudCanvas(QWidget):
         self._tgt_halo   = 40.0
         self._last_t     = time.time()
         self._dots: list[dict] = []
-        self._face_px: QPixmap | None = None
-        self._load_face(face_path)
         self._init_dots()
 
         self._tmr = QTimer(self)
@@ -282,23 +285,6 @@ class HudCanvas(QWidget):
                     "base_size": random.uniform(1.2, 2.5),
                     "phase": random.uniform(0, 2 * math.pi)
                 })
-
-    def _load_face(self, path: str):
-        try:
-            from PIL import Image, ImageDraw
-            import io
-            img = Image.open(path).convert("RGBA")
-            sz  = min(img.size)
-            img = img.resize((sz, sz), Image.LANCZOS)
-            mk  = Image.new("L", (sz, sz), 0)
-            ImageDraw.Draw(mk).ellipse((2, 2, sz - 2, sz - 2), fill=255)
-            img.putalpha(mk)
-            buf = io.BytesIO()
-            img.save(buf, format="PNG")
-            px = QPixmap(); px.loadFromData(buf.getvalue())
-            self._face_px = px
-        except Exception:
-            self._face_px = None
 
     def _step(self):
         self._tick += 1
@@ -375,45 +361,36 @@ class HudCanvas(QWidget):
             
             p.drawEllipse(QPointF(dx, dy), size, size)
 
-        # Center Face/Logo
-        if self._face_px:
-            fsz    = int(fw * 0.55 * self._scale)
-            scaled = self._face_px.scaled(
-                fsz, fsz,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-            p.drawPixmap(int(cx - fsz / 2), int(cy - fsz / 2), scaled)
-
         # status text - Move to Center
-        # sy = cy + fw * 0.40  <-- Old position
-        sy = cy - 13 # Center vertically (text height is 26)
+        sy = cy - 13
         if self.muted:
-            txt, col = "⊘  MUTED",     qcol(C.MUTED_C)
+            ico, txt, hexcol = "fa5s.microphone-slash", "MUTED",     C.MUTED_C
         elif self.speaking:
-            txt, col = "●  SPEAKING",  qcol(C.ACC)
+            ico, txt, hexcol = "fa5s.circle",           "SPEAKING",  C.ACC
         elif self.state == "THINKING":
-            sym = "◈" if self._blink else "◇"
-            txt, col = f"{sym}  THINKING",   qcol(C.ACC2)
+            ico, txt, hexcol = "fa5s.gem",              "THINKING",  C.ACC2
         elif self.state == "PROCESSING":
-            sym = "▷" if self._blink else "▶"
-            txt, col = f"{sym}  PROCESSING", qcol(C.ACC2)
+            ico, txt, hexcol = "fa5s.play",             "PROCESSING",C.ACC2
         elif self.state == "LISTENING":
-            sym = "●" if self._blink else "○"
-            txt, col = f"{sym}  LISTENING",  qcol(C.GREEN)
+            ico, txt, hexcol = "fa5s.circle",           "LISTENING", C.GREEN
         else:
-            sym = "●" if self._blink else "○"
-            txt, col = f"{sym}  {self.state}", qcol(C.PRI)
+            ico, txt, hexcol = "fa5s.circle",           self.state,  C.PRI
 
-        p.setPen(QPen(col, 1))
-        # Add a subtle background for the text to make it readable over the logo
+        # draw background pill
         p.setBrush(QBrush(qcol(C.BG, 160)))
         p.setPen(Qt.PenStyle.NoPen)
         p.drawRoundedRect(QRectF(cx - 60, sy, 120, 26), 4, 4)
-        
+
+        col = qcol(hexcol)
+        icol = qta.icon(ico, color=hexcol,
+                        opacity=0.6 if self._blink and self.state not in ("SPEAKING",) else 1.0)
+        icol.paint(p, QRectF(cx - 54, sy + 3, 18, 20).toRect(),
+                   Qt.AlignmentFlag.AlignCenter)
+
         p.setPen(QPen(col, 1))
         p.setFont(QFont("Inter", 10, QFont.Weight.Bold))
-        p.drawText(QRectF(0, sy, W, 26), Qt.AlignmentFlag.AlignCenter, txt)
+        p.drawText(QRectF(cx - 30, sy, 86, 26),
+                   Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, txt)
 
         # (Waveform removed as requested)
 
@@ -549,12 +526,18 @@ class LogWidget(QTextEdit):
             QTimer.singleShot(20, self._next)
 
 _FILE_ICONS = {
-    "image":   ("🖼", "#00d4ff"), "video":   ("🎬", "#ff6b00"),
-    "audio":   ("🎵", "#cc44ff"), "pdf":     ("📄", "#ff4444"),
-    "word":    ("📝", "#4488ff"), "excel":   ("📊", "#44bb44"),
-    "code":    ("💻", "#ffcc00"), "archive": ("📦", "#ff8844"),
-    "pptx":    ("📊", "#ff6622"), "text":    ("📃", "#aaaaaa"),
-    "data":    ("🔧", "#88ddff"), "unknown": ("📎", "#888888"),
+    "image":   ("fa5s.image",          "#00d4ff"),
+    "video":   ("fa5s.video",          "#ff6b00"),
+    "audio":   ("fa5s.music",          "#cc44ff"),
+    "pdf":     ("fa5s.file-pdf",       "#ff4444"),
+    "word":    ("fa5s.file-word",      "#4488ff"),
+    "excel":   ("fa5s.file-excel",     "#44bb44"),
+    "code":    ("fa5s.code",           "#ffcc00"),
+    "archive": ("fa5s.file-archive",   "#ff8844"),
+    "pptx":    ("fa5s.file-powerpoint","#ff6622"),
+    "text":    ("fa5s.file-alt",       "#aaaaaa"),
+    "data":    ("fa5s.cogs",           "#88ddff"),
+    "unknown": ("fa5s.paperclip",      "#888888"),
 }
 _EXT_TO_CAT = {
     **dict.fromkeys(["jpg","jpeg","png","gif","webp","bmp","tiff","svg","ico"], "image"),
@@ -700,9 +683,8 @@ class _DropCanvas(QWidget):
 
     def _paint_drag_over(self, p, W, H):
         cx, cy = W / 2, H / 2
-        p.setFont(QFont("Inter", 20, QFont.Weight.Medium))
-        p.setPen(QPen(qcol(C.PRI), 1))
-        p.drawText(QRectF(0, cy - 24, W, 32), Qt.AlignmentFlag.AlignCenter, "⬇")
+        qta.icon("fa5s.arrow-down", color=C.PRI).paint(
+            p, QRectF(cx - 16, cy - 28, 32, 32).toRect())
         p.setFont(QFont("Inter", 8, QFont.Weight.Medium))
         p.setPen(QPen(qcol(C.PRI), 1))
         p.drawText(QRectF(0, cy + 12, W, 16), Qt.AlignmentFlag.AlignCenter, "Release to load")
@@ -710,14 +692,13 @@ class _DropCanvas(QWidget):
     def _paint_file(self, p, W, H):
         path = Path(self._z._current_file)
         cat  = _file_category(path)
-        icon, icon_col = _FILE_ICONS.get(cat, _FILE_ICONS["unknown"])
+        icon_name, icon_col = _FILE_ICONS.get(cat, _FILE_ICONS["unknown"])
         size_str = _fmt_size(path.stat().st_size)
         ext_str  = path.suffix.upper().lstrip(".") or "FILE"
 
         block_x, block_w = 10, 60
-        p.setFont(QFont("Segoe UI Emoji", 22) if _OS == "Windows" else QFont("Arial", 22))
-        p.setPen(QPen(qcol(icon_col), 1))
-        p.drawText(QRectF(block_x, 0, block_w, H), Qt.AlignmentFlag.AlignCenter, icon)
+        icol = qta.icon(icon_name, color=icon_col)
+        icol.paint(p, QRectF(block_x + 4, 10, 52, 52).toRect())
 
         tx = block_x + block_w + 6
         tw = W - tx - 38
@@ -741,9 +722,8 @@ class _DropCanvas(QWidget):
         p.drawText(QRectF(tx, H * 0.18 + 34, tw, 12),
                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, par)
 
-        p.setFont(QFont("Courier New", 9, QFont.Weight.Bold))
-        p.setPen(QPen(qcol(C.RED, 180), 1))
-        p.drawText(QRectF(W - 34, 0, 28, H), Qt.AlignmentFlag.AlignCenter, "✕")
+        qta.icon("fa5s.times", color=qcol(C.RED, 180).name()).paint(
+            p, QRectF(W - 32, 6, 24, 62).toRect())
 
     def mousePressEvent(self, e):
         z = self._z
@@ -785,7 +765,14 @@ class SetupOverlay(QWidget):
             w.setStyleSheet(f"color: {color}; background: transparent;")
             return w
 
-        layout.addWidget(_lbl("◈  INITIALISATION REQUIRED", 13, True))
+        init_title = QHBoxLayout(); init_title.setSpacing(8)
+        init_icon = QLabel()
+        init_icon.setPixmap(qta.icon("fa5s.cog").pixmap(18, 18))
+        init_icon.setStyleSheet("background: transparent;")
+        init_title.addWidget(init_icon)
+        init_title.addWidget(_lbl("INITIALISATION REQUIRED", 13, True))
+        init_title.addStretch()
+        layout.addLayout(init_title)
         layout.addWidget(_lbl("Configure SIRIUS before first boot.", 9, color=C.PRI_DIM))
         layout.addSpacing(6)
 
@@ -839,8 +826,11 @@ class SetupOverlay(QWidget):
 
         os_row = QHBoxLayout(); os_row.setSpacing(6)
         self._os_btns: dict[str, QPushButton] = {}
-        for key, label in [("windows","⊞  Windows"),("mac","  macOS"),("linux","🐧  Linux")]:
+        for key, label, ico in [("windows","Windows", "fa5b.windows"),
+                                ("mac","macOS",    "fa5b.apple"),
+                                ("linux","Linux",  "fa5b.linux")]:
             btn = QPushButton(label)
+            btn.setIcon(qta.icon(ico))
             btn.setFont(QFont("Courier New", 9, QFont.Weight.Bold))
             btn.setFixedHeight(32)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -851,7 +841,8 @@ class SetupOverlay(QWidget):
         self._sel(detected)
         layout.addSpacing(12)
 
-        init_btn = QPushButton("▸  INITIALISE SYSTEMS")
+        init_btn = QPushButton("INITIALISE SYSTEMS")
+        init_btn.setIcon(qta.icon("fa5s.arrow-right"))
         init_btn.setFont(QFont("Courier New", 10, QFont.Weight.Bold))
         init_btn.setFixedHeight(36)
         init_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -1002,12 +993,17 @@ class SettingsOverlay(QWidget):
         """)
         hdr_lay = QHBoxLayout(hdr)
         hdr_lay.setContentsMargins(18, 0, 12, 0)
-        title_lbl = QLabel("⚙  CONFIGURAÇÕES")
+        title_icon = QLabel()
+        title_icon.setPixmap(qta.icon("fa5s.cog").pixmap(18, 18))
+        title_icon.setStyleSheet("background: transparent;")
+        hdr_lay.addWidget(title_icon)
+        title_lbl = QLabel("CONFIGURAÇÕES")
         title_lbl.setFont(QFont("Inter", 10, QFont.Weight.Bold))
         title_lbl.setStyleSheet(f"color: {C.TEXT}; background: transparent;")
         hdr_lay.addWidget(title_lbl)
         hdr_lay.addStretch()
-        close_btn = QPushButton("✕")
+        close_btn = QPushButton()
+        close_btn.setIcon(qta.icon("fa5s.times"))
         close_btn.setFixedSize(28, 28)
         close_btn.setFont(QFont("Inter", 9))
         close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -1036,11 +1032,12 @@ class SettingsOverlay(QWidget):
         sb_lay.setContentsMargins(8, 14, 8, 14)
         sb_lay.setSpacing(5)
         self._tabs: dict = {}
-        for key, icon, label in [
-            ("general",     "◈", "GERAL"),
-            ("permissions", "🛡", "PERMISSÕES"),
+        for key, ico, label in [
+            ("general",     "fa5s.cog", "GERAL"),
+            ("permissions", "fa5s.shield-alt", "PERMISSÕES"),
         ]:
-            btn = QPushButton(f"  {icon}  {label}")
+            btn = QPushButton(f"  {label}")
+            btn.setIcon(qta.icon(ico))
             btn.setFixedHeight(36)
             btn.setFont(QFont("Inter", 7, QFont.Weight.Bold))
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -1140,8 +1137,11 @@ class SettingsOverlay(QWidget):
         layout.addWidget(_lbl("SISTEMA OPERACIONAL", bold=True, color=C.TEXT_MED))
         os_row = QHBoxLayout(); os_row.setSpacing(5)
         self._os_btns = {}
-        for k, v in [("windows", "⊞  Win"), ("mac", "  Mac"), ("linux", "🐧  Lin")]:
+        for k, v, ico in [("windows","Win", "fa5b.windows"),
+                          ("mac","Mac",    "fa5b.apple"),
+                          ("linux","Lin",  "fa5b.linux")]:
             btn = QPushButton(v); btn.setFixedHeight(28)
+            btn.setIcon(qta.icon(ico))
             btn.setFont(QFont("Inter", 7, QFont.Weight.Medium))
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.clicked.connect(lambda _, x=k: self._set_os(x))
@@ -1168,10 +1168,17 @@ class SettingsOverlay(QWidget):
         """)
         self._g_btn.clicked.connect(self._google_auth)
         layout.addWidget(self._g_btn)
+        g_status_row = QHBoxLayout(); g_status_row.setSpacing(6)
+        self._g_status_icon = QLabel()
+        self._g_status_icon.setFixedSize(14, 14)
+        self._g_status_icon.setStyleSheet("background: transparent;")
+        g_status_row.addWidget(self._g_status_icon)
         self._g_status = QLabel("Not connected")
         self._g_status.setFont(QFont("Inter", 7))
         self._g_status.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent;")
-        layout.addWidget(self._g_status)
+        g_status_row.addWidget(self._g_status)
+        g_status_row.addStretch()
+        layout.addLayout(g_status_row)
 
         layout.addStretch()
         save_btn = QPushButton("SALVAR E FECHAR")
@@ -1244,8 +1251,8 @@ class SettingsOverlay(QWidget):
         """)
         lay = QHBoxLayout(row); lay.setContentsMargins(12, 0, 12, 0); lay.setSpacing(10)
 
-        icon_lbl = QLabel(meta.get("icon", "●"))
-        icon_lbl.setFont(QFont("Segoe UI Emoji", 18) if _OS == "Windows" else QFont("Arial", 18))
+        icon_lbl = QLabel()
+        icon_lbl.setPixmap(qta.icon(meta.get("icon", "fa5s.circle")).pixmap(24, 24))
         icon_lbl.setFixedWidth(32)
         icon_lbl.setStyleSheet("background: transparent;")
         icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -1301,24 +1308,28 @@ class SettingsOverlay(QWidget):
                 self._g_id.setText(g.get("client_id", ""))
                 self._g_secret.setText(g.get("client_secret", ""))
                 if (BASE_DIR / "config" / "google_token.json").exists():
-                    self._g_status.setText("✅ Google Connected")
+                    self._g_status_icon.setPixmap(qta.icon("fa5s.check-circle", color=C.GREEN).pixmap(14, 14))
+                    self._g_status.setText("Google Connected")
                     self._g_status.setStyleSheet(f"color: {C.GREEN};")
             except Exception:
                 pass
 
     def _google_auth(self):
         self._save_keys_only()
-        self._g_status.setText("⌛ Authorizing in browser...")
+        self._g_status_icon.setPixmap(qta.icon("fa5s.spinner").pixmap(14, 14))
+        self._g_status.setText("Authorizing in browser...")
         self._g_status.setStyleSheet(f"color: {C.ACC2};")
         QApplication.processEvents()
         def _run():
             from core.google_auth import run_auth_flow
             ok, msg = run_auth_flow()
             if ok:
-                self._g_status.setText(f"✅ {msg}")
+                self._g_status_icon.setPixmap(qta.icon("fa5s.check-circle", color=C.GREEN).pixmap(14, 14))
+                self._g_status.setText(msg)
                 self._g_status.setStyleSheet(f"color: {C.GREEN};")
             else:
-                self._g_status.setText(f"❌ {msg}")
+                self._g_status_icon.setPixmap(qta.icon("fa5s.times-circle", color=C.RED).pixmap(14, 14))
+                self._g_status.setText(msg)
                 self._g_status.setStyleSheet(f"color: {C.RED};")
         threading.Thread(target=_run, daemon=True).start()
 
@@ -1370,8 +1381,8 @@ class PermissionRequestDialog(QWidget):
 
         # Header row
         hdr_row = QHBoxLayout()
-        self._icon_lbl = QLabel("🔑")
-        self._icon_lbl.setFont(QFont("Segoe UI Emoji", 20) if _OS == "Windows" else QFont("Arial", 20))
+        self._icon_lbl = QLabel()
+        self._icon_lbl.setPixmap(qta.icon("fa5s.key").pixmap(28, 28))
         self._icon_lbl.setStyleSheet("background: transparent;")
         self._icon_lbl.setFixedWidth(34)
         hdr_row.addWidget(self._icon_lbl)
@@ -1430,11 +1441,11 @@ class PermissionRequestDialog(QWidget):
         try:
             from config.permissions import PERMISSION_META
             meta = PERMISSION_META.get(perm_key, {})
-            icon = meta.get("icon", "🔑")
+            icon_name = meta.get("icon", "fa5s.key")
             desc = meta.get("description", "")
         except Exception:
-            icon, desc = "🔑", ""
-        self._icon_lbl.setText(icon)
+            icon_name, desc = "fa5s.key", ""
+        self._icon_lbl.setPixmap(qta.icon(icon_name).pixmap(28, 28))
         self._sub_lbl.setText(f"Ferramenta: {tool_name}")
         self._perm_lbl.setText(f'"{label}"')
         self._detail_lbl.setText(desc)
@@ -1454,7 +1465,7 @@ class MainWindow(QMainWindow):
     _state_sig = pyqtSignal(str)
     _perm_sig  = pyqtSignal(str, str, str)  # perm_key, label, tool_name
 
-    def __init__(self, face_path: str):
+    def __init__(self):
         super().__init__()
         self.setWindowTitle("SIRIUS")
         self.setMinimumSize(_MIN_W, _MIN_H)
@@ -1483,7 +1494,7 @@ class MainWindow(QMainWindow):
         body.setContentsMargins(0, 0, 0, 0)
         body.setSpacing(0)
 
-        self.hud = HudCanvas(face_path)
+        self.hud = HudCanvas()
         self.hud.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         body.addWidget(self.hud, stretch=5)
 
@@ -1499,11 +1510,7 @@ class MainWindow(QMainWindow):
         self._perm_result = "deny"
         self._perm_sig.connect(self._show_perm_request)
 
-        self._clock_tmr = QTimer(self)
-        self._clock_tmr.timeout.connect(self._tick_clock)
-        self._clock_tmr.start(1000)
-        self._tick_clock()
-
+        self._set_icon()
         self._log_sig.connect(self._log.append_log)
         self._state_sig.connect(self._apply_state)
 
@@ -1512,10 +1519,24 @@ class MainWindow(QMainWindow):
         if not self._ready:
             self._show_setup()
 
+        self._clock_tmr = QTimer(self)
+        self._clock_tmr.timeout.connect(self._tick_clock)
+        self._clock_tmr.start(1000)
+        self._tick_clock()
+
         sc_mute = QShortcut(QKeySequence("F4"), self)
         sc_mute.activated.connect(self._toggle_mute)
         sc_full = QShortcut(QKeySequence("F11"), self)
         sc_full.activated.connect(self._toggle_fullscreen)
+
+    def _set_icon(self):
+        from PyQt6.QtGui import QIcon
+        base = _base_dir()
+        for name in ("face.ico", "face.png"):
+            p = base / name
+            if p.exists():
+                self.setWindowIcon(QIcon(str(p)))
+                break
 
     def _toggle_fullscreen(self):
         if self.isFullScreen():
@@ -1564,7 +1585,6 @@ class MainWindow(QMainWindow):
             l.setStyleSheet(f"color: {color}; background: transparent;")
             return l
 
-        lay.addWidget(_badge("SIRIUS", C.PRI_DIM))
         lay.addStretch()
 
         mid = QVBoxLayout(); mid.setSpacing(1)
@@ -1598,12 +1618,21 @@ class MainWindow(QMainWindow):
         lay.setSpacing(10)
 
         def _sec(txt):
-            l = QLabel(f"▸ {txt}")
+            row = QHBoxLayout(); row.setSpacing(6)
+            ico = QLabel()
+            ico.setPixmap(qta.icon("fa5s.caret-right").pixmap(8, 12))
+            ico.setStyleSheet("background: transparent;")
+            row.addWidget(ico)
+            l = QLabel(txt)
             l.setFont(QFont("Inter", 7, QFont.Weight.Medium))
             l.setStyleSheet(f"color: {C.TEXT_MED}; background: transparent;")
-            return l
+            row.addWidget(l)
+            row.addStretch()
+            w = QWidget()
+            w.setLayout(row)
+            return w
 
-        lay.addWidget(_sec("ACTIVITY LOG"))
+        lay.addWidget(_sec("LOGS"))
         self._log = LogWidget()
         lay.addWidget(self._log, stretch=1)
 
@@ -1616,11 +1645,17 @@ class MainWindow(QMainWindow):
         self._drop_zone.file_selected.connect(self._on_file_selected)
         lay.addWidget(self._drop_zone)
 
+        file_hint_row = QHBoxLayout(); file_hint_row.setSpacing(6)
+        self._file_icon_lbl = QLabel()
+        self._file_icon_lbl.setFixedSize(16, 16)
+        self._file_icon_lbl.setStyleSheet("background: transparent;")
+        file_hint_row.addWidget(self._file_icon_lbl)
         self._file_hint = QLabel("No file loaded — drop or click above to upload")
         self._file_hint.setFont(QFont("Inter", 7))
         self._file_hint.setStyleSheet(f"color: {C.TEXT_MED}; background: transparent;")
         self._file_hint.setWordWrap(True)
-        lay.addWidget(self._file_hint)
+        file_hint_row.addWidget(self._file_hint, stretch=1)
+        lay.addLayout(file_hint_row)
 
         sep2 = QFrame(); sep2.setFrameShape(QFrame.Shape.HLine)
         sep2.setStyleSheet(f"color: {C.BORDER}; margin: 2px 0;")
@@ -1629,7 +1664,7 @@ class MainWindow(QMainWindow):
         lay.addWidget(_sec("COMMAND INPUT"))
         lay.addLayout(self._build_input_row())
 
-        self._mute_btn = QPushButton("🎙  MICROPHONE ACTIVE")
+        self._mute_btn = QPushButton("MICROPHONE ACTIVE")
         self._mute_btn.setFixedHeight(30)
         self._mute_btn.setFont(QFont("Inter", 8, QFont.Weight.Medium))
         self._mute_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -1637,7 +1672,8 @@ class MainWindow(QMainWindow):
         self._style_mute_btn()
         lay.addWidget(self._mute_btn)
 
-        fs_btn = QPushButton("⛶  FULLSCREEN  [F11]")
+        fs_btn = QPushButton("FULLSCREEN  [F11]")
+        fs_btn.setIcon(qta.icon("fa5s.expand"))
         fs_btn.setFixedHeight(26)
         fs_btn.setFont(QFont("Inter", 7))
         fs_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -1671,9 +1707,9 @@ class MainWindow(QMainWindow):
         self._input.returnPressed.connect(self._send)
         row.addWidget(self._input)
 
-        send = QPushButton("▸")
+        send = QPushButton()
+        send.setIcon(qta.icon("fa5s.arrow-right", color=C.PRI))
         send.setFixedSize(32, 32)
-        send.setFont(QFont("Inter", 12, QFont.Weight.Bold))
         send.setCursor(Qt.CursorShape.PointingHandCursor)
         send.setStyleSheet(f"""
             QPushButton {{
@@ -1702,20 +1738,20 @@ class MainWindow(QMainWindow):
         lay.addWidget(_fl(""))
         lay.addStretch()
 
-        self._settings_btn = QPushButton("⚙")
+        self._settings_btn = QPushButton()
+        self._settings_btn.setIcon(qta.icon("fa5s.cog", color=C.TEXT_MED))
         self._settings_btn.setFixedSize(18, 18)
         self._settings_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._settings_btn.setStyleSheet(f"""
             QPushButton {{
                 background: transparent; color: {C.TEXT_MED};
-                border: none; padding: 0; font-size: 10pt;
+                border: none; padding: 0;
             }}
             QPushButton:hover {{ color: {C.PRI}; }}
         """)
         self._settings_btn.clicked.connect(self._show_settings)
         lay.addWidget(self._settings_btn)
 
-        lay.addWidget(_fl("© RAFAEL ILDEFONSO", C.PRI_DIM))
         return w
 
     def _show_settings(self):
@@ -1753,9 +1789,11 @@ class MainWindow(QMainWindow):
         self._current_file = path
         p    = Path(path)
         cat  = _file_category(p)
-        icon, _ = _FILE_ICONS.get(cat, _FILE_ICONS["unknown"])
+        icon_name, _ = _FILE_ICONS.get(cat, _FILE_ICONS["unknown"])
         size = _fmt_size(p.stat().st_size)
-        self._file_hint.setText(f"{icon}  {p.name}  ·  {size}  ·  Tell SIRIUS what to do with it")
+        px = qta.icon(icon_name).pixmap(16, 16)
+        self._file_icon_lbl.setPixmap(px)
+        self._file_hint.setText(f"{p.name}  ·  {size}  ·  Tell SIRIUS what to do with it")
         self._log.append_log(f"FILE: {p.name} ({size}) loaded")
         if self.on_text_command:
             msg = (
@@ -1779,7 +1817,8 @@ class MainWindow(QMainWindow):
 
     def _style_mute_btn(self):
         if self._muted:
-            self._mute_btn.setText("🔇  MICROPHONE MUTED")
+            self._mute_btn.setText("MICROPHONE MUTED")
+            self._mute_btn.setIcon(qta.icon("fa5s.microphone-slash", color=C.MUTED_C))
             self._mute_btn.setStyleSheet(f"""
                 QPushButton {{
                     background: #140006; color: {C.MUTED_C};
@@ -1787,7 +1826,8 @@ class MainWindow(QMainWindow):
                 }}
             """)
         else:
-            self._mute_btn.setText("🎙  MICROPHONE ACTIVE")
+            self._mute_btn.setText("MICROPHONE ACTIVE")
+            self._mute_btn.setIcon(qta.icon("fa5s.microphone", color=C.GREEN))
             self._mute_btn.setStyleSheet(f"""
                 QPushButton {{
                     background: #00140a; color: {C.GREEN};
@@ -1833,7 +1873,7 @@ class MainWindow(QMainWindow):
         os.makedirs(CONFIG_DIR, exist_ok=True)
         API_FILE.write_text(
             json.dumps({
-                "gemini_api_key": key, 
+                "gemini_api_key": key,
                 "openrouter_api_key": or_key,
                 "os_system": os_name
             }, indent=4),
@@ -1856,10 +1896,20 @@ class _RootShim:
 
 
 class SiriusUI:
-    def __init__(self, face_path: str, size=None):
+    def __init__(self):
         self._app = QApplication.instance() or QApplication(sys.argv)
         self._app.setStyle("Fusion")
-        self._win = MainWindow(face_path)
+
+        # Set application-level window icon
+        from PyQt6.QtGui import QIcon
+        base = _base_dir()
+        for name in ("face.ico", "face.png"):
+            p = base / name
+            if p.exists():
+                self._app.setWindowIcon(QIcon(str(p)))
+                break
+
+        self._win = MainWindow()
         self._win.show()
         self.root = _RootShim(self._app)
 

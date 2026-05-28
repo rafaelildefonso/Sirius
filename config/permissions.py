@@ -19,47 +19,47 @@ PERMISSION_META: dict[str, dict] = {
     "control_mouse_keyboard": {
         "label":       "Controlar Mouse e Teclado",
         "description": "Mover o cursor, clicar e digitar automaticamente.",
-        "icon":        "🖱",
+        "icon":        "fa5s.mouse",
     },
     "view_screen": {
         "label":       "Visualizar Tela",
         "description": "Capturar e analisar a tela do computador.",
-        "icon":        "🖥",
+        "icon":        "fa5s.desktop",
     },
     "view_camera": {
         "label":       "Acessar Câmera",
         "description": "Capturar imagens da webcam.",
-        "icon":        "📷",
+        "icon":        "fa5s.camera",
     },
     "manage_files": {
         "label":       "Gerenciar Arquivos",
         "description": "Criar, editar, mover e excluir arquivos e pastas.",
-        "icon":        "📁",
+        "icon":        "fa5s.folder",
     },
     "execute_commands": {
         "label":       "Executar Comandos e Código",
         "description": "Rodar scripts, compilar e executar programas.",
-        "icon":        "⚡",
+        "icon":        "fa5s.bolt",
     },
     "access_web_browser": {
         "label":       "Controlar Navegador",
         "description": "Abrir sites, pesquisar e interagir com páginas web.",
-        "icon":        "🌐",
+        "icon":        "fa5s.globe",
     },
     "open_applications": {
         "label":       "Abrir Aplicativos",
         "description": "Iniciar programas instalados no computador.",
-        "icon":        "🚀",
+        "icon":        "fa5s.rocket",
     },
     "access_personal_accounts": {
         "label":       "Acessar Contas Pessoais",
         "description": "Ler e gerenciar Gmail e Google Calendar.",
-        "icon":        "🔐",
+        "icon":        "fa5s.lock",
     },
     "send_messages": {
         "label":       "Enviar Mensagens e Lembretes",
         "description": "Enviar mensagens via WhatsApp, Telegram e criar lembretes.",
-        "icon":        "💬",
+        "icon":        "fa5s.comment-dots",
     },
 }
 

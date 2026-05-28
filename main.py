@@ -7,6 +7,16 @@ import traceback
 import random
 from pathlib import Path
 
+# ── Set AppUserModelID early so Windows taskbar can associate the pinned shortcut ──
+if getattr(sys, "frozen", False) and sys.platform == "win32":
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+            "rafaelildefonso.sirius.assistant.1.0"
+        )
+    except Exception:
+        pass
+
 import sounddevice as sd
 import numpy as np
 from google import genai
@@ -58,8 +68,14 @@ RECEIVE_SAMPLE_RATE = 24000
 CHUNK_SIZE          = 1024
 
 def _get_api_key() -> str:
-    with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)["gemini_api_key"]
+    try:
+        with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
+            key = json.load(f).get("gemini_api_key", "")
+        if not key:
+            raise ValueError("gemini_api_key is empty. Configure it in Settings.")
+        return key
+    except FileNotFoundError:
+        raise RuntimeError(f"API config not found at: {API_CONFIG_PATH}")
 
 
 _last_memory_input = ""
@@ -125,12 +141,18 @@ TOOL_DECLARATIONS = [
     },
     {
         "name": "web_search",
-        "description": "Searches the web for any information.",
+        "description": (
+            "Searches the web for information. "
+            "WHEN THE USER WANTS TO BUY SOMETHING: search for specific products "
+            "with prices, brands, and buying options — NOT just a description of "
+            "what the product is. After searching, use browser_control to navigate "
+            "to a shopping site showing the products on screen."
+        ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
                 "query":  {"type": "STRING", "description": "Search query"},
-                "mode":   {"type": "STRING", "description": "search (default) or compare"},
+                "mode":   {"type": "STRING", "description": "search (default), compare, or shopping"},
                 "items":  {"type": "ARRAY", "items": {"type": "STRING"}, "description": "Items to compare"},
                 "aspect": {"type": "STRING", "description": "price | specs | reviews"}
             },
@@ -235,7 +257,9 @@ TOOL_DECLARATIONS = [
             "opening sites, searching, interacting with pages, and managing browser sessions. "
             "If the browser is not open, this tool will launch it. "
             "Always pass the 'browser' parameter when the user specifies a browser (e.g. 'Brave', 'Edge'). "
-            "If the browser is already open, it will use the active session."
+            "If the browser is already open, it will use the active session. "
+            "CRITICAL: When the user wants to buy something, use browser_control to navigate "
+            "to a shopping site (e.g. Mercado Livre, Amazon, Buscapé) showing the products and prices directly on screen."
         ),
         "parameters": {
             "type": "OBJECT",
@@ -1043,7 +1067,7 @@ class SiriusLive:
             await asyncio.sleep(3)
 
 def main():
-    ui = SiriusUI("face.png")
+    ui = SiriusUI()
 
     def runner():
         ui.wait_for_api_key()

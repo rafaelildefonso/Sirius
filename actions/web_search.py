@@ -39,6 +39,37 @@ def _gemini_search(query: str) -> str:
     return text
 
 
+def _shopping_search(query: str) -> str:
+    from google import genai
+
+    client   = genai.Client(api_key=_get_api_key())
+    prompt = (
+        f"Search the web for options to buy: '{query}'. "
+        "Return a structured list of specific products available for purchase. "
+        "For each product, include:\n"
+        "- Product name/model\n"
+        "- Brand\n"
+        "- Price range (in R$ or relevant currency)\n"
+        "- Store name and direct link (URL)\n"
+        "Focus on actual products and current prices, not generic descriptions."
+    )
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=prompt,
+        config={"tools": [{"google_search": {}}]},
+    )
+
+    text = ""
+    for part in response.candidates[0].content.parts:
+        if hasattr(part, "text") and part.text:
+            text += part.text
+
+    text = text.strip()
+    if not text:
+        raise ValueError("Gemini returned an empty response.")
+    return text
+
+
 def _ddg_search(query: str, max_results: int = 6) -> list[dict]:
     try:
         from ddgs import DDGS
@@ -123,6 +154,20 @@ def web_search(
             result = _compare(items, aspect)
             print("[WebSearch] ✅ Compare done.")
             return result
+
+        if mode == "shopping":
+            print(f"[WebSearch] 🛍️ Shopping search: {query}")
+            try:
+                result = _shopping_search(query)
+                print("[WebSearch] ✅ Shopping Gemini OK.")
+                return result
+            except Exception as e:
+                print(f"[WebSearch] ⚠️ Shopping Gemini failed ({e}) — trying DDG...")
+                shopping_query = f"{query} comprar preço"
+                results = _ddg_search(shopping_query)
+                result  = _format_ddg(shopping_query, results)
+                print(f"[WebSearch] ✅ Shopping DDG: {len(results)} result(s).")
+                return result
 
         print("[WebSearch] 🌐 Trying Gemini...")
         try:
