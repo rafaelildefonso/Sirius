@@ -85,7 +85,7 @@ def _launch_windows(app_name: str, args: str = "") -> bool:
     if executable:
         try:
             if "explorer.exe" in app_name.lower() and args:
-                subprocess.Popen(["explorer.exe", args])
+                subprocess.Popen(["explorer.exe", args], cwd=os.path.expanduser("~"))
             else:
                 _console_apps = {"cmd.exe", "powershell.exe", "pwsh.exe", "git-bash.exe", "wsl.exe"}
                 base = os.path.basename(executable).lower()
@@ -96,6 +96,7 @@ def _launch_windows(app_name: str, args: str = "") -> bool:
                 subprocess.Popen(
                     [executable] + (args.split() if args else []),
                     creationflags=flags,
+                    cwd=os.path.dirname(executable) or os.path.expanduser("~"),
                 )
             time.sleep(1.5)
             return True
@@ -163,7 +164,8 @@ def _launch_macos(app_name: str) -> bool:
             subprocess.Popen(
                 [binary],
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
+                stderr=subprocess.DEVNULL,
+                cwd=os.path.dirname(binary) or os.path.expanduser("~"),
             )
             time.sleep(1.0)
             return True
@@ -198,7 +200,8 @@ def _launch_linux(app_name: str) -> bool:
             subprocess.Popen(
                 [binary],
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
+                stderr=subprocess.DEVNULL,
+                cwd=os.path.dirname(binary) or os.path.expanduser("~"),
             )
             time.sleep(1.0)
             return True

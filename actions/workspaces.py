@@ -127,9 +127,9 @@ def workspaces(
                         flags = subprocess.CREATE_NEW_CONSOLE
                     else:
                         flags = subprocess.CREATE_NO_WINDOW
-                    subprocess.Popen(app_path, creationflags=flags)
+                    subprocess.Popen(app_path, creationflags=flags, cwd=os.path.dirname(app_path) or os.path.expanduser("~"))
                 else:
-                    subprocess.Popen(app_path, shell=True)
+                    subprocess.Popen(app_path, shell=True, cwd=os.path.dirname(app_path) or os.path.expanduser("~"))
                 opened.append(app_name)
                 time.sleep(0.5) # Brief pause between launches
             except Exception as e:
