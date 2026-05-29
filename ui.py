@@ -221,6 +221,7 @@ class _SysMetrics:
 
         if _OS == "Windows":
             try:
+                _nw = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
                 r = subprocess.run(
                     ["powershell", "-Command",
                      "(Get-WmiObject MSAcpi_ThermalZoneTemperature -Namespace root/wmi).CurrentTemperature"],
@@ -767,7 +768,7 @@ class SetupOverlay(QWidget):
 
         init_title = QHBoxLayout(); init_title.setSpacing(8)
         init_icon = QLabel()
-        init_icon.setPixmap(qta.icon("fa5s.cog").pixmap(18, 18))
+        init_icon.setPixmap(qta.icon("fa5s.cog", color=C.PRI).pixmap(18, 18))
         init_icon.setStyleSheet("background: transparent;")
         init_title.addWidget(init_icon)
         init_title.addWidget(_lbl("INITIALISATION REQUIRED", 13, True))
@@ -830,7 +831,7 @@ class SetupOverlay(QWidget):
                                 ("mac","macOS",    "fa5b.apple"),
                                 ("linux","Linux",  "fa5b.linux")]:
             btn = QPushButton(label)
-            btn.setIcon(qta.icon(ico))
+            btn.setIcon(qta.icon(ico, color=C.TEXT_DIM))
             btn.setFont(QFont("Courier New", 9, QFont.Weight.Bold))
             btn.setFixedHeight(32)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -842,7 +843,7 @@ class SetupOverlay(QWidget):
         layout.addSpacing(12)
 
         init_btn = QPushButton("INITIALISE SYSTEMS")
-        init_btn.setIcon(qta.icon("fa5s.arrow-right"))
+        init_btn.setIcon(qta.icon("fa5s.arrow-right", color=C.PRI))
         init_btn.setFont(QFont("Courier New", 10, QFont.Weight.Bold))
         init_btn.setFixedHeight(36)
         init_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -860,10 +861,12 @@ class SetupOverlay(QWidget):
 
     def _sel(self, key: str):
         self._sel_os = key
+        ico_map = {"windows": "fa5b.windows", "mac": "fa5b.apple", "linux": "fa5b.linux"}
         pal = {"windows":(C.PRI,"#001a22"),"mac":(C.ACC2,"#1a1400"),"linux":(C.GREEN,"#001a0d")}
         for k, btn in self._os_btns.items():
             if k == key:
                 fg, bg = pal[k]
+                btn.setIcon(qta.icon(ico_map[k], color=bg))
                 btn.setStyleSheet(f"""
                     QPushButton {{
                         background: {fg}; color: {bg};
@@ -871,6 +874,7 @@ class SetupOverlay(QWidget):
                     }}
                 """)
             else:
+                btn.setIcon(qta.icon(ico_map[k], color=C.TEXT_DIM))
                 btn.setStyleSheet(f"""
                     QPushButton {{
                         background: #000d12; color: {C.TEXT_DIM};
@@ -994,7 +998,7 @@ class SettingsOverlay(QWidget):
         hdr_lay = QHBoxLayout(hdr)
         hdr_lay.setContentsMargins(18, 0, 12, 0)
         title_icon = QLabel()
-        title_icon.setPixmap(qta.icon("fa5s.cog").pixmap(18, 18))
+        title_icon.setPixmap(qta.icon("fa5s.cog", color=C.TEXT).pixmap(18, 18))
         title_icon.setStyleSheet("background: transparent;")
         hdr_lay.addWidget(title_icon)
         title_lbl = QLabel("CONFIGURAÇÕES")
@@ -1003,7 +1007,7 @@ class SettingsOverlay(QWidget):
         hdr_lay.addWidget(title_lbl)
         hdr_lay.addStretch()
         close_btn = QPushButton()
-        close_btn.setIcon(qta.icon("fa5s.times"))
+        close_btn.setIcon(qta.icon("fa5s.times", color=C.TEXT_DIM))
         close_btn.setFixedSize(28, 28)
         close_btn.setFont(QFont("Inter", 9))
         close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -1037,7 +1041,7 @@ class SettingsOverlay(QWidget):
             ("permissions", "fa5s.shield-alt", "PERMISSÕES"),
         ]:
             btn = QPushButton(f"  {label}")
-            btn.setIcon(qta.icon(ico))
+            btn.setIcon(qta.icon(ico, color=C.TEXT_DIM))
             btn.setFixedHeight(36)
             btn.setFont(QFont("Inter", 7, QFont.Weight.Bold))
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -1062,8 +1066,10 @@ class SettingsOverlay(QWidget):
     # ── Tab switching ──────────────────────────────────────────
     def _switch_tab(self, key: str):
         self._stack.setCurrentIndex({"general": 0, "permissions": 1}.get(key, 0))
+        ico_map = {"general": "fa5s.cog", "permissions": "fa5s.shield-alt"}
         for k, btn in self._tabs.items():
             if k == key:
+                btn.setIcon(qta.icon(ico_map[k], color=C.PRI))
                 btn.setStyleSheet(f"""
                     QPushButton {{
                         background: {C.PRI_GHO}; color: {C.PRI};
@@ -1071,6 +1077,7 @@ class SettingsOverlay(QWidget):
                     }}
                 """)
             else:
+                btn.setIcon(qta.icon(ico_map[k], color=C.TEXT_DIM))
                 btn.setStyleSheet(f"""
                     QPushButton {{
                         background: transparent; color: {C.TEXT_DIM};
@@ -1141,7 +1148,7 @@ class SettingsOverlay(QWidget):
                           ("mac","Mac",    "fa5b.apple"),
                           ("linux","Lin",  "fa5b.linux")]:
             btn = QPushButton(v); btn.setFixedHeight(28)
-            btn.setIcon(qta.icon(ico))
+            btn.setIcon(qta.icon(ico, color=C.TEXT_DIM))
             btn.setFont(QFont("Inter", 7, QFont.Weight.Medium))
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.clicked.connect(lambda _, x=k: self._set_os(x))
@@ -1252,7 +1259,7 @@ class SettingsOverlay(QWidget):
         lay = QHBoxLayout(row); lay.setContentsMargins(12, 0, 12, 0); lay.setSpacing(10)
 
         icon_lbl = QLabel()
-        icon_lbl.setPixmap(qta.icon(meta.get("icon", "fa5s.circle")).pixmap(24, 24))
+        icon_lbl.setPixmap(qta.icon(meta.get("icon", "fa5s.circle"), color=C.TEXT).pixmap(24, 24))
         icon_lbl.setFixedWidth(32)
         icon_lbl.setStyleSheet("background: transparent;")
         icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -1288,10 +1295,13 @@ class SettingsOverlay(QWidget):
     # ── OS selection ───────────────────────────────────────────
     def _set_os(self, key: str):
         self._os_name = key
+        ico_map = {"windows": "fa5b.windows", "mac": "fa5b.apple", "linux": "fa5b.linux"}
         for k, b in self._os_btns.items():
             if k == key:
+                b.setIcon(qta.icon(ico_map[k], color=C.BG))
                 b.setStyleSheet(f"background: {C.PRI}; color: {C.BG}; border: none; border-radius: 3px;")
             else:
+                b.setIcon(qta.icon(ico_map[k], color=C.TEXT_DIM))
                 b.setStyleSheet(f"background: #080808; color: {C.TEXT_DIM}; border: 1px solid {C.BORDER}; border-radius: 3px;")
 
     # ── Load / Save ────────────────────────────────────────────
@@ -1316,7 +1326,7 @@ class SettingsOverlay(QWidget):
 
     def _google_auth(self):
         self._save_keys_only()
-        self._g_status_icon.setPixmap(qta.icon("fa5s.spinner").pixmap(14, 14))
+        self._g_status_icon.setPixmap(qta.icon("fa5s.spinner", color=C.ACC2).pixmap(14, 14))
         self._g_status.setText("Authorizing in browser...")
         self._g_status.setStyleSheet(f"color: {C.ACC2};")
         QApplication.processEvents()
@@ -1382,7 +1392,7 @@ class PermissionRequestDialog(QWidget):
         # Header row
         hdr_row = QHBoxLayout()
         self._icon_lbl = QLabel()
-        self._icon_lbl.setPixmap(qta.icon("fa5s.key").pixmap(28, 28))
+        self._icon_lbl.setPixmap(qta.icon("fa5s.key", color=C.PRI).pixmap(28, 28))
         self._icon_lbl.setStyleSheet("background: transparent;")
         self._icon_lbl.setFixedWidth(34)
         hdr_row.addWidget(self._icon_lbl)
@@ -1445,7 +1455,7 @@ class PermissionRequestDialog(QWidget):
             desc = meta.get("description", "")
         except Exception:
             icon_name, desc = "fa5s.key", ""
-        self._icon_lbl.setPixmap(qta.icon(icon_name).pixmap(28, 28))
+        self._icon_lbl.setPixmap(qta.icon(icon_name, color=C.PRI).pixmap(28, 28))
         self._sub_lbl.setText(f"Ferramenta: {tool_name}")
         self._perm_lbl.setText(f'"{label}"')
         self._detail_lbl.setText(desc)
@@ -1494,9 +1504,19 @@ class MainWindow(QMainWindow):
         body.setContentsMargins(0, 0, 0, 0)
         body.setSpacing(0)
 
+        self.left_stack = QStackedWidget()
         self.hud = HudCanvas()
         self.hud.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        body.addWidget(self.hud, stretch=5)
+        self.left_stack.addWidget(self.hud)
+
+        try:
+            from job_radar_widget import JobRadarWidget
+            self.job_radar = JobRadarWidget()
+            self.left_stack.addWidget(self.job_radar)
+        except Exception as e:
+            print(f"[UI] Erro ao carregar JobRadarWidget: {e}")
+
+        body.addWidget(self.left_stack, stretch=5)
 
         self._right_panel = self._build_right_panel()
         body.addWidget(self._right_panel, stretch=0)
@@ -1620,7 +1640,7 @@ class MainWindow(QMainWindow):
         def _sec(txt):
             row = QHBoxLayout(); row.setSpacing(6)
             ico = QLabel()
-            ico.setPixmap(qta.icon("fa5s.caret-right").pixmap(8, 12))
+            ico.setPixmap(qta.icon("fa5s.caret-right", color=C.TEXT_MED).pixmap(8, 12))
             ico.setStyleSheet("background: transparent;")
             row.addWidget(ico)
             l = QLabel(txt)
@@ -1673,7 +1693,7 @@ class MainWindow(QMainWindow):
         lay.addWidget(self._mute_btn)
 
         fs_btn = QPushButton("FULLSCREEN  [F11]")
-        fs_btn.setIcon(qta.icon("fa5s.expand"))
+        fs_btn.setIcon(qta.icon("fa5s.expand", color=C.TEXT_MED))
         fs_btn.setFixedHeight(26)
         fs_btn.setFont(QFont("Inter", 7))
         fs_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -1734,12 +1754,30 @@ class MainWindow(QMainWindow):
             return l
 
         lay.addWidget(_fl("[F4] Mute  ·  [F11] Fullscreen"))
+        lay.addSpacing(14)
+
+        self._view_btn = QPushButton("RADAR DE VAGAS")
+        self._view_btn.setFixedHeight(16)
+        self._view_btn.setFont(QFont("Inter", 7, QFont.Weight.Bold))
+        self._view_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._view_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent; color: {C.PRI};
+                border: 1px solid {C.PRI_DIM}; border-radius: 3px; padding: 0 8px;
+            }}
+            QPushButton:hover {{
+                background: {C.PRI_GHO}; color: {C.WHITE};
+            }}
+        """)
+        self._view_btn.clicked.connect(self._toggle_view)
+        lay.addWidget(self._view_btn)
+
         lay.addStretch()
         lay.addWidget(_fl(""))
         lay.addStretch()
 
         self._settings_btn = QPushButton()
-        self._settings_btn.setIcon(qta.icon("fa5s.cog", color=C.TEXT_MED))
+        self._settings_btn.setIcon(qta.icon("fa5s.cog", color=C.WHITE))
         self._settings_btn.setFixedSize(18, 18)
         self._settings_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._settings_btn.setStyleSheet(f"""
@@ -1753,6 +1791,32 @@ class MainWindow(QMainWindow):
         lay.addWidget(self._settings_btn)
 
         return w
+
+    def _toggle_view(self):
+        if self.left_stack.currentIndex() == 0:
+            self.left_stack.setCurrentIndex(1)
+            self._view_btn.setText("ASSISTENTE DE VOZ")
+            self._view_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: transparent; color: {C.ACC};
+                    border: 1px solid {C.ACC}; border-radius: 3px; padding: 0 8px;
+                }}
+                QPushButton:hover {{
+                    background: rgba(255, 107, 0, 0.1); color: {C.WHITE};
+                }}
+            """)
+        else:
+            self.left_stack.setCurrentIndex(0)
+            self._view_btn.setText("RADAR DE VAGAS")
+            self._view_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: transparent; color: {C.PRI};
+                    border: 1px solid {C.PRI_DIM}; border-radius: 3px; padding: 0 8px;
+                }}
+                QPushButton:hover {{
+                    background: {C.PRI_GHO}; color: {C.WHITE};
+                }}
+            """)
 
     def _show_settings(self):
         if not self._settings_overlay:
@@ -1789,9 +1853,9 @@ class MainWindow(QMainWindow):
         self._current_file = path
         p    = Path(path)
         cat  = _file_category(p)
-        icon_name, _ = _FILE_ICONS.get(cat, _FILE_ICONS["unknown"])
+        icon_name, icon_col = _FILE_ICONS.get(cat, _FILE_ICONS["unknown"])
         size = _fmt_size(p.stat().st_size)
-        px = qta.icon(icon_name).pixmap(16, 16)
+        px = qta.icon(icon_name, color=icon_col).pixmap(16, 16)
         self._file_icon_lbl.setPixmap(px)
         self._file_hint.setText(f"{p.name}  ·  {size}  ·  Tell SIRIUS what to do with it")
         self._log.append_log(f"FILE: {p.name} ({size}) loaded")

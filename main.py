@@ -47,6 +47,8 @@ from actions.game_updater      import game_updater
 from actions.google_calendar  import google_calendar as calendar_action
 from actions.gmail            import gmail_action
 from actions.deep_research    import deep_research
+from actions.linkedin_jobs_radar import linkedin_jobs_radar
+from actions.apply_assist import apply_assist
 from config.permissions import (
     is_granted, get_category, grant_permission, PERMISSION_META,
 )
@@ -598,6 +600,38 @@ TOOL_DECLARATIONS = [
             "required": ["competencies", "target_audience", "region"]
         }
     },
+    {
+        "name": "linkedin_jobs_radar",
+        "description": (
+            "Busca, filtra e analisa vagas no LinkedIn de forma inteligente e humanizada. "
+            "Use para buscar vagas (keywords), analisar compatibilidade de vagas salvas, ou listar/abrir o painel."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {"type": "STRING", "description": "search (default) | analyze | list"},
+                "keywords": {"type": "STRING", "description": "Termos de busca de vaga (ex: 'Desenvolvedor React', 'Python Junior')"}
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "apply_assist",
+        "description": (
+            "Auxilia no processo de candidatura para uma vaga de emprego específica. "
+            "Pode gerar cover letters sob medida, dar conselhos para adaptar o currículo para passar no ATS, ou preparar perguntas de entrevista."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "job_title": {"type": "STRING", "description": "Título da vaga de emprego"},
+                "company": {"type": "STRING", "description": "Nome da empresa contratante"},
+                "job_description": {"type": "STRING", "description": "Descrição completa dos requisitos e responsabilidades da vaga"},
+                "mode": {"type": "STRING", "description": "cover_letter (default) | resume_tailor | interview_prep"}
+            },
+            "required": []
+        }
+    },
 ]
 
 class SiriusLive:
@@ -832,6 +866,14 @@ class SiriusLive:
 
             elif name == "deep_research":
                 r = await loop.run_in_executor(None, lambda: deep_research(parameters=args, player=self.ui))
+                result = r or "Done."
+
+            elif name == "linkedin_jobs_radar":
+                r = await loop.run_in_executor(None, lambda: linkedin_jobs_radar(parameters=args, player=self.ui, speak=self.speak))
+                result = r or "Done."
+
+            elif name == "apply_assist":
+                r = await loop.run_in_executor(None, lambda: apply_assist(parameters=args, player=self.ui, speak=self.speak))
                 result = r or "Done."
 
             elif name == "shutdown_sirius":
