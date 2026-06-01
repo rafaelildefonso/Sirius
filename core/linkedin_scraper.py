@@ -46,8 +46,9 @@ async def scrape_linkedin_jobs(keywords: str, location: str = "Brasil", max_jobs
     print(f"[Linkedin Scraper] Iniciando busca por '{keywords}' em '{location}' usando {browser_name}...")
     
     async with async_playwright() as p:
-        # Load user profile directory to keep login session if possible
-        profile_dir = get_browser_profile_dir(browser_name)
+        # Try dedicated Sirius profile first, fallback to real browser profile
+        profile_dir = str(Path.home() / ".sirius_profiles" / f"{browser_name}_dedicated_vagas")
+        Path(profile_dir).mkdir(parents=True, exist_ok=True)
         
         launch_args = [
             "--disable-blink-features=AutomationControlled",
@@ -97,9 +98,8 @@ async def scrape_linkedin_jobs(keywords: str, location: str = "Brasil", max_jobs
             try:
                 context = await browser_type.launch_persistent_context(**kwargs)
             except Exception as launch_err:
-                print(f"[Linkedin Scraper] ⚠️ Perfil real do {browser_name} travado ou falhou. Tentando perfil dedicado do Sirius...")
-                fallback_dir = str(Path.home() / ".sirius_profiles" / f"{browser_name}_dedicated_vagas")
-                Path(fallback_dir).mkdir(parents=True, exist_ok=True)
+                print(f"[Linkedin Scraper] ⚠️ Perfil dedicado do Sirius falhou. Tentando perfil real do {browser_name}...")
+                fallback_dir = get_browser_profile_dir(browser_name)
                 kwargs["user_data_dir"] = fallback_dir
                 context = await browser_type.launch_persistent_context(**kwargs)
                 
