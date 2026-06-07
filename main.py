@@ -45,6 +45,7 @@ from actions.web_search        import web_search as web_search_action
 from actions.computer_control  import computer_control
 from actions.game_updater      import game_updater
 from actions.google_calendar  import google_calendar as calendar_action
+from actions.notion_calendar import notion_calendar as notion_calendar_action
 from actions.gmail            import gmail_action
 from actions.deep_research    import deep_research
 from actions.linkedin_jobs_radar import linkedin_jobs_radar
@@ -541,7 +542,7 @@ TOOL_DECLARATIONS = [
     },
     {
         "name": "google_calendar",
-        "description": "Accesses and manages the user's Google Calendar: list events, create events.",
+        "description": "Manages the user's Google Calendar: list events, create events. Use when the user mentions Google Calendar.",
         "parameters": {
             "type": "OBJECT",
             "properties": {
@@ -551,6 +552,26 @@ TOOL_DECLARATIONS = [
                 "start":    {"type": "STRING", "description": "Start time in ISO format (for create)"},
                 "end":      {"type": "STRING", "description": "End time in ISO format (for create)"},
                 "location": {"type": "STRING", "description": "Location (for create)"},
+            },
+            "required": ["action"]
+        }
+    },
+    {
+        "name": "notion_calendar",
+        "description": "Manages the user's Notion database calendar: list, create, complete events, list available databases. Use when the user mentions Notion calendar or agenda.",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action":   {"type": "STRING", "description": "list | create | list_databases | complete"},
+                "database_id": {"type": "STRING", "description": "ID do banco de dados Notion (opcional, configurado nas settings se omitido)"},
+                "data_source_id": {"type": "STRING", "description": "ID of the Notion data source (optional, resolved from database_id if omitted)"},
+                "days":     {"type": "INTEGER", "description": "Number of days to list (for list)"},
+                "date":     {"type": "STRING", "description": "Date in YYYY-MM-DD format or 'hoje'/'amanhã' (for list)"},
+                "summary":  {"type": "STRING", "description": "Title of the event (for create)"},
+                "start_time": {"type": "STRING", "description": "Start time in YYYY-MM-DD HH:MM format (for create)"},
+                "end_time":   {"type": "STRING", "description": "End time in YYYY-MM-DD HH:MM format (for create)"},
+                "page_id":  {"type": "STRING", "description": "ID of the page to complete (for complete)"},
+                "search_title": {"type": "STRING", "description": "Title text to search for (for complete, falls back to page_id)"},
             },
             "required": ["action"]
         }
@@ -855,6 +876,10 @@ class SiriusLive:
                 r = await loop.run_in_executor(None, lambda: calendar_action(parameters=args, player=self.ui))
                 result = r or "Done."
 
+            elif name == "notion_calendar":
+                r = await loop.run_in_executor(None, lambda: notion_calendar_action(parameters=args, player=self.ui))
+                result = r or "Done."
+
             elif name == "gmail":
                 r = await loop.run_in_executor(None, lambda: gmail_action(parameters=args, player=self.ui))
                 result = r or "Done."
@@ -896,7 +921,7 @@ class SiriusLive:
         if not self.ui.muted:
             self.ui.set_state("LISTENING")
 
-        print(f"[SIRIUS] 📤 {name} → {str(result)[:80]}")
+        print(f"[SIRIUS] 📤 {name} → {str(result)[:500]}")
         return types.FunctionResponse(
             id=fc.id, name=name,
             response={"result": result}

@@ -53,7 +53,7 @@ PERMISSION_META: dict[str, dict] = {
     },
     "access_personal_accounts": {
         "label":       "Acessar Contas Pessoais",
-        "description": "Ler e gerenciar Gmail e Google Calendar.",
+        "description": "Ler e gerenciar Gmail, Google Calendar e Notion Calendar.",
         "icon":        "fa5s.lock",
     },
     "send_messages": {
@@ -88,6 +88,7 @@ TOOL_TO_PERMISSION: dict[str, str] = {
     "game_updater":       "open_applications",
     "gmail":              "access_personal_accounts",
     "google_calendar":    "access_personal_accounts",
+    "notion_calendar":    "access_personal_accounts",
     "send_message":       "send_messages",
     "reminder":           "send_messages",
 }

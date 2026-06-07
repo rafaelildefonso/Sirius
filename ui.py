@@ -1187,6 +1187,15 @@ class SettingsOverlay(QWidget):
         g_status_row.addStretch()
         layout.addLayout(g_status_row)
 
+        layout.addWidget(_sep())
+        layout.addWidget(_lbl("NOTION INTEGRATION", bold=True, color=C.ACC2))
+        layout.addWidget(_lbl("NOTION API TOKEN"))
+        self._n_token = _inp(ph="ntn_…")
+        layout.addWidget(self._n_token)
+        layout.addWidget(_lbl("NOTION DATABASE ID (opcional)"))
+        self._n_db = _inp(password=False, ph="ID do database usado como calendário")
+        layout.addWidget(self._n_db)
+
         layout.addStretch()
         save_btn = QPushButton("SALVAR E FECHAR")
         save_btn.setFixedHeight(34); save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -1321,6 +1330,9 @@ class SettingsOverlay(QWidget):
                     self._g_status_icon.setPixmap(qta.icon("fa5s.check-circle", color=C.GREEN).pixmap(14, 14))
                     self._g_status.setText("Google Connected")
                     self._g_status.setStyleSheet(f"color: {C.GREEN};")
+                n = d.get("notion_creds", {})
+                self._n_token.setText(n.get("token", ""))
+                self._n_db.setText(n.get("database_id", ""))
             except Exception:
                 pass
 
@@ -1353,6 +1365,8 @@ class SettingsOverlay(QWidget):
         os_name  = getattr(self, "_os_name", "windows")
         g_id     = self._g_id.text().strip()
         g_secret = self._g_secret.text().strip()
+        n_token  = self._n_token.text().strip()
+        n_db     = self._n_db.text().strip()
         d = {}
         if API_FILE.exists():
             try: d = json.loads(API_FILE.read_text(encoding="utf-8"))
@@ -1363,6 +1377,7 @@ class SettingsOverlay(QWidget):
         d["serpapi_key"]       = self._serpapi_input.text().strip()
         d["os_system"]         = os_name
         d["google_creds"]      = {"client_id": g_id, "client_secret": g_secret}
+        d["notion_creds"]      = {"token": n_token, "database_id": n_db}
         os.makedirs(CONFIG_DIR, exist_ok=True)
         API_FILE.write_text(json.dumps(d, indent=4), encoding="utf-8")
 
