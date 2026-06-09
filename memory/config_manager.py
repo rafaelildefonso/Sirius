@@ -1,50 +1,44 @@
 import json
-import sys
 from pathlib import Path
 
-def get_base_dir() -> Path:
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent
-    return Path(__file__).resolve().parent.parent
+from core.config_loader import get_secret, get_all_config, save_configs as _save_configs
 
-BASE_DIR    = get_base_dir()
-CONFIG_DIR  = BASE_DIR / "config"
-CONFIG_FILE = CONFIG_DIR / "api_keys.json"
+
+def get_base_dir() -> Path:
+    from core.config_loader import get_base_dir as _get_base_dir
+    return _get_base_dir()
+
 
 def ensure_config_dir() -> None:
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    (get_base_dir() / "config").mkdir(parents=True, exist_ok=True)
 
 def config_exists() -> bool:
-    return CONFIG_FILE.exists()
+    cfg = get_all_config()
+    return bool(cfg)
+
+def save_config(cfg: dict) -> None:
+    _save_configs(cfg)
 
 def save_api_keys(gemini_api_key: str) -> None:
-    ensure_config_dir()
-
-    data: dict = {}
-    if CONFIG_FILE.exists():
+    from core.config_loader import set_secret
+    set_secret("GEMINI_API_KEY", gemini_api_key.strip())
+    config_dir = get_base_dir() / "config"
+    api_keys_path = config_dir / "api_keys.json"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    data = {}
+    if api_keys_path.exists():
         try:
-            data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+            data = json.loads(api_keys_path.read_text(encoding="utf-8"))
         except Exception:
-            data = {}
-
+            pass
     data["gemini_api_key"] = gemini_api_key.strip()
-
-    CONFIG_FILE.write_text(
-        json.dumps(data, indent=2),
-        encoding="utf-8"
-    )
+    api_keys_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 def load_api_keys() -> dict:
-    if not CONFIG_FILE.exists():
-        return {}
-    try:
-        return json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
-    except Exception as e:
-        print(f"❌ Failed to load api_keys.json: {e}")
-        return {}
+    return get_all_config()
 
 def get_gemini_key() -> str | None:
-    return load_api_keys().get("gemini_api_key")
+    return get_secret("gemini_api_key") or None
 
 def is_configured() -> bool:
     key = get_gemini_key()

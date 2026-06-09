@@ -9,6 +9,8 @@ import time
 import random
 from pathlib import Path
 
+from core.llm_utils import call_vision_for_action
+
 try:
     import pyautogui
     pyautogui.FAILSAFE = True
@@ -29,22 +31,17 @@ def _base_dir() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
-_BASE         = _base_dir()
-_CONFIG_PATH  = _BASE / "config" / "api_keys.json"
-_MEMORY_PATH  = _BASE / "memory" / "long_term.json"
+from core.config_loader import get_secret, get_config
 
-def _load_config() -> dict:
-    try:
-        return json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+_MEMORY_PATH  = _base_dir() / "memory" / "long_term.json"
+
 
 def _get_os() -> str:
-    return _load_config().get("os_system", "windows").lower()
+    return get_config("os_system", "windows").lower()
 
 
 def _get_api_key() -> str:
-    return _load_config().get("gemini_api_key", "")
+    return get_secret("gemini_api_key", "")
 
 _SAFE_SCREENSHOT_ROOTS = (
     Path.home(),
@@ -297,23 +294,14 @@ def _focus_window(title: str) -> str:
     return f"focus_window: unknown OS '{os_name}'"
 
 def _screen_find(description: str) -> tuple[int, int] | None:
-    api_key = _get_api_key()
-    if not api_key:
-        print("[ComputerControl] ⚠️ No API key for screen_find")
-        return None
-
+    _require_pyautogui()
     try:
-        from google import genai
-        from google.genai import types as gtypes
-
-        _require_pyautogui()
         w, h  = pyautogui.size()
         img   = pyautogui.screenshot()
         buf   = io.BytesIO()
         img.save(buf, format="PNG")
         image_bytes = buf.getvalue()
 
-        client = genai.Client(api_key=api_key)
         prompt = (
             f"This is a screenshot of a {w}×{h} pixel screen. "
             f"Locate the UI element described as: '{description}'. "
@@ -321,15 +309,7 @@ def _screen_find(description: str) -> tuple[int, int] | None:
             f"If the element is not visible, reply: NOT_FOUND"
         )
 
-        response = client.models.generate_content(
-            model="gemini-2.5-flash-lite",
-            contents=[
-                gtypes.Part.from_bytes(data=image_bytes, mime_type="image/png"),
-                prompt,
-            ],
-        )
-
-        text = (response.text or "").strip()
+        text = call_vision_for_action(prompt, image_bytes, "image/png")
         if "NOT_FOUND" in text.upper():
             return None
 

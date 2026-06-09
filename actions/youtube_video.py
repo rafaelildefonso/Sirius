@@ -25,6 +25,8 @@ except ImportError:
     _TRANSCRIPT_OK = False
 
 from config import get_os, is_windows, is_mac, is_linux
+from core.cache import search_cache, api_cache
+from core.llm_utils import call_llm_for_action
 
 
 def _get_base_dir() -> Path:
@@ -48,11 +50,6 @@ HEADERS = {
 _YT_VIDEO_FILTER = "EgIQAQ%3D%3D"
 
 
-def _get_api_key() -> str:
-    with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)["gemini_api_key"]
-
-
 def _open_url(url: str) -> None:
     try:
         if is_mac():
@@ -65,6 +62,11 @@ def _open_url(url: str) -> None:
         print(f"[YouTube] ⚠️ open_url failed: {e}")
 
 def _scrape_first_video_url(query: str) -> str | None:
+
+    cache_key = f"yt:url:{query}"
+    cached = search_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     if not _REQUESTS_OK:
         return None
@@ -89,7 +91,9 @@ def _scrape_first_video_url(query: str) -> str | None:
 
             if f'/shorts/{vid}' in html:
                 continue
-            return f"https://www.youtube.com/watch?v={vid}"
+            result = f"https://www.youtube.com/watch?v={vid}"
+            search_cache.set(cache_key, result, ttl=1800)
+            return result
 
     except Exception as e:
         print(f"[YouTube] ⚠️ scrape_first_video_url failed: {e}")
@@ -125,6 +129,10 @@ def _ask_for_url(prompt_text: str = "YouTube video URL:") -> str | None:
 
 
 def _get_transcript(video_id: str) -> str | None:
+    cache_key = f"yt:transcript:{video_id}"
+    cached = api_cache.get(cache_key)
+    if cached is not None:
+        return cached
     if not _TRANSCRIPT_OK:
         return None
     try:
@@ -150,34 +158,29 @@ def _get_transcript(video_id: str) -> str | None:
             return None
 
         fetched = transcript.fetch()
-        return " ".join(entry["text"] for entry in fetched)
+        result = " ".join(entry["text"] for entry in fetched)
+        api_cache.set(cache_key, result, ttl=3600)
+        return result
 
     except Exception as e:
         print(f"[YouTube] ⚠️ Transcript fetch failed: {e}")
         return None
 
 
-def _summarize_with_gemini(transcript: str, video_url: str) -> str:
-    import google.generativeai as genai
-
-    genai.configure(api_key=_get_api_key())
-    model = genai.GenerativeModel(
-        model_name="gemini-2.5-flash",
-        system_instruction=(
-            "You are SIRIUS, an AI assistant. "
-            "Summarize YouTube video transcripts clearly and concisely. "
-            "Structure: 1-sentence overview, then 3-5 key points. "
-            "Be direct. Address the user as 'sir'. "
-            "Match the language of the transcript."
-        )
+def _summarize_with_llm(transcript: str, video_url: str) -> str:
+    system = (
+        "You are SIRIUS, an AI assistant. "
+        "Summarize YouTube video transcripts clearly and concisely. "
+        "Structure: 1-sentence overview, then 3-5 key points. "
+        "Be direct. Address the user as 'sir'. "
+        "Match the language of the transcript."
     )
-
-    max_chars = 80000
+    max_chars = 35000
     truncated = transcript[:max_chars] + ("..." if len(transcript) > max_chars else "")
-    response  = model.generate_content(
-        f"Please summarize this YouTube video transcript:\n\n{truncated}"
+    return call_llm_for_action(
+        f"Please summarize this YouTube video transcript:\n\n{truncated}",
+        system=system,
     )
-    return response.text.strip()
 
 
 def _save_summary(content: str, video_url: str) -> str:
@@ -210,6 +213,10 @@ def _save_summary(content: str, video_url: str) -> str:
 
 
 def _scrape_video_info(video_id: str) -> dict:
+    cache_key = f"yt:info:{video_id}"
+    cached = api_cache.get(cache_key)
+    if cached is not None:
+        return cached
     if not _REQUESTS_OK:
         return {}
     url = f"https://www.youtube.com/watch?v={video_id}"
@@ -236,6 +243,7 @@ def _scrape_video_info(video_id: str) -> dict:
                 else:
                     info[key] = raw
 
+        api_cache.set(cache_key, info, ttl=3600)
         return info
     except Exception as e:
         print(f"[YouTube] ⚠️ Info scrape failed: {e}")
@@ -243,6 +251,10 @@ def _scrape_video_info(video_id: str) -> dict:
 
 
 def _scrape_trending(region: str = "TR", max_results: int = 8) -> list[dict]:
+    cache_key = f"yt:trending:{region}:{max_results}"
+    cached = api_cache.get(cache_key)
+    if cached is not None:
+        return cached
     if not _REQUESTS_OK:
         return []
     url = f"https://www.youtube.com/feed/trending?gl={region.upper()}"
@@ -263,6 +275,7 @@ def _scrape_trending(region: str = "TR", max_results: int = 8) -> list[dict]:
             if len(results) >= max_results:
                 break
 
+        api_cache.set(cache_key, results, ttl=1800)
         return results
     except Exception as e:
         print(f"[YouTube] ⚠️ Trending scrape failed: {e}")
@@ -322,7 +335,7 @@ def _handle_summarize(parameters: dict, player, speak) -> str:
         speak("Transcript retrieved. Generating summary now.")
 
     try:
-        summary = _summarize_with_gemini(transcript, url)
+        summary = _summarize_with_llm(transcript, url)
     except Exception as e:
         return f"Summary generation failed, sir: {e}"
 

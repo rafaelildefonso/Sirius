@@ -3,22 +3,31 @@ import json
 import sys
 from pathlib import Path
 
+from core.cache import search_cache
+from core.llm_utils import _get_mode, call_search_for_action
+
+
 def _get_base_dir() -> Path:
     if getattr(sys, "frozen", False):
         return Path(sys.executable).parent
     return Path(__file__).resolve().parent.parent
 
 
-BASE_DIR        = _get_base_dir()
-API_CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
+from core.config_loader import get_secret
 
 
 def _get_api_key() -> str:
-    with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)["gemini_api_key"]
+    key = get_secret("gemini_api_key", "")
+    if not key:
+        raise RuntimeError("gemini_api_key not found.")
+    return key
 
 
 def _gemini_search(query: str) -> str:
+    cache_key = f"gemini:{query}"
+    cached = search_cache.get(cache_key)
+    if cached is not None:
+        return cached
     from google import genai
 
     client   = genai.Client(api_key=_get_api_key())
@@ -36,10 +45,15 @@ def _gemini_search(query: str) -> str:
     text = text.strip()
     if not text:
         raise ValueError("Gemini returned an empty response.")
+    search_cache.set(cache_key, text, ttl=600)
     return text
 
 
 def _shopping_search(query: str) -> str:
+    cache_key = f"shopping:{query}"
+    cached = search_cache.get(cache_key)
+    if cached is not None:
+        return cached
     from google import genai
 
     client   = genai.Client(api_key=_get_api_key())
@@ -67,10 +81,15 @@ def _shopping_search(query: str) -> str:
     text = text.strip()
     if not text:
         raise ValueError("Gemini returned an empty response.")
+    search_cache.set(cache_key, text, ttl=1800)
     return text
 
 
 def _ddg_search(query: str, max_results: int = 6) -> list[dict]:
+    cache_key = f"ddg:{query}:{max_results}"
+    cached = search_cache.get(cache_key)
+    if cached is not None:
+        return cached
     try:
         from ddgs import DDGS
     except ImportError:
@@ -84,6 +103,7 @@ def _ddg_search(query: str, max_results: int = 6) -> list[dict]:
                 "snippet": r.get("body",   ""),
                 "url":     r.get("href",   ""),
             })
+    search_cache.set(cache_key, results, ttl=300)
     return results
 
 
@@ -147,6 +167,29 @@ def web_search(
         player.write_log(f"[Search] {query or ', '.join(items)}")
 
     print(f"[WebSearch] 🔍 Query: {query!r}  Mode: {mode}")
+
+    _mode = _get_mode()
+    if _mode == "local":
+        if mode == "compare" and items:
+            parts = []
+            for item in items:
+                try:
+                    results = _ddg_search(f"{item} {aspect}", max_results=3)
+                    if results:
+                        parts.append(f"▸ {item}")
+                        for r in results[:2]:
+                            parts.append(f"  • {r.get('snippet', '')}")
+                except Exception:
+                    parts.append(f"▸ {item}: no results")
+            return "\n".join(parts) if parts else "No comparison results."
+
+        if mode == "shopping":
+            shopping_query = f"{query} buy price"
+            results = _ddg_search(shopping_query)
+            result  = _format_ddg(shopping_query, results)
+            return f"{result}\n\n{call_search_for_action(query)}"
+
+        return call_search_for_action(query)
 
     try:
         if mode == "compare" and items:

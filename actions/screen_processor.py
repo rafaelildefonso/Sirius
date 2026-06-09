@@ -33,44 +33,29 @@ try:
 except ImportError:
     _PIL = False
 
-from google import genai
-from google.genai import types as gtypes
-
-def _base_dir() -> Path:
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent
-    return Path(__file__).resolve().parent.parent
-
-
-_BASE        = _base_dir()
-_CONFIG_PATH = _BASE / "config" / "api_keys.json"
+from core.cache import config_cache, vision_cache
+from core.config_loader import get_secret, get_config, get_all_config
+from core.llm_utils import _get_mode, call_vision_for_action
 
 
 def _load_config() -> dict:
-    try:
-        return json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-
-
-def _save_config_key(key: str, value) -> None:
-    try:
-        cfg = _load_config()
-        cfg[key] = value
-        _CONFIG_PATH.write_text(json.dumps(cfg, indent=4), encoding="utf-8")
-    except Exception as e:
-        print(f"[Vision] ⚠️  Could not save config key '{key}': {e}")
+    cached = config_cache.get("screen_processor_config")
+    if cached is not None:
+        return cached
+    data = get_all_config()
+    config_cache.set("screen_processor_config", data, ttl=3600)
+    return data
 
 
 def _get_api_key() -> str:
-    key = _load_config().get("gemini_api_key", "")
+    key = get_secret("gemini_api_key", "")
     if not key:
         raise RuntimeError("gemini_api_key not found in config.")
     return key
 
 
 def _get_os() -> str:
-    return _load_config().get("os_system", "windows").lower()
+    return get_config("os_system", "windows").lower()
 
 _LIVE_MODEL         = "models/gemini-2.5-flash-native-audio-preview-12-2025"
 _CHANNELS           = 1
@@ -387,7 +372,7 @@ def screen_process(
     response=None,
     player=None,
     session_memory=None,
-) -> bool:
+) -> str | bool:
 
     params    = parameters or {}
     user_text = (params.get("text") or params.get("user_text") or "").strip()
@@ -400,12 +385,6 @@ def screen_process(
     print(f"[Vision] ▶ angle={angle!r}  question='{user_text[:80]}'")
 
     try:
-        _ensure_session(player=player)
-    except Exception as e:
-        print(f"[Vision] ❌ Could not start session: {e}")
-        return False
-
-    try:
         if angle == "camera":
             image_bytes, mime_type = _capture_camera()
             print(f"[Vision] 📷 Camera: {len(image_bytes):,} bytes")
@@ -416,8 +395,30 @@ def screen_process(
         print(f"[Vision] ❌ Capture error: {e}")
         return False
 
-    _session.analyze(image_bytes, mime_type, user_text)
-    return True
+    image_hash = str(hash(image_bytes[:4096])) if image_bytes else ""
+
+    if _get_mode() == "local":
+        cache_key = f"vision:local:{image_hash}:{user_text}"
+        cached = vision_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        result = call_vision_for_action(user_text, image_bytes)
+        result_text = result if result else "Screen analyzed."
+        vision_cache.set(cache_key, result_text, ttl=30)
+        return result_text
+    else:
+        cache_key = f"vision:live:{image_hash}:{user_text}"
+        cached = vision_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        try:
+            _ensure_session(player=player)
+        except Exception as e:
+            print(f"[Vision] ❌ Could not start session: {e}")
+            return False
+        _session.analyze(image_bytes, mime_type, user_text)
+        vision_cache.set(cache_key, True, ttl=10)
+        return True
 
 
 def warmup_session(player=None) -> None:

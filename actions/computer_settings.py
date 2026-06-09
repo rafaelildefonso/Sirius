@@ -7,6 +7,8 @@ import subprocess
 import platform
 from pathlib import Path
 
+from core.llm_utils import call_llm_for_action
+
 try:
     import pyautogui
     pyautogui.FAILSAFE = True
@@ -36,9 +38,11 @@ def _get_base_dir() -> Path:
     return Path(__file__).resolve().parent.parent
 
 def _get_api_key() -> str:
-    path = _get_base_dir() / "config" / "api_keys.json"
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)["gemini_api_key"]
+    from core.config_loader import get_secret
+    key = get_secret("gemini_api_key", "")
+    if not key:
+        raise RuntimeError("gemini_api_key not found.")
+    return key
 
 def _get_macos_wifi_interface() -> str:
     try:
@@ -597,36 +601,22 @@ _DANGEROUS_ACTIONS = {"restart", "shutdown"}
 
 
 def _detect_action(description: str) -> dict:
-
-    import google.generativeai as genai
-    genai.configure(api_key=_get_api_key())
-    model = genai.GenerativeModel("gemini-2.5-flash-lite")
-
     available = ", ".join(sorted(ACTION_MAP.keys())) + \
                 ", volume_set, type_text, press_key, reload_n"
 
-    prompt = f"""You are an intent detector for a computer control assistant.
-
-The user issued a command (possibly in any language): "{description}"
-
-Available actions: {available}
-
-Return ONLY a valid JSON object:
-{{"action": "action_name", "value": null_or_value}}
-
-Rules:
-- Pick the single best matching action from the available list.
-- For volume_set: value is an integer 0-100.
-- For type_text: value is the exact text to type.
-- For press_key: value is the key name (e.g. "f5", "tab", "enter").
-- For reload_n: value is an integer (number of times to reload).
-- For minimize, maximize, close_app: value is the app name. TRY TO FIX TRANSCRIPTION ERRORS (e.g. "no tion" -> "Notion", "vessy code" -> "VSCode", "brevy" -> "Brave").
-- If no clear match, pick the closest action.
-- Return ONLY the JSON, no explanation, no markdown."""
-
+    system = (
+        "You are an intent detector. Return ONLY a valid JSON object — "
+        "no explanation, no markdown."
+    )
+    prompt = (
+        f'User command (any language): "{description}"\n\n'
+        f"Available actions: {available}\n\n"
+        f'Return: {{"action": "action_name", "value": null_or_value}}\n'
+        f"Rules: volume_set→int 0-100; type_text→exact text; press_key→key name; reload_n→int."
+    )
     try:
-        resp = model.generate_content(prompt)
-        text = re.sub(r"```(?:json)?", "", resp.text).strip().rstrip("`").strip()
+        text = call_llm_for_action(prompt, system=system)
+        text = re.sub(r"```(?:json)?", "", text).strip().rstrip("`").strip()
         return json.loads(text)
     except Exception as e:
         print(f"[Settings] Intent detection failed: {e}")

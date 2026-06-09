@@ -4,6 +4,8 @@ from threading import Lock
 from pathlib import Path
 import sys
 
+from core.cache import memory_cache
+
 
 def get_base_dir() -> Path:
     if getattr(sys, "frozen", False):
@@ -28,6 +30,9 @@ def _empty_memory() -> dict:
     }
 
 def load_memory() -> dict:
+    cached = memory_cache.get("long_term")
+    if cached is not None:
+        return cached
     if not MEMORY_PATH.exists():
         return _empty_memory()
     with _lock:
@@ -38,6 +43,7 @@ def load_memory() -> dict:
                 for key in base:
                     if key not in data:
                         data[key] = {}
+                memory_cache.set("long_term", data, ttl=3600)
                 return data
             return _empty_memory()
         except Exception as e:
@@ -77,6 +83,7 @@ def save_memory(memory: dict) -> None:
             json.dumps(memory, indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
+    memory_cache.set("long_term", memory, ttl=3600)
 
 
 def _truncate_value(val: str) -> str:

@@ -1,3 +1,4 @@
+from datetime import datetime
 import asyncio
 import re
 import threading
@@ -21,7 +22,7 @@ import sounddevice as sd
 import numpy as np
 from google import genai
 from google.genai import types
-from ui import SiriusUI
+from sirius_ui import SiriusUI
 from memory.memory_manager import (
     load_memory, update_memory, format_memory_for_prompt,
     should_extract_memory, extract_memory
@@ -62,7 +63,6 @@ def get_base_dir():
 
 
 BASE_DIR        = get_base_dir()
-API_CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
 PROMPT_PATH     = BASE_DIR / "core" / "prompt.txt"
 LIVE_MODEL          = "models/gemini-2.5-flash-native-audio-preview-12-2025"
 CHANNELS            = 1
@@ -71,14 +71,11 @@ RECEIVE_SAMPLE_RATE = 24000
 CHUNK_SIZE          = 1024
 
 def _get_api_key() -> str:
-    try:
-        with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
-            key = json.load(f).get("gemini_api_key", "")
-        if not key:
-            raise ValueError("gemini_api_key is empty. Configure it in Settings.")
-        return key
-    except FileNotFoundError:
-        raise RuntimeError(f"API config not found at: {API_CONFIG_PATH}")
+    from core.config_loader import get_secret
+    key = get_secret("gemini_api_key", "")
+    if not key:
+        raise ValueError("gemini_api_key is empty. Configure it in Settings.")
+    return key
 
 
 _last_memory_input = ""
@@ -105,15 +102,22 @@ def _update_memory_async(user_text: str, sirius_text: str) -> None:
         if "429" not in str(e):
             print(f"[Memory] ⚠️ {e}")
 
+_system_prompt_cache: str | None = None
+
 def _load_system_prompt() -> str:
+    global _system_prompt_cache
+    if _system_prompt_cache is not None:
+        return _system_prompt_cache
     try:
-        return PROMPT_PATH.read_text(encoding="utf-8")
+        _system_prompt_cache = PROMPT_PATH.read_text(encoding="utf-8")
+        return _system_prompt_cache
     except Exception:
-        return (
+        _system_prompt_cache = (
             "You are SIRIUS, a powerful and minimalist AI assistant. "
             "Be concise, direct, and always use the provided tools to complete tasks. "
             "Never simulate or guess results — always call the appropriate tool."
         )
+        return _system_prompt_cache
 
 _CTRL_RE = re.compile(r"<ctrl\d+>", re.IGNORECASE)
 
@@ -1133,16 +1137,708 @@ class SiriusLive:
             print("[SIRIUS] 🔄 Reconnecting in 3s...")
             await asyncio.sleep(3)
 
+# ---------------------------------------------------------------------------
+# Convert Gemini-style declarations to OpenAI/Ollama format
+# ---------------------------------------------------------------------------
+
+_TYPE_MAP = {
+    "OBJECT": "object", "STRING": "string", "ARRAY": "array",
+    "INTEGER": "integer", "BOOLEAN": "boolean", "NUMBER": "number",
+}
+
+def _convert_type(t: str) -> str:
+    return _TYPE_MAP.get(t, t.lower()) if isinstance(t, str) else t
+
+def _convert_props(props: dict) -> dict:
+    out = {}
+    for k, v in props.items():
+        nv = dict(v)
+        if "type" in nv:
+            nv["type"] = _convert_type(nv["type"])
+        if "items" in nv and isinstance(nv["items"], dict):
+            nv["items"] = {"type": _convert_type(nv["items"].get("type", "string"))}
+        out[k] = nv
+    return out
+
+def _to_ollama_tools(decls: list) -> list:
+    tools = []
+    for d in decls:
+        params = d.get("parameters", {})
+        new_params: dict = {
+            "type":       "object",
+            "properties": _convert_props(params.get("properties", {})),
+        }
+        req = params.get("required")
+        if req:
+            new_params["required"] = req
+        tools.append({
+            "type": "function",
+            "function": {
+                "name":        d["name"],
+                "description": d["description"],
+                "parameters":  new_params,
+            },
+        })
+    return tools
+
+# ---------------------------------------------------------------------------
+# Voice Activity Detection (used for Whisper listen loop)
+# ---------------------------------------------------------------------------
+
+class _VADBuffer:
+    """Energy-based VAD: buffers audio until end of utterance."""
+
+    def __init__(
+        self,
+        sample_rate:    int   = 16_000,
+        silence_sec:    float = 0.7,    # silence after last word → send to STT
+        speech_thresh:  float = 0.008,  # RMS above this = speech
+        silence_thresh: float = 0.004,  # RMS below this = silence
+        min_speech_sec: float = 0.3,
+        max_speech_sec: float = 30.0,
+    ):
+        self._sr            = sample_rate
+        self._sil_n         = int(silence_sec * sample_rate)
+        self._speech_thresh = speech_thresh
+        self._sil_thresh    = silence_thresh
+        self._min_n         = int(min_speech_sec * sample_rate)
+        self._max_n         = int(max_speech_sec * sample_rate)
+        self._buf:          list[np.ndarray] = []
+        self._in_spch       = False
+        self._sil_cnt       = 0
+
+    def process(self, chunk: np.ndarray) -> np.ndarray | None:
+        rms     = float(np.sqrt(np.mean(chunk ** 2)))
+        total_n = sum(len(c) for c in self._buf)
+
+        if rms > self._speech_thresh:
+            self._in_spch = True
+            self._sil_cnt = 0
+            self._buf.append(chunk.copy())
+        elif self._in_spch:
+            self._buf.append(chunk.copy())
+            if rms < self._sil_thresh:
+                self._sil_cnt += len(chunk)
+
+            if self._sil_cnt >= self._sil_n or total_n >= self._max_n:
+                audio         = np.concatenate(self._buf)
+                self._buf     = []
+                self._in_spch = False
+                self._sil_cnt = 0
+                if len(audio) >= self._min_n:
+                    return audio
+        return None
+
+
+# ---------------------------------------------------------------------------
+# SiriusLocal
+# ---------------------------------------------------------------------------
+
+class SiriusLocal:
+    """
+    Main assistant class for local offline mode.
+    Replaces SiriusLive with:
+      STT (Whisper/Vosk) → Ollama LLM (tool calling) → TTS (Edge/Kokoro/ElevenLabs)
+    """
+
+    def __init__(self, ui: SiriusUI):
+        import queue as _queue
+        from core.config_loader import get_all_config
+        self.ui               = ui
+        self._config          = get_all_config()
+        self._stt             = None
+        self._tts             = None
+        self._tts_ready       = threading.Event()
+        self._speaking        = False
+        self._speaking_lock   = threading.Lock()
+        self._text_queue      = _queue.Queue()
+        self._tts_queue       = _queue.Queue()
+        self._conversation:   list[dict]  = []
+
+        self.ui.on_text_command = self._on_text_command
+
+    def _build_system_prompt(self) -> str:
+        sys_p   = _load_system_prompt()
+        memory  = load_memory()
+        mem_str = format_memory_for_prompt(memory)
+        now     = datetime.now()
+        time_ctx = (
+            f"[CURRENT DATE & TIME]\n"
+            f"Right now it is: {now.strftime('%A, %B %d, %Y — %I:%M %p')}\n"
+            f"Use this to calculate exact times for reminders."
+        )
+        parts = [sys_p]
+        if mem_str:
+            parts.append(mem_str)
+        parts.append(time_ctx)
+        return "\n\n".join(parts)
+
+    def _tts_worker(self) -> None:
+        self._tts_ready.wait(timeout=120)
+
+        while True:
+            text = self._tts_queue.get()
+            try:
+                if text and self._tts:
+                    with self._speaking_lock:
+                        self._speaking = True
+                    self.ui.set_state("SPEAKING")
+                    self._tts.speak(text)
+            except Exception as e:
+                print(f"[TTS] speak error: {e}")
+            finally:
+                self._tts_queue.task_done()
+                if self._tts_queue.empty():
+                    with self._speaking_lock:
+                        self._speaking = False
+                    if not self.ui.muted:
+                        self.ui.set_state("LISTENING")
+
+    def set_speaking(self, value: bool) -> None:
+        with self._speaking_lock:
+            self._speaking = value
+        if value:
+            self.ui.set_state("SPEAKING")
+        elif not self.ui.muted:
+            self.ui.set_state("LISTENING")
+
+    def speak(self, text: str) -> None:
+        if not text or not self._tts:
+            return
+        with self._speaking_lock:
+            self._speaking = True
+        self._tts_queue.put(text)
+
+    def speak_error(self, tool_name: str, error) -> None:
+        short = str(error)[:120]
+        self.ui.write_log(f"ERR: {tool_name} — {short}")
+        self.speak(f"{tool_name} encountered an error.")
+
+    def _on_text_command(self, text: str) -> None:
+        self._text_queue.put(text)
+
+    def _execute_tool(self, name: str, args: dict) -> str:
+        print(f"[SIRIUS LOCAL] 🔧 {name}  {args}")
+        self.ui.set_state("THINKING")
+
+        if name == "save_memory":
+            category = args.get("category", "notes")
+            key      = args.get("key", "")
+            value    = args.get("value", "")
+            if key and value:
+                update_memory({category: {key: {"value": value}}})
+                print(f"[Memory] 💾 save_memory: {category}/{key} = {value}")
+            if not self.ui.muted:
+                self.ui.set_state("LISTENING")
+            return "ok"
+
+        result = "Done."
+        try:
+            if name == "open_app":
+                r = open_app(parameters=args, response=None, player=self.ui)
+                result = r or f"Opened {args.get('app_name')}."
+
+            elif name == "weather_report":
+                r = weather_action(parameters=args, player=self.ui)
+                result = r or "Weather delivered."
+
+            elif name == "browser_control":
+                r = browser_control(parameters=args, player=self.ui)
+                result = r or "Done."
+
+            elif name == "file_controller":
+                r = file_controller(parameters=args, player=self.ui)
+                result = r or "Done."
+
+            elif name == "send_message":
+                r = send_message(parameters=args, response=None, player=self.ui, session_memory=None)
+                result = r or f"Message sent to {args.get('receiver')}."
+
+            elif name == "reminder":
+                r = reminder(parameters=args, response=None, player=self.ui)
+                result = r or "Reminder set."
+
+            elif name == "youtube_video":
+                r = youtube_video(parameters=args, response=None, player=self.ui)
+                result = r or "Done."
+
+            elif name == "screen_process":
+                r = screen_process(parameters=args, response=None, player=self.ui, session_memory=None)
+                result = r if isinstance(r, str) and r else "Screen analyzed."
+
+            elif name == "computer_settings":
+                r = computer_settings(parameters=args, response=None, player=self.ui)
+                result = r or "Done."
+
+            elif name == "desktop_control":
+                r = desktop_control(parameters=args, player=self.ui)
+                result = r or "Done."
+
+            elif name == "code_helper":
+                r = code_helper(parameters=args, player=self.ui, speak=self.speak)
+                result = r or "Done."
+
+            elif name == "dev_agent":
+                r = dev_agent(parameters=args, player=self.ui, speak=self.speak)
+                result = r or "Done."
+
+            elif name == "agent_task":
+                from agent.task_queue import get_queue, TaskPriority
+                priority_map = {
+                    "low": TaskPriority.LOW,
+                    "normal": TaskPriority.NORMAL,
+                    "high": TaskPriority.HIGH,
+                }
+                priority = priority_map.get(
+                    args.get("priority", "normal").lower(), TaskPriority.NORMAL
+                )
+                task_id = get_queue().submit(
+                    goal=args.get("goal", ""), priority=priority, speak=self.speak
+                )
+                result = f"Task started (ID: {task_id})."
+
+            elif name == "web_search":
+                r = web_search_action(parameters=args, player=self.ui)
+                result = r or "Done."
+
+            elif name == "file_processor":
+                if not args.get("file_path") and self.ui.current_file:
+                    args["file_path"] = self.ui.current_file
+                r = file_processor(parameters=args, player=self.ui, speak=self.speak)
+                result = r or "Done."
+
+            elif name == "computer_control":
+                r = computer_control(parameters=args, player=self.ui)
+                result = r or "Done."
+
+            elif name == "game_updater":
+                r = game_updater(parameters=args, player=self.ui, speak=self.speak)
+                result = r or "Done."
+
+            elif name == "flight_finder":
+                r = flight_finder(parameters=args, player=self.ui)
+                result = r or "Done."
+
+            elif name == "google_calendar":
+                r = calendar_action(parameters=args, player=self.ui)
+                result = r or "Done."
+
+            elif name == "notion_calendar":
+                r = notion_calendar_action(parameters=args, player=self.ui)
+                result = r or "Done."
+
+            elif name == "gmail":
+                r = gmail_action(parameters=args, player=self.ui)
+                result = r or "Done."
+
+            elif name == "workspaces":
+                from actions.workspaces import workspaces
+                r = workspaces(parameters=args, player=self.ui)
+                result = r or "Done."
+
+            elif name == "deep_research":
+                r = deep_research(parameters=args, player=self.ui)
+                result = r or "Done."
+
+            elif name == "linkedin_jobs_radar":
+                r = linkedin_jobs_radar(parameters=args, player=self.ui, speak=self.speak)
+                result = r or "Done."
+
+            elif name == "apply_assist":
+                r = apply_assist(parameters=args, player=self.ui, speak=self.speak)
+                result = r or "Done."
+
+            elif name == "shutdown_sirius":
+                self.ui.write_log("SYS: Shutdown requested.")
+                def _shutdown():
+                    import time, os
+                    self.speak("Goodbye, sir.")
+                    time.sleep(2.5)
+                    os._exit(0)
+                threading.Thread(target=_shutdown, daemon=True).start()
+                return "Shutting down."
+
+            else:
+                result = f"Unknown tool: {name}"
+
+        except Exception as e:
+            result = f"Tool '{name}' failed: {e}"
+            traceback.print_exc()
+            self.speak_error(name, e)
+
+        if not self.ui.muted:
+            self.ui.set_state("LISTENING")
+
+        print(f"[SIRIUS LOCAL] 📤 {name} → {str(result)[:80]}")
+        return result
+
+    def _process_message(self, user_text: str) -> None:
+        self.ui.set_state("THINKING")
+        self.ui.write_log(f"You: {user_text}")
+
+        self._conversation.append({"role": "user", "content": user_text})
+
+        MAX_HISTORY = 10
+        if len(self._conversation) > MAX_HISTORY:
+            self._conversation = self._conversation[-MAX_HISTORY:]
+
+        messages = [
+            {"role": "system", "content": self._build_system_prompt()}
+        ] + list(self._conversation)
+
+        _NEEDS_LLM_ROUND = {"web_search", "screen_process", "agent_task"}
+        ollama_tools = _to_ollama_tools(TOOL_DECLARATIONS)
+
+        MAX_TOOL_ROUNDS = 6
+        for _round in range(MAX_TOOL_ROUNDS):
+            final_content    = ""
+            final_tool_calls: list = []
+            _streamed: list[str] = []
+
+            try:
+                from core.llm_client import call_llm_stream
+                for event in call_llm_stream(messages, ollama_tools):
+                    if event["type"] == "sentence":
+                        _streamed.append(event["text"])
+                        self.speak(event["text"])
+                    elif event["type"] == "done":
+                        final_content    = event["content"]
+                        final_tool_calls = event["tool_calls"]
+            except RuntimeError as e:
+                self.speak_error("LLM", e)
+                return
+
+            if not final_tool_calls:
+                if _streamed:
+                    assistant_msg = {"role": "assistant", "content": final_content}
+                    messages.append(assistant_msg)
+                    self._conversation.append(assistant_msg)
+                    self.ui.write_log(f"Sirius: {final_content}")
+                elif final_content:
+                    assistant_msg = {"role": "assistant", "content": final_content}
+                    messages.append(assistant_msg)
+                    self._conversation.append(assistant_msg)
+                    self.ui.write_log(f"Sirius: {final_content}")
+                    self.speak(final_content)
+                break
+
+            assistant_msg = {
+                "role":       "assistant",
+                "content":    final_content or "",
+                "tool_calls": final_tool_calls,
+            }
+            messages.append(assistant_msg)
+            self._conversation.append(assistant_msg)
+
+            _only_memory = all(
+                tc.get("function", {}).get("name") == "save_memory"
+                for tc in final_tool_calls
+            )
+            if _only_memory and final_content:
+                for tc in final_tool_calls:
+                    fn    = tc.get("function", {})
+                    targs = fn.get("arguments", {})
+                    if isinstance(targs, str):
+                        try:
+                            targs = json.loads(targs)
+                        except Exception:
+                            targs = {}
+                    self._execute_tool("save_memory", targs)
+                assistant_msg2 = {"role": "assistant", "content": final_content}
+                messages.append(assistant_msg2)
+                self._conversation.append(assistant_msg2)
+                self.ui.write_log(f"Sirius: {final_content}")
+                if not _streamed:
+                    self.speak(final_content)
+                break
+
+            all_silent    = True
+            _tool_results: list[tuple[str, str]] = []
+
+            for tc in final_tool_calls:
+                fn    = tc.get("function", {})
+                tname = fn.get("name", "")
+                targs = fn.get("arguments", {})
+                if isinstance(targs, str):
+                    try:
+                        targs = json.loads(targs)
+                    except Exception:
+                        targs = {}
+
+                tc_id = tc.get("id", "")
+                self.ui.write_log(f"SYS: ▶ {tname}")
+                result = self._execute_tool(tname, targs)
+
+                if result != "__SILENT__":
+                    all_silent = False
+                    _tool_results.append((tname, result))
+
+                tool_msg: dict = {
+                    "role":    "tool",
+                    "content": "Done." if result == "__SILENT__" else str(result),
+                }
+                if tc_id:
+                    tool_msg["tool_call_id"] = tc_id
+
+                messages.append(tool_msg)
+                self._conversation.append(tool_msg)
+
+            if all_silent:
+                _saved_name: str | None = None
+                for _tc in final_tool_calls:
+                    _fn = _tc.get("function", {})
+                    if _fn.get("name") == "save_memory":
+                        _a = _fn.get("arguments", {})
+                        if isinstance(_a, str):
+                            try: _a = json.loads(_a)
+                            except Exception: _a = {}
+                        if isinstance(_a, dict) and _a.get("key") == "name" and _a.get("value"):
+                            _saved_name = str(_a["value"])
+                            break
+                _ack = f"Compreendido, {_saved_name}." if _saved_name else "Anotado."
+                _amsg = {"role": "assistant", "content": _ack}
+                messages.append(_amsg)
+                self._conversation.append(_amsg)
+                self.ui.write_log(f"Sirius: {_ack}")
+                self.speak(_ack)
+                break
+
+            if _tool_results and not any(n in _NEEDS_LLM_ROUND for n, _ in _tool_results):
+                _, _reply = _tool_results[-1]
+                _amsg = {"role": "assistant", "content": _reply}
+                messages.append(_amsg)
+                self._conversation.append(_amsg)
+                self.ui.write_log(f"Sirius: {_reply}")
+                self.speak(_reply)
+                break
+
+        if not self.ui.muted:
+            self.ui.set_state("LISTENING")
+
+    def _listen_whisper(self) -> None:
+        vad = _VADBuffer()
+        import queue as _queue
+        q = _queue.Queue(maxsize=200)
+
+        def callback(indata, frames, time_info, status):
+            with self._speaking_lock:
+                is_speaking = self._speaking
+            if not is_speaking and not self.ui.muted:
+                try:
+                    q.put_nowait(indata.copy())
+                except _queue.Full:
+                    pass
+
+        try:
+            with sd.InputStream(
+                samplerate=16000,
+                channels=CHANNELS,
+                dtype="float32",
+                blocksize=CHUNK_SIZE,
+                callback=callback,
+            ):
+                self.ui.write_log("SYS: Mic active (Whisper STT).")
+                while True:
+                    try:
+                        chunk = q.get(timeout=0.1)
+                        audio = vad.process(chunk.flatten())
+                        if audio is not None:
+                            self.ui.set_state("THINKING")
+                            text = self._stt.transcribe(audio)
+                            if text.strip():
+                                self._process_message(text)
+                    except _queue.Empty:
+                        pass
+        except Exception as e:
+            print(f"[STT-Whisper] Mic error: {e}")
+            traceback.print_exc()
+
+    def _listen_vosk(self) -> None:
+        import queue as _queue
+        q = _queue.Queue(maxsize=200)
+
+        def callback(indata, frames, time_info, status):
+            with self._speaking_lock:
+                is_speaking = self._speaking
+            if not is_speaking and not self.ui.muted:
+                try:
+                    q.put_nowait(indata.copy())
+                except _queue.Full:
+                    pass
+
+        try:
+            with sd.InputStream(
+                samplerate=16000,
+                channels=CHANNELS,
+                dtype="int16",
+                blocksize=4096,
+                callback=callback,
+            ):
+                self.ui.write_log("SYS: Mic active (Vosk STT).")
+                while True:
+                    try:
+                        chunk = q.get(timeout=0.1)
+                        text, is_final = self._stt.process_chunk(chunk.tobytes())
+                        if is_final and text.strip():
+                            self._process_message(text)
+                    except _queue.Empty:
+                        pass
+        except Exception as e:
+            print(f"[STT-Vosk] Mic error: {e}")
+            traceback.print_exc()
+
+    def _text_command_loop(self) -> None:
+        import queue as _queue
+        while True:
+            try:
+                text = self._text_queue.get(timeout=0.5)
+                if text.strip():
+                    self._process_message(text)
+            except _queue.Empty:
+                pass
+
+    def run(self) -> None:
+        try:
+            from core.llm_client import ensure_llm_running, warmup_model
+            self.ui.write_log("SYS: Checking LLM…")
+            if ensure_llm_running():
+                self.ui.write_log("SYS: LLM OK.")
+            else:
+                self.ui.write_log("ERR: LLM unavailable.")
+
+            stt_engine   = self._config.get("stt_engine",   "whisper").lower()
+            stt_language = self._config.get("stt_language", "auto")
+            stt_model    = self._config.get("stt_model",    "base")
+            tts_engine   = self._config.get("tts_engine",   "edgetts").lower()
+
+            self.ui.show_startup_panel()
+
+            _warmup_done = threading.Event()
+            _stt_done    = threading.Event()
+
+            def _do_warmup():
+                try:
+                    static_prompt = _load_system_prompt()
+                    warmup_model(system_prompt=static_prompt)
+                    self.ui.write_log("SYS: LLM ready.")
+                    self.ui.mark_startup_ready("llm")
+                except Exception as e:
+                    self.ui.write_log(f"ERR: LLM warmup — {e}")
+                    self.ui.mark_startup_ready("llm", error=True)
+                finally:
+                    _warmup_done.set()
+
+            def _do_stt():
+                try:
+                    self.ui.write_log(f"SYS: Loading {stt_engine.upper()} STT…")
+                    if stt_engine == "vosk":
+                        from core.stt import VoskSTT
+                        self._stt = VoskSTT(
+                            self._config.get("vosk_model_path"),
+                            language=stt_language,
+                        )
+                    else:
+                        from core.stt import WhisperSTT
+                        self._stt = WhisperSTT(stt_model, language=stt_language)
+                    self.ui.write_log("SYS: STT ready.")
+                    self.ui.mark_startup_ready("stt")
+                except Exception as e:
+                    self.ui.write_log(f"ERR: STT — {e}")
+                    self.ui.mark_startup_ready("stt", error=True)
+                finally:
+                    _stt_done.set()
+
+            def _do_tts():
+                try:
+                    self.ui.write_log(f"SYS: Loading {tts_engine.upper()} TTS…")
+                    from core.tts import create_tts_player
+                    self._tts = create_tts_player(self._config)
+                    self._tts_ready.set()
+                    self.ui.write_log("SYS: TTS ready.")
+                    self.ui.mark_startup_ready("tts")
+                    self.ui.set_startup_status("● All systems ready.")
+                    self.ui.hide_startup_panel()
+                    self.speak("SIRIUS online.")
+                except Exception as e:
+                    traceback.print_exc()
+                    self.ui.write_log(f"ERR: TTS — {e}")
+                    self.ui.mark_startup_ready("tts", error=True)
+                    self._tts_ready.set()
+
+            self.ui.write_log("SYS: Loading systems in parallel…")
+            threading.Thread(target=_do_warmup, daemon=True).start()
+            threading.Thread(target=_do_stt,    daemon=True).start()
+            threading.Thread(target=_do_tts,    daemon=True).start()
+
+            _warmup_done.wait(timeout=60)
+            _stt_done.wait(timeout=60)
+
+            self.ui.write_log("SYS: SIRIUS online.")
+            self.ui.set_state("LISTENING")
+            self.ui.set_startup_status("● SIRIUS online · Voice loading in background…")
+
+            threading.Thread(target=self._tts_worker,        daemon=True).start()
+            threading.Thread(target=self._text_command_loop,  daemon=True).start()
+
+            if stt_engine == "vosk":
+                self._listen_vosk()
+            else:
+                self._listen_whisper()
+
+        except Exception as e:
+            self.ui.write_log(f"ERR: Init failed — {e}")
+            traceback.print_exc()
+
+
 def main():
+    # Preload torch to optimize Kokoro load
+    def _preload_torch():
+        try:
+            import torch
+        except Exception:
+            pass
+    threading.Thread(target=_preload_torch, daemon=True).start()
+
     ui = SiriusUI()
 
     def runner():
         ui.wait_for_api_key()
-        sirius = SiriusLive(ui)
-        try:
-            asyncio.run(sirius.run())
-        except KeyboardInterrupt:
-            print("\n🔴 Shutting down...")
+
+        from core.config_loader import get_all_config
+        cfg = get_all_config()
+
+        mode     = cfg.get("assistant_mode", "gemini")
+        provider = cfg.get("llm_provider", "ollama")
+        if mode == "local" or provider in ("ollama", "openai"):
+            if mode != "local":
+                ui.write_log(f"SYS: assistant_mode='{mode}' but llm_provider='{provider}' — forcing Local Mode")
+            ui.write_log("SYS: Booting Local Offline Mode...")
+            
+            # Install dependencies on first run
+            ui.write_log("SYS: Checking local dependencies...")
+            _install_done = threading.Event()
+            def _do_install():
+                try:
+                    from core.installer import install_for_config
+                    install_for_config(cfg, log=ui.write_log)
+                except Exception as e:
+                    ui.write_log(f"ERR: Dependency install — {e}")
+                finally:
+                    _install_done.set()
+            threading.Thread(target=_do_install, daemon=True).start()
+            _install_done.wait()
+
+            sirius = SiriusLocal(ui)
+            try:
+                sirius.run()
+            except KeyboardInterrupt:
+                print("\n🔴 Shutting down...")
+        else:
+            sirius = SiriusLive(ui)
+            try:
+                asyncio.run(sirius.run())
+            except KeyboardInterrupt:
+                print("\n🔴 Shutting down...")
 
     threading.Thread(target=runner, daemon=True).start()
     ui.root.mainloop()

@@ -4,17 +4,15 @@ from pathlib import Path
 from google import genai
 from google.genai import types
 
+from core.config_loader import get_secret
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 CONFIG_DIR = BASE_DIR / "config"
 PROFILE_FILE = CONFIG_DIR / "user_profile.json"
-API_KEYS_FILE = CONFIG_DIR / "api_keys.json"
+
 
 def _get_api_key() -> str:
-    try:
-        with open(API_KEYS_FILE, "r", encoding="utf-8") as f:
-            return json.load(f).get("gemini_api_key", "")
-    except Exception:
-        return ""
+    return get_secret("gemini_api_key", "")
 
 def apply_assist(parameters: dict, player=None, speak=None) -> str:
     """Generates tailored cover letters, resume adjustment advice, or interview prep based on user profile and a job."""

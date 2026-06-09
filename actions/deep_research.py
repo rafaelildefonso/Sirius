@@ -10,28 +10,15 @@ from urllib.parse import urlparse
 import requests
 from bs4 import BeautifulSoup
 
+from core.cache import search_cache, api_cache
 from or_client import client as or_client
 
 
-def _get_base_dir() -> Path:
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent
-    return Path(__file__).resolve().parent.parent
-
-
-BASE_DIR = _get_base_dir()
-API_CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
+from core.config_loader import get_all_config
 
 
 def _load_api_keys() -> dict:
-    try:
-        with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return {}
-    except Exception as e:
-        print(f"[DeepResearch] ⚠️ Failed to load api_keys.json: {e}")
-        return {}
+    return get_all_config()
 
 def _fetch_page_text(url: str, timeout: int = 5) -> str:
     """Fetches the webpage and extracts text."""
@@ -158,6 +145,10 @@ def _build_search_queries(target: str, region: str) -> list[str]:
 
 def _search_tavily(query: str, max_results: int = 20) -> list[dict]:
     """Search using Tavily API if configured."""
+    cache_key = f"tavily:{query}:{max_results}"
+    cached = search_cache.get(cache_key)
+    if cached is not None:
+        return cached
     api_keys = _load_api_keys()
     tavily_key = api_keys.get("tavily_api_key", "").strip()
 
@@ -179,6 +170,7 @@ def _search_tavily(query: str, max_results: int = 20) -> list[dict]:
             })
 
         print(f"[DeepResearch] ✅ Tavily: {len(results)} results")
+        search_cache.set(cache_key, results, ttl=3600)
         return results
     except ImportError:
         if tavily_key:
@@ -191,6 +183,10 @@ def _search_tavily(query: str, max_results: int = 20) -> list[dict]:
 
 def _search_serpapi(query: str, region: str, max_results: int = 20) -> list[dict]:
     """Search using SerpAPI if configured."""
+    cache_key = f"serpapi:{query}:{region}:{max_results}"
+    cached = search_cache.get(cache_key)
+    if cached is not None:
+        return cached
     api_keys = _load_api_keys()
     serpapi_key = api_keys.get("serpapi_key", "").strip()
 
@@ -224,6 +220,7 @@ def _search_serpapi(query: str, region: str, max_results: int = 20) -> list[dict
             })
 
         print(f"[DeepResearch] ✅ SerpAPI: {len(organic_results)} results")
+        search_cache.set(cache_key, organic_results, ttl=3600)
         return organic_results
     except ImportError:
         if serpapi_key:
@@ -236,6 +233,10 @@ def _search_serpapi(query: str, region: str, max_results: int = 20) -> list[dict
 
 def _search_gemini(query: str) -> list[dict]:
     """Search using Gemini with Google Search integration."""
+    cache_key = f"gemini_dr:{query}"
+    cached = search_cache.get(cache_key)
+    if cached is not None:
+        return cached
     try:
         from google import genai
 
@@ -264,6 +265,7 @@ def _search_gemini(query: str) -> list[dict]:
             results = json.loads(text)
             if isinstance(results, list):
                 print(f"[DeepResearch] ✅ Gemini: {len(results)} results")
+                search_cache.set(cache_key, results, ttl=3600)
                 return results
         except:
             pass
@@ -273,6 +275,7 @@ def _search_gemini(query: str) -> list[dict]:
         urls = re.findall(url_pattern, text)
         results = [{"title": "Result", "snippet": text[:200], "url": url} for url in urls[:15]]
         print(f"[DeepResearch] ✅ Gemini (fallback): {len(results)} results")
+        search_cache.set(cache_key, results, ttl=3600)
         return results
 
     except Exception as e:
@@ -282,6 +285,10 @@ def _search_gemini(query: str) -> list[dict]:
 
 def _search_ddg(query: str, max_results: int = 15) -> list[dict]:
     """Search using DuckDuckGo."""
+    cache_key = f"ddg_dr:{query}:{max_results}"
+    cached = search_cache.get(cache_key)
+    if cached is not None:
+        return cached
     try:
         from ddgs import DDGS
     except ImportError:
@@ -301,6 +308,7 @@ def _search_ddg(query: str, max_results: int = 15) -> list[dict]:
                     "url": r.get("href", "")
                 })
         print(f"[DeepResearch] ✅ DuckDuckGo: {len(results)} results")
+        search_cache.set(cache_key, results, ttl=3600)
     except Exception as e:
         print(f"[DeepResearch] ⚠️ DuckDuckGo search failed: {e}")
 
@@ -323,6 +331,10 @@ def _deduplicate_results(results: list[dict]) -> list[dict]:
 
 def _evaluate_lead_enhanced(url: str, text: str, snippet: str, competencies: str, target: str, region: str) -> dict:
     """Uses LLM to evaluate the lead with enhanced location verification."""
+    cache_key = f"lead_eval:{url}:{hash(competencies)}:{hash(target)}:{hash(region)}"
+    cached = api_cache.get(cache_key)
+    if cached is not None:
+        return cached
     location_info = _extract_location_info(text, region)
 
     prompt = f"""
@@ -358,6 +370,7 @@ def _evaluate_lead_enhanced(url: str, text: str, snippet: str, competencies: str
         result = or_client.chat_json(prompt, system="Return only valid JSON.")
         if "name" in result:
             result["url"] = url
+            api_cache.set(cache_key, result, ttl=3600)
             return result
     except Exception as e:
         print(f"[DeepResearch] ⚠️ LLM evaluation failed for {url}: {e}")

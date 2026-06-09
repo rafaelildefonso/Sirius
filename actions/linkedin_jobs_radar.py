@@ -36,7 +36,7 @@ def linkedin_jobs_radar(parameters: dict, player=None, speak=None) -> str:
                 player._win.left_stack.setCurrentIndex(1)
                 
                 # Update button text/style
-                from job_radar_widget import C
+                from ui.job_radar_widget import C
                 player._win._view_btn.setText("ASSISTENTE DE VOZ")
                 player._win._view_btn.setStyleSheet(f"""
                     QPushButton {{
@@ -55,9 +55,13 @@ def linkedin_jobs_radar(parameters: dict, player=None, speak=None) -> str:
                     player._win.job_radar.log_lbl.setText(f"Radar iniciado por comando de voz para '{keywords}'...")
                     player._win.job_radar.log_lbl.show()
                     
+                    # Read max_jobs from the UI spinbox or default
+                    max_jobs = player._win.job_radar.limit_spin.value() if hasattr(player._win.job_radar, 'limit_spin') else 8
+                    sources = ["linkedin", "google_jobs"]
+                    
                     # Start the QThread worker
-                    from job_radar_widget import ScrapeWorker
-                    player._win.job_radar.worker = ScrapeWorker(keywords, max_jobs=8)
+                    from ui.job_radar_widget import ScrapeWorker
+                    player._win.job_radar.worker = ScrapeWorker(keywords, max_jobs=max_jobs, sources=sources)
                     player._win.job_radar.worker.log_signal.connect(player._win.job_radar._update_log)
                     player._win.job_radar.worker.finished.connect(player._win.job_radar._scan_finished)
                     player._win.job_radar.worker.start()

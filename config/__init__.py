@@ -1,23 +1,16 @@
 # config/__init__.py
-import json, os, sys
-from pathlib import Path
+from core.config_loader import get_config as _get_config, get_os as _get_os
+from core.config_loader import is_windows as _is_windows, is_mac as _is_mac, is_linux as _is_linux
 
-def _get_config_dir() -> Path:
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent / "config"
-    return Path(__file__).resolve().parent
-
-_CONFIG_DIR = _get_config_dir()
-_CONFIG_PATH = _CONFIG_DIR / "api_keys.json"
 
 def get_config() -> dict:
-    with open(_CONFIG_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)
+    from core.config_loader import get_all_config
+    return get_all_config()
+
 
 def get_os() -> str:
-    """Returns: 'windows' | 'mac' | 'linux'"""
-    return get_config().get("os_system", "windows").lower()
+    return _get_os()
 
-def is_windows() -> bool: return get_os() == "windows"
-def is_mac()     -> bool: return get_os() == "mac"
-def is_linux()   -> bool: return get_os() == "linux"
+def is_windows() -> bool: return _is_windows()
+def is_mac()     -> bool: return _is_mac()
+def is_linux()   -> bool: return _is_linux()

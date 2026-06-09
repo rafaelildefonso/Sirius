@@ -25,7 +25,7 @@ from PyQt6.QtGui import (
 from PyQt6.QtWidgets import (
     QApplication, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
     QMainWindow, QPushButton, QScrollArea, QSizePolicy, QStackedWidget,
-    QTextEdit, QVBoxLayout, QWidget, QProgressBar,
+    QTextEdit, QVBoxLayout, QWidget, QProgressBar, QComboBox,
 )
 
 import qtawesome as qta
@@ -38,6 +38,7 @@ def _base_dir() -> Path:
 BASE_DIR   = _base_dir()
 CONFIG_DIR = BASE_DIR / "config"
 API_FILE   = CONFIG_DIR / "api_keys.json"
+CONFIG_FILE = CONFIG_DIR / "configs.json"
 
 _DEFAULT_W, _DEFAULT_H = 980, 700
 _MIN_W,     _MIN_H     = 820, 580
@@ -62,6 +63,7 @@ class C:
     GREEN     = "#00ff88"
     GREEN_D   = "#00aa55"
     GREEN_DIM = "#004422"
+    YELLOW    = "#ffcc00"
     RED       = "#ff3355"
     MUTED_C   = "#ff3366"
     TEXT      = "#e0f0ff"
@@ -1035,10 +1037,17 @@ class SettingsOverlay(QWidget):
         sb_lay = QVBoxLayout(sidebar)
         sb_lay.setContentsMargins(8, 14, 8, 14)
         sb_lay.setSpacing(5)
+        # Local configuration options
+        self._sel_stt          = "whisper"
+        self._sel_tts          = "edgetts"
+        self._sel_llm_provider = "ollama"
+        self._assistant_mode   = "gemini"
+
         self._tabs: dict = {}
         for key, ico, label in [
             ("general",     "fa5s.cog", "GERAL"),
             ("permissions", "fa5s.shield-alt", "PERMISSÕES"),
+            ("local",       "fa5s.server", "MOTORES LOCAIS"),
         ]:
             btn = QPushButton(f"  {label}")
             btn.setIcon(qta.icon(ico, color=C.TEXT_DIM))
@@ -1060,13 +1069,18 @@ class SettingsOverlay(QWidget):
         # Build pages
         self._stack.addWidget(self._build_general_page())
         self._stack.addWidget(self._build_permissions_page())
+        self._stack.addWidget(self._build_local_page())
         self._switch_tab("general")
         self._load()
 
+        self._g_timer = QTimer()
+        self._g_timer.timeout.connect(self._check_google_health)
+        self._g_timer.start(300000)
+
     # ── Tab switching ──────────────────────────────────────────
     def _switch_tab(self, key: str):
-        self._stack.setCurrentIndex({"general": 0, "permissions": 1}.get(key, 0))
-        ico_map = {"general": "fa5s.cog", "permissions": "fa5s.shield-alt"}
+        self._stack.setCurrentIndex({"general": 0, "permissions": 1, "local": 2}.get(key, 0))
+        ico_map = {"general": "fa5s.cog", "permissions": "fa5s.shield-alt", "local": "fa5s.server"}
         for k, btn in self._tabs.items():
             if k == key:
                 btn.setIcon(qta.icon(ico_map[k], color=C.PRI))
@@ -1313,34 +1327,394 @@ class SettingsOverlay(QWidget):
                 b.setIcon(qta.icon(ico_map[k], color=C.TEXT_DIM))
                 b.setStyleSheet(f"background: #080808; color: {C.TEXT_DIM}; border: 1px solid {C.BORDER}; border-radius: 3px;")
 
+    # ── Assistant mode selection ───────────────────────────────
+    def _set_assistant_mode(self, key: str):
+        self._assistant_mode = key
+        if hasattr(self, "_mode_btns"):
+            for k, b in self._mode_btns.items():
+                if k == key:
+                    b.setStyleSheet(f"background: {C.PRI}; color: {C.BG}; border: none; border-radius: 3px; font-weight: bold;")
+                else:
+                    b.setStyleSheet(f"background: #080808; color: {C.TEXT_DIM}; border: 1px solid {C.BORDER}; border-radius: 3px;")
+        if key == "gemini":
+            if hasattr(self, "_stt_section"):
+                self._stt_section.setVisible(False)
+            if hasattr(self, "_tts_section"):
+                self._tts_section.setVisible(False)
+            self._set_llm_provider("gemini")
+        else:
+            if hasattr(self, "_stt_section"):
+                self._stt_section.setVisible(True)
+            if hasattr(self, "_tts_section"):
+                self._tts_section.setVisible(True)
+
+    # ── Local page (STT / LLM / TTS) ───────────────────────────
+    def _build_local_page(self) -> QWidget:
+        page = QWidget(); page.setStyleSheet("background: transparent;")
+        scroll = QScrollArea(); scroll.setWidgetResizable(True)
+        scroll.setStyleSheet(f"""
+            QScrollArea {{ border: none; background: transparent; }}
+            QScrollBar:vertical {{ background: #080808; width: 6px; border-radius: 3px; }}
+            QScrollBar::handle:vertical {{ background: {C.BORDER}; border-radius: 3px; }}
+            QScrollBar::handle:vertical:hover {{ background: {C.PRI}; }}
+        """)
+        content = QWidget(); content.setStyleSheet("background: transparent;")
+        layout  = QVBoxLayout(content)
+        layout.setContentsMargins(20, 16, 20, 16)
+        layout.setSpacing(8)
+
+        def _lbl(txt, sz=8, bold=False, color=C.TEXT_DIM, align=Qt.AlignmentFlag.AlignLeft):
+            w = QLabel(txt); w.setAlignment(align)
+            w.setFont(QFont("Inter", sz, QFont.Weight.Bold if bold else QFont.Weight.Normal))
+            w.setStyleSheet(f"color: {color}; background: transparent;")
+            return w
+
+        def _inp(placeholder="", password=False, fixed_h=30):
+            w = QLineEdit()
+            w.setPlaceholderText(placeholder)
+            w.setFixedHeight(fixed_h)
+            if password: w.setEchoMode(QLineEdit.EchoMode.Password)
+            w.setStyleSheet(f"""
+                QLineEdit {{ background: #080808; color: {C.TEXT};
+                    border: 1px solid {C.BORDER}; border-radius: 4px; padding: 4px 8px;
+                    font-family: 'Courier New'; font-size: 9pt; }}
+                QLineEdit:focus {{ border: 1px solid {C.PRI}; }}
+            """)
+            return w
+
+        def _sep():
+            f = QFrame(); f.setFrameShape(QFrame.Shape.HLine)
+            f.setStyleSheet(f"color: {C.BORDER}; margin: 6px 0;"); return f
+
+        def _toggle_row(keys_labels: list, getter, setter):
+            row = QHBoxLayout(); row.setSpacing(5)
+            btns: dict[str, QPushButton] = {}
+            def _click(k):
+                setter(k)
+                for bk, b in btns.items():
+                    _style_btn(b, bk == k)
+            for k, lbl in keys_labels:
+                b = QPushButton(lbl)
+                b.setFixedHeight(26)
+                b.setFont(QFont("Inter", 7, QFont.Weight.Bold))
+                b.setCursor(Qt.CursorShape.PointingHandCursor)
+                b.clicked.connect(lambda _, kk=k: _click(kk))
+                row.addWidget(b)
+                btns[k] = b
+            return row, btns
+
+        def _style_btn(btn: QPushButton, active: bool):
+            if active:
+                btn.setStyleSheet(f"background: {C.PRI}; color: {C.BG}; border: none; border-radius: 3px; font-weight: bold;")
+            else:
+                btn.setStyleSheet(f"background: #080808; color: {C.TEXT_DIM}; border: 1px solid {C.BORDER}; border-radius: 3px;")
+
+        # ── Mode selector ──────────────────────────────────────────────
+        layout.addWidget(_lbl("MODO DO ASSISTENTE", bold=True, color=C.PRI))
+        mode_row = QHBoxLayout(); mode_row.setSpacing(5)
+        self._mode_btns = {}
+        for k, v in [("gemini", "Gemini"), ("local", "Local / Offline")]:
+            btn = QPushButton(v); btn.setFixedHeight(28)
+            btn.setFont(QFont("Inter", 7, QFont.Weight.Medium))
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.clicked.connect(lambda _, x=k: self._set_assistant_mode(x))
+            mode_row.addWidget(btn); self._mode_btns[k] = btn
+        layout.addLayout(mode_row)
+        layout.addWidget(_sep())
+
+        # ── STT ────────────────────────────────────────────────────────
+        self._stt_section = QWidget()
+        self._stt_section.setStyleSheet("background: transparent;")
+        stt_sec_lay = QVBoxLayout(self._stt_section)
+        stt_sec_lay.setContentsMargins(0, 0, 0, 0)
+        stt_sec_lay.setSpacing(8)
+        stt_sec_lay.addWidget(_lbl("SPEECH-TO-TEXT ENGINE", bold=True, color=C.PRI))
+        stt_row, self._stt_btns = _toggle_row(
+            [("whisper","🎙 Whisper"), ("vosk","🔊 Vosk")],
+            lambda: self._sel_stt,
+            self._set_stt,
+        )
+        stt_sec_lay.addLayout(stt_row)
+
+        _COMBO_STYLE = f"""
+            QComboBox {{
+                background: #080808; color: {C.TEXT};
+                border: 1px solid {C.BORDER}; border-radius: 4px; padding: 4px 8px;
+                font-family: 'Courier New'; font-size: 9pt;
+            }}
+            QComboBox:focus {{ border: 1px solid {C.PRI}; }}
+            QComboBox::drop-down {{ border: none; width: 18px; }}
+            QComboBox QAbstractItemView {{
+                background: #080808; color: {C.TEXT};
+                border: 1px solid {C.BORDER};
+                selection-background-color: {C.PRI_GHO};
+                font-family: 'Courier New'; font-size: 9pt;
+            }}
+        """
+
+        stt_detail = QHBoxLayout(); stt_detail.setSpacing(5)
+        stt_detail.addWidget(_lbl("Model:", sz=7, color=C.TEXT_MED))
+
+        self._whisper_combo = QComboBox()
+        self._whisper_combo.setFixedHeight(30)
+        self._whisper_combo.setStyleSheet(_COMBO_STYLE)
+        for m in ["tiny", "base", "small", "medium", "large-v3"]:
+            self._whisper_combo.addItem(m)
+        stt_detail.addWidget(self._whisper_combo)
+
+        self._vosk_model_input = _inp("model dir path  (leave empty for auto-download)")
+        stt_detail.addWidget(self._vosk_model_input)
+        stt_sec_lay.addLayout(stt_detail)
+
+        stt_lang_row = QHBoxLayout(); stt_lang_row.setSpacing(5)
+        stt_lang_row.addWidget(_lbl("Language:", sz=7, color=C.TEXT_MED))
+        self._stt_lang_input = _inp("auto  (or: pt / en / de / fr / es / zh …)")
+        stt_lang_row.addWidget(self._stt_lang_input)
+        stt_sec_lay.addLayout(stt_lang_row)
+        stt_sec_lay.addWidget(_sep())
+        layout.addWidget(self._stt_section)
+
+        # ── LLM ────────────────────────────────────────────────────────
+        layout.addWidget(_lbl("LOCAL LLM", bold=True, color=C.PRI))
+        llm_prov_row, self._llm_prov_btns = _toggle_row(
+            [("ollama", "🦙 Ollama"), ("openai", "🔌 LM Studio / OpenAI"), ("gemini", "☁️ Gemini")],
+            lambda: self._sel_llm_provider,
+            self._set_llm_provider,
+        )
+        layout.addLayout(llm_prov_row)
+
+        self._llm_hint_lbl = _lbl("ollama.com  ·  run: ollama pull qwen2.5:3b", sz=7, color=C.TEXT_DIM)
+        layout.addWidget(self._llm_hint_lbl)
+
+        self._llm_config_widget = QWidget()
+        llm_config_layout = QHBoxLayout(self._llm_config_widget); llm_config_layout.setSpacing(5)
+        llm_config_layout.setContentsMargins(0, 0, 0, 0)
+        llm_config_layout.addWidget(_lbl("URL:", sz=7, color=C.TEXT_MED))
+        self._llm_url_input = _inp("http://localhost:11434")
+        llm_config_layout.addWidget(self._llm_url_input, stretch=2)
+        llm_config_layout.addWidget(_lbl("Model:", sz=7, color=C.TEXT_MED))
+        self._llm_model_input = _inp("e.g. qwen2.5:3b")
+        llm_config_layout.addWidget(self._llm_model_input, stretch=2)
+        layout.addWidget(self._llm_config_widget)
+        layout.addWidget(_sep())
+
+        # ── TTS ────────────────────────────────────────────────────────
+        self._tts_section = QWidget()
+        self._tts_section.setStyleSheet("background: transparent;")
+        tts_sec_lay = QVBoxLayout(self._tts_section)
+        tts_sec_lay.setContentsMargins(0, 0, 0, 0)
+        tts_sec_lay.setSpacing(8)
+        tts_sec_lay.addWidget(_lbl("TEXT-TO-SPEECH ENGINE", bold=True, color=C.PRI))
+        tts_row, self._tts_btns = _toggle_row(
+            [("edgetts","🔈 EdgeTTS"), ("kokoro","🤖 Kokoro"), ("elevenlabs","⚡ ElevenLabs")],
+            lambda: self._sel_tts,
+            self._set_tts,
+        )
+        tts_sec_lay.addLayout(tts_row)
+
+        voice_row = QHBoxLayout(); voice_row.setSpacing(5)
+        self._voice_lbl = _lbl("Voice:", sz=7, color=C.TEXT_MED)
+        voice_row.addWidget(self._voice_lbl)
+
+        self._tts_voice_input = _inp("en-US-GuyNeural")
+        voice_row.addWidget(self._tts_voice_input)
+
+        self._kokoro_combo = QComboBox()
+        self._kokoro_combo.setFixedHeight(30)
+        self._kokoro_combo.setStyleSheet(_COMBO_STYLE)
+        _KOKORO_VOICES = [
+            ("af_heart",    "af_heart  — EN-F warm"),
+            ("af_sky",      "af_sky  — EN-F clear"),
+            ("af_bella",    "af_bella  — EN-F bella"),
+            ("af_sarah",    "af_sarah  — EN-F sarah"),
+            ("am_adam",     "am_adam  — EN-M adam"),
+            ("am_michael",  "am_michael  — EN-M michael"),
+            ("bf_emma",     "bf_emma  — UK-F emma"),
+            ("bf_isabella", "bf_isabella  — UK-F isabella"),
+            ("bm_george",   "bm_george  — UK-M george"),
+            ("bm_lewis",    "bm_lewis  — UK-M lewis"),
+        ]
+        for val, display in _KOKORO_VOICES:
+            self._kokoro_combo.addItem(display, userData=val)
+        self._kokoro_combo.setVisible(False)
+        voice_row.addWidget(self._kokoro_combo)
+        tts_sec_lay.addLayout(voice_row)
+
+        self._kokoro_speed_widget = QWidget()
+        self._kokoro_speed_widget.setStyleSheet("background: transparent;")
+        ks_row = QHBoxLayout(self._kokoro_speed_widget)
+        ks_row.setContentsMargins(0, 0, 0, 0); ks_row.setSpacing(5)
+        ks_row.addWidget(_lbl("Speed:", sz=7, color=C.TEXT_MED))
+        self._kokoro_speed_combo = QComboBox()
+        self._kokoro_speed_combo.setFixedHeight(30)
+        self._kokoro_speed_combo.setStyleSheet(_COMBO_STYLE)
+        for val, label in [
+            ("0.8",  "0.8x  — Lento"),
+            ("1.0",  "1.0x  — Normal"),
+            ("1.2",  "1.2x  — Recomendado"),
+            ("1.5",  "1.5x  — Rápido"),
+        ]:
+            self._kokoro_speed_combo.addItem(label, userData=val)
+        ks_row.addWidget(self._kokoro_speed_combo)
+        tts_sec_lay.addWidget(self._kokoro_speed_widget)
+
+        self._el_key_widget = QWidget()
+        self._el_key_widget.setStyleSheet("background: transparent;")
+        el_row = QHBoxLayout(self._el_key_widget)
+        el_row.setContentsMargins(0, 0, 0, 0); el_row.setSpacing(5)
+        el_row.addWidget(_lbl("API Key:", sz=7, color=C.TEXT_MED))
+        self._el_key_input = _inp("ElevenLabs API key", password=True)
+        el_row.addWidget(self._el_key_input)
+        tts_sec_lay.addWidget(self._el_key_widget)
+        layout.addWidget(self._tts_section)
+
+        self._set_stt(self._sel_stt)
+        self._set_llm_provider(self._sel_llm_provider)
+        self._set_tts(self._sel_tts)
+
+        scroll.setWidget(content)
+        outer = QVBoxLayout(page); outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(scroll)
+        return page
+
+    def _update_tts_ui(self, key: str):
+        if not hasattr(self, "_voice_lbl"): return
+        is_kokoro = (key == "kokoro")
+        self._tts_voice_input.setVisible(not is_kokoro)
+        self._kokoro_combo.setVisible(is_kokoro)
+
+        if key == "elevenlabs":
+            self._voice_lbl.setText("Voice ID:")
+        else:
+            self._voice_lbl.setText("Voice:")
+
+        self._kokoro_speed_widget.setVisible(is_kokoro)
+        self._el_key_widget.setVisible(key == "elevenlabs")
+
+    def _set_llm_provider(self, key: str):
+        self._sel_llm_provider = key
+        if not hasattr(self, "_llm_prov_btns"): return
+        for k, btn in self._llm_prov_btns.items():
+            active = (k == key)
+            if active:
+                btn.setStyleSheet(f"background: {C.PRI}; color: {C.BG}; border: none; border-radius: 3px; font-weight: bold;")
+            else:
+                btn.setStyleSheet(f"background: #080808; color: {C.TEXT_DIM}; border: 1px solid {C.BORDER}; border-radius: 3px;")
+        is_gemini = key == "gemini"
+        self._llm_config_widget.setVisible(not is_gemini)
+        if is_gemini:
+            self._llm_hint_lbl.setText("gemini  ·  uses gemini_api_key from config")
+        elif key == "openai":
+            self._llm_hint_lbl.setText("lmstudio.ai  ·  start Local Server first")
+            if not self._llm_url_input.text() or self._llm_url_input.text() == "http://localhost:11434":
+                self._llm_url_input.setText("http://localhost:1234")
+        else:
+            self._llm_hint_lbl.setText("ollama.com  ·  run: ollama pull qwen2.5:3b")
+            if not self._llm_url_input.text() or self._llm_url_input.text() == "http://localhost:1234":
+                self._llm_url_input.setText("http://localhost:11434")
+    def _set_stt(self, key: str):
+        self._sel_stt = key
+        if not hasattr(self, "_stt_btns"): return
+        for k, btn in self._stt_btns.items():
+            active = (k == key)
+            if active:
+                btn.setStyleSheet(f"background: {C.PRI}; color: {C.BG}; border: none; border-radius: 3px; font-weight: bold;")
+            else:
+                btn.setStyleSheet(f"background: #080808; color: {C.TEXT_DIM}; border: 1px solid {C.BORDER}; border-radius: 3px;")
+        self._whisper_combo.setVisible(key == "whisper")
+        self._vosk_model_input.setVisible(key == "vosk")
+
+    def _set_tts(self, key: str):
+        self._sel_tts = key
+        if not hasattr(self, "_tts_btns"): return
+        for k, btn in self._tts_btns.items():
+            active = (k == key)
+            if active:
+                btn.setStyleSheet(f"background: {C.PRI}; color: {C.BG}; border: none; border-radius: 3px; font-weight: bold;")
+            else:
+                btn.setStyleSheet(f"background: #080808; color: {C.TEXT_DIM}; border: 1px solid {C.BORDER}; border-radius: 3px;")
+        self._update_tts_ui(key)
+
     # ── Load / Save ────────────────────────────────────────────
     def _load(self):
-        if API_FILE.exists():
+        from core.config_loader import get_secret, get_config, get_google_creds, get_notion_creds
+
+        self._key_input.setText(get_secret("gemini_api_key", ""))
+        self._or_input.setText(get_secret("openrouter_api_key", ""))
+        self._tavily_input.setText(get_secret("tavily_api_key", ""))
+        self._serpapi_input.setText(get_secret("serpapi_key", ""))
+        self._set_os(get_config("os_system", "windows"))
+        self._set_assistant_mode(get_config("assistant_mode", "gemini"))
+        g = get_google_creds()
+        self._g_id.setText(g.get("client_id", ""))
+        self._g_secret.setText(g.get("client_secret", ""))
+        from core.google_auth import is_token_valid
+        if is_token_valid(time_buffer_s=300):
+            self._g_status_icon.setPixmap(qta.icon("fa5s.check-circle", color=C.GREEN).pixmap(14, 14))
+            self._g_status.setText("Google Connected")
+            self._g_status.setStyleSheet(f"color: {C.GREEN};")
+        elif (BASE_DIR / "config" / "google_token.json").exists():
+            self._g_status_icon.setPixmap(qta.icon("fa5s.exclamation-triangle", color=C.YELLOW).pixmap(14, 14))
+            self._g_status.setText("Token expirado. Reconecte.")
+            self._g_status.setStyleSheet(f"color: {C.YELLOW};")
+        n = get_notion_creds()
+        self._n_token.setText(n.get("token", ""))
+        self._n_db.setText(n.get("database_id", ""))
+
+        self._set_stt(get_config("stt_engine", "whisper"))
+        if get_config("stt_engine", "whisper") == "vosk":
+            self._vosk_model_input.setText(get_config("vosk_model_path", ""))
+        else:
+            _cur_model = get_config("stt_model", "base")
+            _idx = self._whisper_combo.findText(_cur_model)
+            self._whisper_combo.setCurrentIndex(_idx if _idx >= 0 else 1)
+        self._stt_lang_input.setText(get_config("stt_language", "auto"))
+
+        self._set_llm_provider(get_config("llm_provider", "ollama"))
+        self._llm_url_input.setText(get_config("llm_url", ""))
+        self._llm_model_input.setText(get_config("llm_model", ""))
+
+        self._set_tts(get_config("tts_engine", "edgetts"))
+        if get_config("tts_engine", "edgetts") == "kokoro":
+            _cur_voice = get_config("tts_voice", "af_heart")
+            for i in range(self._kokoro_combo.count()):
+                if self._kokoro_combo.itemData(i) == _cur_voice:
+                    self._kokoro_combo.setCurrentIndex(i)
+                    break
+            _cur_speed = str(get_config("tts_speed", "1.2"))
+            for i in range(self._kokoro_speed_combo.count()):
+                if self._kokoro_speed_combo.itemData(i) == _cur_speed:
+                    self._kokoro_speed_combo.setCurrentIndex(i)
+                    break
+        else:
+            self._tts_voice_input.setText(get_config("tts_voice", "en-US-GuyNeural"))
+        self._el_key_input.setText(get_secret("elevenlabs_api_key", ""))
+
+    def _check_google_health(self):
+        token_path = BASE_DIR / "config" / "google_token.json"
+        if not token_path.exists():
             try:
-                d = json.loads(API_FILE.read_text(encoding="utf-8"))
-                self._key_input.setText(d.get("gemini_api_key", ""))
-                self._or_input.setText(d.get("openrouter_api_key", ""))
-                self._tavily_input.setText(d.get("tavily_api_key", ""))
-                self._serpapi_input.setText(d.get("serpapi_key", ""))
-                self._set_os(d.get("os_system", "windows"))
-                g = d.get("google_creds", {})
-                self._g_id.setText(g.get("client_id", ""))
-                self._g_secret.setText(g.get("client_secret", ""))
-                if (BASE_DIR / "config" / "google_token.json").exists():
-                    self._g_status_icon.setPixmap(qta.icon("fa5s.check-circle", color=C.GREEN).pixmap(14, 14))
-                    self._g_status.setText("Google Connected")
-                    self._g_status.setStyleSheet(f"color: {C.GREEN};")
-                n = d.get("notion_creds", {})
-                self._n_token.setText(n.get("token", ""))
-                self._n_db.setText(n.get("database_id", ""))
+                from core.credential_manager import load_google_token
+                if load_google_token() is None:
+                    return
             except Exception:
-                pass
+                return
+        from core.google_auth import is_token_valid
+        if is_token_valid(time_buffer_s=300):
+            self._g_status_icon.setPixmap(qta.icon("fa5s.check-circle", color=C.GREEN).pixmap(14, 14))
+            self._g_status.setText("Google Connected")
+            self._g_status.setStyleSheet(f"color: {C.GREEN};")
+        else:
+            self._g_status_icon.setPixmap(qta.icon("fa5s.exclamation-triangle", color=C.YELLOW).pixmap(14, 14))
+            self._g_status.setText("Token expirado. Reconecte.")
+            self._g_status.setStyleSheet(f"color: {C.YELLOW};")
 
     def _google_auth(self):
         self._save_keys_only()
         self._g_status_icon.setPixmap(qta.icon("fa5s.spinner", color=C.ACC2).pixmap(14, 14))
         self._g_status.setText("Authorizing in browser...")
         self._g_status.setStyleSheet(f"color: {C.ACC2};")
+        self._g_btn.setEnabled(False)
         QApplication.processEvents()
         def _run():
             from core.google_auth import run_auth_flow
@@ -1353,6 +1727,7 @@ class SettingsOverlay(QWidget):
                 self._g_status_icon.setPixmap(qta.icon("fa5s.times-circle", color=C.RED).pixmap(14, 14))
                 self._g_status.setText(msg)
                 self._g_status.setStyleSheet(f"color: {C.RED};")
+            self._g_btn.setEnabled(True)
         threading.Thread(target=_run, daemon=True).start()
 
     def _save(self):
@@ -1361,23 +1736,65 @@ class SettingsOverlay(QWidget):
         self.hide()
 
     def _save_keys_only(self):
+        from core.config_loader import set_secret, set_config, save_configs
+
         key      = self._key_input.text().strip()
+        or_key   = self._or_input.text().strip()
+        tavily   = self._tavily_input.text().strip()
+        serp     = self._serpapi_input.text().strip()
         os_name  = getattr(self, "_os_name", "windows")
+        mode     = getattr(self, "_assistant_mode", "gemini")
         g_id     = self._g_id.text().strip()
         g_secret = self._g_secret.text().strip()
         n_token  = self._n_token.text().strip()
         n_db     = self._n_db.text().strip()
-        d = {}
-        if API_FILE.exists():
-            try: d = json.loads(API_FILE.read_text(encoding="utf-8"))
-            except Exception: pass
-        d["gemini_api_key"]    = key
-        d["openrouter_api_key"] = self._or_input.text().strip()
-        d["tavily_api_key"]    = self._tavily_input.text().strip()
-        d["serpapi_key"]       = self._serpapi_input.text().strip()
-        d["os_system"]         = os_name
-        d["google_creds"]      = {"client_id": g_id, "client_secret": g_secret}
-        d["notion_creds"]      = {"token": n_token, "database_id": n_db}
+        el_key   = self._el_key_input.text().strip()
+
+        set_secret("GEMINI_API_KEY", key)
+        set_secret("OPENROUTER_API_KEY", or_key)
+        set_secret("TAVILY_API_KEY", tavily)
+        set_secret("SERPAPI_KEY", serp)
+        set_secret("GOOGLE_CLIENT_ID", g_id)
+        set_secret("GOOGLE_CLIENT_SECRET", g_secret)
+        set_secret("NOTION_TOKEN", n_token)
+        set_secret("NOTION_DATABASE_ID", n_db)
+        set_secret("ELEVENLABS_API_KEY", el_key)
+
+        configs = {
+            "os_system": os_name,
+            "assistant_mode": mode,
+            "stt_engine": self._sel_stt,
+            "stt_language": self._stt_lang_input.text().strip() or "auto",
+            "llm_provider": self._sel_llm_provider,
+            "llm_url": self._llm_url_input.text().strip(),
+            "llm_model": self._llm_model_input.text().strip(),
+            "tts_engine": self._sel_tts,
+        }
+        if self._sel_stt == "whisper":
+            configs["stt_model"] = self._whisper_combo.currentText()
+        else:
+            configs["vosk_model_path"] = self._vosk_model_input.text().strip()
+        if self._sel_tts == "kokoro":
+            configs["tts_voice"] = self._kokoro_combo.currentData() or "af_heart"
+            configs["tts_speed"] = self._kokoro_speed_combo.currentData() or "1.2"
+        else:
+            configs["tts_voice"] = self._tts_voice_input.text().strip() or "en-US-GuyNeural"
+            configs["tts_speed"] = "1.0"
+
+        save_configs(configs)
+
+        d = {
+            "gemini_api_key": key,
+            "openrouter_api_key": or_key,
+            "tavily_api_key": tavily,
+            "serpapi_key": serp,
+            "os_system": os_name,
+            "assistant_mode": mode,
+            "google_creds": {"client_id": g_id, "client_secret": g_secret},
+            "notion_creds": {"token": n_token, "database_id": n_db},
+        }
+        d.update(configs)
+        d["elevenlabs_api_key"] = el_key
         os.makedirs(CONFIG_DIR, exist_ok=True)
         API_FILE.write_text(json.dumps(d, indent=4), encoding="utf-8")
 
@@ -1486,9 +1903,10 @@ class PermissionRequestDialog(QWidget):
 
 
 class MainWindow(QMainWindow):
-    _log_sig   = pyqtSignal(str)
-    _state_sig = pyqtSignal(str)
-    _perm_sig  = pyqtSignal(str, str, str)  # perm_key, label, tool_name
+    _log_sig     = pyqtSignal(str)
+    _state_sig   = pyqtSignal(str)
+    _perm_sig    = pyqtSignal(str, str, str)  # perm_key, label, tool_name
+    _startup_sig = pyqtSignal(str, str)       # action, data
 
     def __init__(self):
         super().__init__()
@@ -1525,7 +1943,7 @@ class MainWindow(QMainWindow):
         self.left_stack.addWidget(self.hud)
 
         try:
-            from job_radar_widget import JobRadarWidget
+            from ui.job_radar_widget import JobRadarWidget
             self.job_radar = JobRadarWidget()
             self.left_stack.addWidget(self.job_radar)
         except Exception as e:
@@ -1548,6 +1966,8 @@ class MainWindow(QMainWindow):
         self._set_icon()
         self._log_sig.connect(self._log.append_log)
         self._state_sig.connect(self._apply_state)
+        self._startup_sig.connect(self._on_startup_sig)
+        self._startup_panel: StartupPanel | None = None
 
         self._overlay: SetupOverlay | None = None
         self._ready = self._check_config()
@@ -1579,6 +1999,41 @@ class MainWindow(QMainWindow):
         else:
             self.showFullScreen()
 
+    # ── Startup panel (thread-safe via _startup_sig) ────────────────────
+    def _on_startup_sig(self, action: str, data: str) -> None:
+        if action == "show":
+            self._create_startup_panel()
+        elif action in ("ready", "error"):
+            if self._startup_panel:
+                self._startup_panel.update_component(data, action)
+        elif action == "status":
+            if self._startup_panel:
+                self._startup_panel.set_status(data)
+        elif action == "hide":
+            if self._startup_panel:
+                QTimer.singleShot(1200, self._destroy_startup_panel)
+
+    def _create_startup_panel(self) -> None:
+        if self._startup_panel and self._startup_panel.isVisible():
+            return
+        cw = self.centralWidget()
+        pw, ph = 400, 310
+        panel = StartupPanel(cw)
+        panel.setGeometry(
+            (cw.width()  - pw) // 2,
+            (cw.height() - ph) // 2,
+            pw, ph,
+        )
+        panel.show()
+        panel.raise_()
+        self._startup_panel = panel
+
+    def _destroy_startup_panel(self) -> None:
+        if self._startup_panel:
+            self._startup_panel.hide()
+            self._startup_panel.deleteLater()
+            self._startup_panel = None
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
         if self._overlay and self._overlay.isVisible():
@@ -1603,6 +2058,14 @@ class MainWindow(QMainWindow):
             self._perm_dialog.setGeometry(
                 (cw.width() - pw) // 2,
                 cw.height() - ph - 26,
+                pw, ph,
+            )
+        if self._startup_panel and self._startup_panel.isVisible():
+            pw, ph = 400, 310
+            cw = self.centralWidget()
+            self._startup_panel.setGeometry(
+                (cw.width()  - pw) // 2,
+                (cw.height() - ph) // 2,
                 pw, ph,
             )
 
@@ -1928,12 +2391,10 @@ class MainWindow(QMainWindow):
         self.hud.speaking = (state == "SPEAKING")
 
     def _check_config(self) -> bool:
-        if not API_FILE.exists(): return False
-        try:
-            d = json.loads(API_FILE.read_text(encoding="utf-8"))
-            return bool(d.get("gemini_api_key")) and bool(d.get("os_system"))
-        except Exception:
-            return False
+        from core.config_loader import get_secret, get_config
+        key = get_secret("gemini_api_key")
+        os_name = get_config("os_system")
+        return bool(key) and bool(os_name)
 
     def _show_setup(self):
         ov = SetupOverlay(self.centralWidget())
@@ -1949,7 +2410,12 @@ class MainWindow(QMainWindow):
         self._overlay = ov
 
     def _on_setup_done(self, key: str, or_key: str, os_name: str):
+        from core.config_loader import set_secret, set_config, save_configs
         os.makedirs(CONFIG_DIR, exist_ok=True)
+        set_secret("GEMINI_API_KEY", key)
+        set_secret("OPENROUTER_API_KEY", or_key)
+        set_config("os_system", os_name)
+        save_configs({"os_system": os_name})
         API_FILE.write_text(
             json.dumps({
                 "gemini_api_key": key,
@@ -2043,3 +2509,136 @@ class SiriusUI:
         self._win._perm_sig.emit(perm_key, label, tool_name)
         self._win._perm_event.wait(timeout=60)
         return self._win._perm_result
+
+    # ── Startup panel methods (thread-safe) ─────────────────────────────
+    def show_startup_panel(self) -> None:
+        self._win._startup_sig.emit("show", "")
+
+    def mark_startup_ready(self, key: str, error: bool = False) -> None:
+        self._win._startup_sig.emit("error" if error else "ready", key)
+
+    def set_startup_status(self, text: str) -> None:
+        self._win._startup_sig.emit("status", text)
+
+    def hide_startup_panel(self) -> None:
+        self._win._startup_sig.emit("hide", "")
+
+
+class StartupPanel(QWidget):
+    """Animated startup progress overlay — shown while components initialize."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setStyleSheet(f"""
+            StartupPanel {{
+                background: rgba(0, 6, 10, 235);
+                border: 1px solid {C.BORDER_B};
+                border-radius: 8px;
+            }}
+        """)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(28, 20, 28, 20)
+        lay.setSpacing(10)
+
+        # ── Title ──────────────────────────────────────────────────────
+        title = QLabel("◈  SYSTEMS INITIALISING")
+        title.setFont(QFont("Courier New", 11, QFont.Weight.Bold))
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title.setStyleSheet(f"color: {C.PRI}; background: transparent;")
+        lay.addWidget(title)
+
+        lay.addSpacing(2)
+
+        # ── Component rows ──────────────────────────────────────────────
+        self._rows: dict[str, dict] = {}
+        _COMPS = [
+            ("stt", "SPEECH RECOGNITION  (STT)", C.GREEN),
+            ("llm", "LANGUAGE MODEL  (LLM)",      C.ACC2),
+            ("tts", "VOICE SYNTHESIS  (TTS)",      C.PRI),
+        ]
+        for key, label, color in _COMPS:
+            box = QWidget()
+            box.setStyleSheet(
+                f"background: {C.PANEL2}; border: 1px solid {C.BORDER}; border-radius: 4px;"
+            )
+            box_lay = QVBoxLayout(box)
+            box_lay.setContentsMargins(10, 6, 10, 6)
+            box_lay.setSpacing(4)
+
+            top = QHBoxLayout()
+            nm = QLabel(label)
+            nm.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+            nm.setStyleSheet(f"color: {C.TEXT_MED}; background: transparent; border: none;")
+            top.addWidget(nm)
+            top.addStretch()
+
+            st = QLabel("LOADING…")
+            st.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+            st.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent; border: none;")
+            top.addWidget(st)
+            box_lay.addLayout(top)
+
+            bar = QProgressBar()
+            bar.setFixedHeight(4)
+            bar.setRange(0, 0)     # indeterminate marquee
+            bar.setTextVisible(False)
+            bar.setStyleSheet(f"""
+                QProgressBar {{
+                    background: {C.BAR_BG}; border: none; border-radius: 2px;
+                }}
+                QProgressBar::chunk {{
+                    background: qlineargradient(x1:0,y1:0,x2:1,y2:0,
+                        stop:0 {C.BORDER}, stop:1 {color});
+                    border-radius: 2px; width: 60px; margin: 0px;
+                }}
+            """)
+            box_lay.addWidget(bar)
+            lay.addWidget(box)
+            self._rows[key] = {"bar": bar, "status": st, "color": color}
+
+        lay.addSpacing(4)
+
+        # ── Bottom status ───────────────────────────────────────────────
+        self._status_lbl = QLabel("Initialising components…")
+        self._status_lbl.setFont(QFont("Courier New", 8))
+        self._status_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._status_lbl.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent;")
+        self._status_lbl.setWordWrap(True)
+        lay.addWidget(self._status_lbl)
+
+        tip = QLabel("All AI models run 100% locally · No data leaves your device")
+        tip.setFont(QFont("Courier New", 7))
+        tip.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        tip.setStyleSheet(f"color: {C.BORDER}; background: transparent;")
+        lay.addWidget(tip)
+
+    # Called only from the main thread (via MainWindow._startup_sig)
+    def update_component(self, key: str, status: str) -> None:
+        if key not in self._rows:
+            return
+        row = self._rows[key]
+        ok     = status == "ready"
+        color  = row["color"] if ok else C.RED
+        label  = "READY  ✓" if ok else "ERROR  ✗"
+
+        bar = row["bar"]
+        bar.setRange(0, 100)
+        bar.setValue(100)
+        bar.setStyleSheet(f"""
+            QProgressBar {{
+                background: {C.BAR_BG}; border: none; border-radius: 2px;
+            }}
+            QProgressBar::chunk {{
+                background: {color}; border-radius: 2px;
+            }}
+        """)
+        st = row["status"]
+        st.setText(label)
+        st.setStyleSheet(f"color: {color}; background: transparent; border: none;")
+
+    def set_status(self, text: str) -> None:
+        self._status_lbl.setText(text)
+        col = C.GREEN if "online" in text.lower() else C.TEXT_DIM
+        self._status_lbl.setStyleSheet(f"color: {col}; background: transparent;")

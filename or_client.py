@@ -8,27 +8,15 @@ from typing import Optional
 
 import requests
 
+from core.cache import llm_cache
+from core.config_loader import get_secret
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("openrouter_client")
 
-def _get_base_dir() -> Path:
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent
-    return Path(__file__).resolve().parent
-
-
-BASE_DIR     = _get_base_dir()
-API_KEY_PATH = BASE_DIR / "config" / "api_keys.json"
 
 def _load_api_key() -> str:
-    try:
-        with open(API_KEY_PATH, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return data.get("openrouter_api_key", "").strip()
-    except FileNotFoundError:
-        return ""
-    except Exception:
-        return ""
+    return (get_secret("openrouter_api_key") or "").strip()
 
 TEXT_MODELS: list[str] = [
     "nvidia/nemotron-3-super-120b-a12b:free",
@@ -203,13 +191,19 @@ class OpenRouterClient:
         max_tokens: int = DEFAULT_MAX_TOKENS,
         temperature: float = DEFAULT_TEMPERATURE,
     ) -> str:
+        cache_key = f"or_chat:{hash(prompt)}:{hash(system)}"
+        cached = llm_cache.get(cache_key)
+        if cached is not None:
+            return cached
         messages = [
             {"role": "system", "content": system},
             {"role": "user",   "content": prompt},
         ]
-        return self._call_with_fallback(
+        result = self._call_with_fallback(
             TEXT_MODELS, messages, model, max_tokens, temperature
         )
+        llm_cache.set(cache_key, result, ttl=3600)
+        return result
 
     def chat_json(
         self,
@@ -221,6 +215,10 @@ class OpenRouterClient:
         model: Optional[str] = None,
         max_tokens: int = DEFAULT_MAX_TOKENS,
     ) -> dict:
+        cache_key = f"or_json:{hash(prompt)}:{hash(system)}"
+        cached = llm_cache.get(cache_key)
+        if cached is not None:
+            return cached
         messages = [
             {"role": "system", "content": system},
             {"role": "user",   "content": prompt},
@@ -238,7 +236,9 @@ class OpenRouterClient:
         clean = clean.strip().rstrip("`").strip()
 
         try:
-            return json.loads(clean)
+            parsed = json.loads(clean)
+            llm_cache.set(cache_key, parsed, ttl=3600)
+            return parsed
         except json.JSONDecodeError as e:
             logger.error(
                 f"[OpenRouter] JSON parse failed: {e}\n"

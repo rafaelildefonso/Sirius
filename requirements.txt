@@ -1,4 +1,8 @@
 sounddevice
+python-dotenv
+dotenv
+keyring
+
 google-genai
 google-generativeai
 pillow
@@ -30,3 +34,10 @@ google-auth-oauthlib
 google-search-results
 tavily-python
 ddgs
+
+# Local engines (from Mark-XL)
+soundfile
+miniaudio
+faster-whisper
+edge-tts
+

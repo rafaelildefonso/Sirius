@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+from core.cache import api_cache
 from core.google_auth import get_google_service
 
 
@@ -44,6 +45,11 @@ def google_calendar(
             time_min = start_dt.astimezone(timezone.utc).isoformat()
             time_max = end_dt.astimezone(timezone.utc).isoformat()
 
+            cache_key = f"calendar:events:{time_min}:{time_max}"
+            cached = api_cache.get(cache_key)
+            if cached is not None:
+                return cached
+
             events_result = service.events().list(
                 calendarId='primary',
                 timeMin=time_min,
@@ -56,7 +62,9 @@ def google_calendar(
 
             if not events:
                 if delta_days == 1:
+                    api_cache.set(cache_key, f"Você não tem nenhum compromisso agendado para {start_dt.strftime('%Y-%m-%d')}.", ttl=300)
                     return f"Você não tem nenhum compromisso agendado para {start_dt.strftime('%Y-%m-%d')}."
+                api_cache.set(cache_key, f"Você não tem nenhum compromisso agendado entre {start_dt.strftime('%Y-%m-%d')} e {end_dt.strftime('%Y-%m-%d')}.", ttl=300)
                 return f"Você não tem nenhum compromisso agendado entre {start_dt.strftime('%Y-%m-%d')} e {end_dt.strftime('%Y-%m-%d')}."
 
             if delta_days == 1:
@@ -72,9 +80,12 @@ def google_calendar(
                 else:
                     res += f"- [Dia Todo]: {event['summary']}\n"
 
+            api_cache.set(cache_key, res, ttl=300)
             return res
 
         elif action == "create_event":
+            api_cache.invalidate("calendar:events:")
+            
             summary = parameters.get("summary", "Novo Evento")
             start_raw = parameters.get("start_time") or parameters.get("start")
 

@@ -1,6 +1,10 @@
 venv
 venv/
 
+# Environment
+.env
+.env.local
+
 config/*.json
 memory/*.json
 memory/long_term.json

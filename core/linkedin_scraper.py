@@ -12,7 +12,6 @@ CONFIG_DIR = BASE_DIR / "config"
 MEMORY_DIR = BASE_DIR / "memory"
 JOBS_FILE = MEMORY_DIR / "linkedin_jobs.json"
 PROFILE_FILE = CONFIG_DIR / "user_profile.json"
-API_KEYS_FILE = CONFIG_DIR / "api_keys.json"
 
 # Helper to find real browser profiles (adapted from browser_control.py)
 def get_browser_profile_dir(browser: str = "chrome") -> str:

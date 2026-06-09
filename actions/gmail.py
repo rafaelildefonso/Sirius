@@ -1,3 +1,4 @@
+from core.cache import api_cache
 from core.google_auth import get_google_service
 
 def gmail_action(
@@ -27,14 +28,19 @@ def gmail_action(
             return "Desculpe, não consegui acessar sua conta do Gmail."
 
         if action in ("list_emails", "search_emails"):
-            # Se a ação for list_emails e não houver query, buscamos os mais recentes
             if action == "list_emails" and not query:
                 query = "label:INBOX"
+
+            cache_key = f"gmail:list:{query}:{count}"
+            cached = api_cache.get(cache_key)
+            if cached is not None:
+                return cached
             
             results = service.users().messages().list(userId='me', q=query, maxResults=count).execute()
             messages = results.get('messages', [])
 
             if not messages:
+                api_cache.set(cache_key, f"Nenhum e-mail encontrado para a busca: {query}", ttl=120)
                 return f"Nenhum e-mail encontrado para a busca: {query}"
 
             res = "E-mails recentes:\n"
@@ -52,12 +58,10 @@ def gmail_action(
                 
                 res += f"- De: {sender}\n  Assunto: {subject}\n"
             
+            api_cache.set(cache_key, res, ttl=120)
             return res
 
         elif action == "read_email":
-            # Para ler um e-mail específico, precisaríamos do ID. 
-            # Como o usuário geralmente fala "leia o último e-mail", 
-            # podemos buscar o ID do primeiro resultado da query.
             results = service.users().messages().list(userId='me', q=query, maxResults=1).execute()
             messages = results.get('messages', [])
             
@@ -65,10 +69,16 @@ def gmail_action(
                 return "Não encontrei nenhum e-mail para ler."
             
             msg_id = messages[0]['id']
+            cache_key = f"gmail:read:{msg_id}"
+            cached = api_cache.get(cache_key)
+            if cached is not None:
+                return cached
+
             msg_data = service.users().messages().get(userId='me', id=msg_id).execute()
             snippet = msg_data.get('snippet', '')
-            
-            return f"Conteúdo do e-mail:\n{snippet}..."
+            result = f"Conteúdo do e-mail:\n{snippet}..."
+            api_cache.set(cache_key, result, ttl=300)
+            return result
 
         return f"Ação '{action}' não reconhecida no Gmail."
 

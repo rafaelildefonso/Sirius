@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta
 from core.notion_auth import get_notion_client
+from core.cache import api_cache
 import requests
 
 
@@ -357,6 +358,10 @@ def _complete_notion_event(parameters: dict, notion_client: dict) -> str:
 
 
 def _list_notion_databases(headers: dict) -> str:
+    cache_key = "notion:databases"
+    cached = api_cache.get(cache_key)
+    if cached is not None:
+        return cached
     url = "https://api.notion.com/v1/search"
     payload = {
         "filter": {"property": "object", "value": "data_source"},
@@ -401,14 +406,22 @@ def _list_notion_databases(headers: dict) -> str:
         ds_ids = ", ".join(info["ds_ids"])
         lines.append(f"  • {info['name']} ({date_tag})\n    Database ID: {db_id}\n    Data Source ID(s): {ds_ids}\n")
 
-    return "".join(lines)
+    result = "".join(lines)
+    api_cache.set(cache_key, result, ttl=3600)
+    return result
 
 
 def _get_data_source_schema(data_source_id: str, headers: dict) -> dict:
+    cache_key = f"notion:schema:{data_source_id}"
+    cached = api_cache.get(cache_key)
+    if cached is not None:
+        return cached
     url = f"https://api.notion.com/v1/data_sources/{data_source_id}"
     resp = requests.get(url, headers=headers)
     resp.raise_for_status()
-    return resp.json().get("properties", {})
+    result = resp.json().get("properties", {})
+    api_cache.set(cache_key, result, ttl=3600)
+    return result
 
 
 def _find_date_property(schema: dict) -> str | None:
@@ -426,9 +439,14 @@ def _find_title_property(schema: dict) -> str | None:
 
 
 def _get_data_source_id(notion_id: str, headers: dict) -> str:
+    cache_key = f"notion:dsid:{notion_id}"
+    cached = api_cache.get(cache_key)
+    if cached is not None:
+        return cached
     ds_url = f"https://api.notion.com/v1/data_sources/{notion_id}"
     ds_resp = requests.get(ds_url, headers=headers)
     if ds_resp.status_code == 200:
+        api_cache.set(cache_key, notion_id, ttl=3600)
         return notion_id
 
     db_url = f"https://api.notion.com/v1/databases/{notion_id}"
@@ -438,7 +456,9 @@ def _get_data_source_id(notion_id: str, headers: dict) -> str:
         sources = data.get("data_sources", [])
         if not sources:
             raise ValueError("Database não contém data sources")
-        return sources[0]["id"]
+        result = sources[0]["id"]
+        api_cache.set(cache_key, result, ttl=3600)
+        return result
 
     if ds_resp.status_code == 404 and db_resp.status_code == 404:
         raise ValueError(
@@ -453,17 +473,9 @@ def _get_data_source_id(notion_id: str, headers: dict) -> str:
 
 def _get_default_database_id() -> str:
     try:
-        from core.notion_auth import get_base_dir
-        import json
-        base_dir = get_base_dir()
-        api_keys_path = base_dir / "config" / "api_keys.json"
-
-        if not api_keys_path.exists():
-            print(f"[NotionCalendar] api_keys.json não encontrado em {api_keys_path}")
-            return ""
-
-        api_data = json.loads(api_keys_path.read_text(encoding="utf-8"))
-        db_id = api_data.get("notion_creds", {}).get("database_id", "")
+        from core.config_loader import get_notion_creds
+        creds = get_notion_creds()
+        db_id = creds.get("database_id", "")
         print(f"[NotionCalendar] database_id lido: '{db_id}' (tamanho={len(db_id)})")
         return db_id
     except Exception as e:

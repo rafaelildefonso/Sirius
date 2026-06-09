@@ -13,13 +13,8 @@ def _base_dir() -> Path:
 
 
 def _get_os() -> str:
-    try:
-        cfg = json.loads(
-            (_base_dir() / "config" / "api_keys.json").read_text(encoding="utf-8")
-        )
-        return cfg.get("os_system", "windows").lower()
-    except Exception:
-        return "windows"
+    from core.config_loader import get_config
+    return (get_config("os_system") or "windows").lower()
 
 
 def _scripts_dir() -> Path:

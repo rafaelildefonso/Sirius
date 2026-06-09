@@ -5,6 +5,8 @@ import re
 import time
 from pathlib import Path
 
+from core.llm_utils import call_llm_for_action
+
 
 def get_base_dir():
     if getattr(sys, "frozen", False):
@@ -15,18 +17,6 @@ BASE_DIR           = get_base_dir()
 API_CONFIG_PATH    = BASE_DIR / "config" / "api_keys.json"
 DESKTOP            = Path.home() / "Desktop"
 MAX_BUILD_ATTEMPTS = 3
-GEMINI_MODEL       = "gemini-2.5-flash"
-
-
-def _get_api_key() -> str:
-    with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)["gemini_api_key"]
-
-
-def _get_gemini(model: str = GEMINI_MODEL):
-    import google.generativeai as genai
-    genai.configure(api_key=_get_api_key())
-    return genai.GenerativeModel(model)
 
 
 def _clean_code(text: str) -> str:
@@ -145,47 +135,28 @@ def _detect_intent(description: str, file_path: str, code: str) -> str:
     return "write"
 
 def _write(description: str, language: str, output_path: str, player=None) -> tuple[str, Path]:
-    lang  = language or "python"
-    model = _get_gemini()
-
-    prompt = f"""You are an expert {lang} developer.
-Write clean, working, well-commented {lang} code for the description below.
-
-Rules:
-- Output ONLY the code. No explanation, no markdown, no backticks.
-- Add helpful inline comments.
-- Handle errors and edge cases properly.
-- Use modern best practices.
-
-Description: {description}
-
-Code:"""
-
-    response = model.generate_content(prompt)
-    code     = _clean_code(response.text)
-    path     = _resolve_save_path(output_path, lang)
+    lang   = language or "python"
+    system = f"You are an expert {lang} developer. Output ONLY raw code, no markdown, no backticks."
+    prompt = (
+        f"Write clean, working, well-commented {lang} code for the description below.\n"
+        f"Handle errors and edge cases. Use modern best practices.\n\n"
+        f"Description: {description}\n\nCode:"
+    )
+    code = _clean_code(call_llm_for_action(prompt, system=system))
+    path = _resolve_save_path(output_path, lang)
     _save_file(path, code)
     return code, path
 
 
 def _fix_code(code: str, error_output: str, description: str) -> str:
-    model  = _get_gemini()
-    prompt = f"""You are an expert debugger.
-The code below failed with the following error. Fix it.
-Return ONLY the corrected code — no explanation, no markdown, no backticks.
-
-Original goal: {description}
-
-Error:
-{error_output[:2000]}
-
-Broken code:
-{code}
-
-Fixed code:"""
-
-    response = model.generate_content(prompt)
-    return _clean_code(response.text)
+    system = "You are an expert debugger. Return ONLY the corrected code — no explanation, no markdown, no backticks."
+    prompt = (
+        f"Fix the code below. It failed with this error.\n\n"
+        f"Original goal: {description}\n\n"
+        f"Error:\n{error_output[:2000]}\n\n"
+        f"Broken code:\n{code}\n\nFixed code:"
+    )
+    return _clean_code(call_llm_for_action(prompt, system=system))
 
 
 def _run_file(path: Path, args: list, timeout: int) -> str:
@@ -303,21 +274,14 @@ def _edit_action(file_path, instruction, player) -> str:
     if player:
         player.write_log("[Code] Editing file...")
 
-    model  = _get_gemini()
-    prompt = f"""You are an expert code editor.
-Apply the following change to the code below.
-Return ONLY the complete updated code — no explanation, no markdown, no backticks.
-
-Change: {instruction}
-
-Original code:
-{content}
-
-Updated code:"""
-
+    system = "You are an expert code editor. Return ONLY the complete updated code — no explanation, no markdown, no backticks."
+    prompt = (
+        f"Apply the following change to the code below.\n\n"
+        f"Change: {instruction}\n\n"
+        f"Original code:\n{content}\n\nUpdated code:"
+    )
     try:
-        response = model.generate_content(prompt)
-        edited   = _clean_code(response.text)
+        edited = _clean_code(call_llm_for_action(prompt, system=system))
     except Exception as e:
         return f"Could not edit code: {e}"
 
@@ -337,19 +301,14 @@ def _explain_action(file_path, code, player) -> str:
     if player:
         player.write_log("[Code] Analyzing code...")
 
-    model  = _get_gemini()
-    prompt = f"""Explain what this code does in simple, clear language.
-Focus on: what it does, how it works, and any important details.
-Be concise — 3 to 6 sentences maximum.
-
-Code:
-{code[:4000]}
-
-Explanation:"""
-
+    system = "You are an expert programmer. Explain code concisely in 3-6 sentences."
+    prompt = (
+        f"Explain what this code does in simple, clear language.\n"
+        f"Focus on: what it does, how it works, important details.\n\n"
+        f"Code:\n{code[:4000]}\n\nExplanation:"
+    )
     try:
-        response = model.generate_content(prompt)
-        return response.text.strip()
+        return call_llm_for_action(prompt, system=system)
     except Exception as e:
         return f"Could not explain code: {e}"
 
@@ -377,26 +336,15 @@ def _optimize_action(file_path, code, language, output_path, player) -> str:
     if player:
         player.write_log("[Code] Optimizing code...")
 
-    lang  = language or "python"
-    model = _get_gemini()
-
-    prompt = f"""You are an expert {lang} developer and code reviewer.
-Optimize the following code for:
-1. Performance — eliminate unnecessary operations, use efficient data structures
-2. Readability — clear variable names, proper formatting, logical structure
-3. Best practices — modern {lang} patterns, error handling, type hints if applicable
-4. Remove dead code, redundant comments, and unnecessary complexity
-
-Return ONLY the optimized code — no explanation, no markdown, no backticks.
-
-Original code:
-{code[:6000]}
-
-Optimized code:"""
-
+    lang   = language or "python"
+    system = f"You are an expert {lang} developer. Return ONLY the optimized code — no explanation, no markdown, no backticks."
+    prompt = (
+        f"Optimize this {lang} code for performance, readability, and best practices. "
+        f"Remove dead code and unnecessary complexity.\n\n"
+        f"Original code:\n{code[:6000]}\n\nOptimized code:"
+    )
     try:
-        response  = model.generate_content(prompt)
-        optimized = _clean_code(response.text)
+        optimized = _clean_code(call_llm_for_action(prompt, system=system))
     except Exception as e:
         return f"Could not optimize code: {e}"
 
@@ -428,11 +376,9 @@ def _screen_debug_action(description, file_path, player, speak=None) -> str:
 
     print("[Code] 📸 Capturing screen for debug...")
 
-
     screenshot_path = _take_screenshot()
     if not screenshot_path:
         return "Could not take screenshot, sir. Please make sure PyAutoGUI is installed."
-
 
     file_content = ""
     if file_path:
@@ -441,44 +387,21 @@ def _screen_debug_action(description, file_path, player, speak=None) -> str:
             print(f"[Code] ⚠️ Could not read file: {err}")
 
     try:
-        from google import genai
-        from google.genai import types
-
-        client = genai.Client(api_key=_get_api_key())
-
-        image_bytes  = screenshot_path.read_bytes()
-        image_base64 = _image_to_base64(screenshot_path)
-
-        user_question = description or "What error or problem do you see on the screen? How can it be fixed?"
-
+        image_bytes    = screenshot_path.read_bytes()
+        user_question  = description or "What error or problem do you see on the screen? How can it be fixed?"
         context = ""
         if file_content:
             context = f"\n\nAdditionally, here is the related file content:\n```\n{file_content[:4000]}\n```"
 
-        analysis_prompt = f"""You are an expert programmer and debugger analyzing a screenshot.
-
-User's question: {user_question}{context}
-
-Please:
-1. Identify any errors, exceptions, or problems visible on the screen
-2. Explain what is causing the problem in simple terms
-3. Provide a concrete fix or solution
-4. If there's code visible, show the corrected version
-
-Be specific and actionable. If you see an error message, quote it exactly."""
-
-        contents = [
-            types.Part.from_bytes(data=image_bytes, mime_type="image/png"),
-            analysis_prompt,
-        ]
-
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=contents,
+        analysis_prompt = (
+            f"You are an expert programmer and debugger analyzing a screenshot.\n\n"
+            f"User's question: {user_question}{context}\n\n"
+            f"Identify errors, explain the cause, and provide a fix. "
+            f"If there's code visible, show the corrected version."
         )
 
-        analysis = response.text.strip()
-        print(f"[Code] ✅ Screen analysis complete")
+        analysis = call_vision_for_action(analysis_prompt, image_bytes, "image/png")
+        print("[Code] ✅ Screen analysis complete")
 
         try:
             screenshot_path.unlink()
@@ -486,7 +409,6 @@ Be specific and actionable. If you see an error message, quote it exactly."""
             pass
 
         if file_path and file_content:
-
             code_match = re.search(r"```[a-zA-Z]*\n(.*?)```", analysis, re.DOTALL)
             if code_match:
                 fixed_code = code_match.group(1).strip()
@@ -498,7 +420,6 @@ Be specific and actionable. If you see an error message, quote it exactly."""
         return analysis
 
     except Exception as e:
-
         try:
             screenshot_path.unlink()
         except Exception:

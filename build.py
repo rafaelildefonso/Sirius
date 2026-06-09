@@ -46,6 +46,25 @@ def _ensure_config_files():
     config_dir = BASE_DIR / "config"
     config_dir.mkdir(parents=True, exist_ok=True)
 
+    configs = config_dir / "configs.json"
+    if not configs.exists():
+        print("[*] Creating default config/configs.json template...")
+        _configs_template = {
+            "os_system": "windows",
+            "assistant_mode": "gemini",
+            "stt_engine": "whisper",
+            "stt_language": "auto",
+            "stt_model": "medium",
+            "llm_provider": "gemini",
+            "llm_url": "http://localhost:11434",
+            "llm_model": "qwen2.5:7b",
+            "tts_engine": "kokoro",
+            "elevenlabs_api_key": "",
+            "tts_voice": "af_heart",
+            "tts_speed": "1.2",
+        }
+        configs.write_text(json.dumps(_configs_template, indent=2), encoding="utf-8")
+
     api_keys = config_dir / "api_keys.json"
     if not api_keys.exists():
         print("[*] Creating default config/api_keys.json template...")
@@ -91,10 +110,12 @@ def _ensure_config_files():
 
 def _ask_keep_credentials() -> bool:
     """Ask whether existing credentials should be bundled. Never modifies source files."""
+    dotenv_path = BASE_DIR / ".env"
     api_keys_path = BASE_DIR / "config" / "api_keys.json"
-    if not api_keys_path.exists():
+    has_creds = dotenv_path.exists() or api_keys_path.exists()
+    if not has_creds:
         return False
-    print("[?] Use existing credentials from config/api_keys.json in the build?")
+    print("[?] Use existing credentials (.env + api_keys.json) in the build?")
     answer = input("    (y/N): ").strip().lower()
     if answer == "y":
         print("[*] Keeping existing credentials.")
@@ -157,6 +178,17 @@ _CREDENTIALS_TEMPLATE = {
 def _copy_data_to_bundle_root(dist_dir: Path, keep_credentials: bool):
     """Copy data files to bundle root so frozen modules can find them via sys.executable.parent."""
     print("[*] Copying data files to bundle root...")
+
+    dotenv_src = BASE_DIR / ".env"
+    dotenv_dst = dist_dir / ".env"
+    if dotenv_src.exists():
+        if keep_credentials:
+            shutil.copy2(dotenv_src, dotenv_dst)
+            print(f"    .env (with credentials)")
+        else:
+            dotenv_dst.write_text("# .env template - configure your keys\n", encoding="utf-8")
+            print(f"    .env (clean template)")
+
     for rel_dir in ["config", "core", "memory"]:
         src = BASE_DIR / rel_dir
         dst = dist_dir / rel_dir

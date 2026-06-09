@@ -8,7 +8,8 @@ from PyQt6.QtGui import QFont, QColor, QBrush, QPainter, QPen
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QScrollArea, QSplitter, QTextEdit, QFrame, QDialog,
-    QLineEdit, QPlainTextEdit, QSpinBox, QMessageBox, QProgressBar
+    QLineEdit, QPlainTextEdit, QSpinBox, QMessageBox, QProgressBar,
+    QSizePolicy
 )
 import qtawesome as qta
 
@@ -39,32 +40,43 @@ class ScrapeWorker(QThread):
     finished = pyqtSignal(int)
     log_signal = pyqtSignal(str)
 
-    def __init__(self, keywords: str, max_jobs: int = 10):
+    def __init__(self, keywords: str, max_jobs: int = 10, sources: list | None = None):
         super().__init__()
         self.keywords = keywords
         self.max_jobs = max_jobs
+        self.sources = sources or ["linkedin", "google_jobs"]
 
     def run(self):
-        self.log_signal.emit("Iniciando scraper do LinkedIn...")
+        total_new = 0
         try:
-            from core.linkedin_scraper import scrape_linkedin_jobs
-            from core.job_analyzer import analyze_all_jobs
-            
-            # Run playwright in an event loop inside the thread
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            
-            new_jobs = loop.run_until_complete(
-                scrape_linkedin_jobs(self.keywords, max_jobs=self.max_jobs)
-            )
-            self.log_signal.emit(f"Scraper finalizado. {new_jobs} novas vagas salvas.")
-            
-            if new_jobs > 0 or True: # Try analyzing anyway in case there are unanalyzed ones
+
+            if "linkedin" in self.sources:
+                self.log_signal.emit("Iniciando scraper do LinkedIn...")
+                from core.linkedin_scraper import scrape_linkedin_jobs
+                new_jobs = loop.run_until_complete(
+                    scrape_linkedin_jobs(self.keywords, max_jobs=self.max_jobs)
+                )
+                total_new += new_jobs
+                self.log_signal.emit(f"LinkedIn finalizado. {new_jobs} novas vagas.")
+
+            if "google_jobs" in self.sources:
+                self.log_signal.emit("Procurando vagas no Google Jobs...")
+                from core.google_jobs_scraper import scrape_google_jobs
+                new_jobs = loop.run_until_complete(
+                    scrape_google_jobs(self.keywords, max_jobs=self.max_jobs)
+                )
+                total_new += new_jobs
+                self.log_signal.emit(f"Google Jobs finalizado. {new_jobs} novas vagas.")
+
+            if total_new >= 0:
                 self.log_signal.emit("Iniciando análise de compatibilidade via Gemini API...")
+                from core.job_analyzer import analyze_all_jobs
                 analyzed = analyze_all_jobs()
                 self.log_signal.emit(f"Análise finalizada. {analyzed} vagas analisadas.")
-                
-            self.finished.emit(new_jobs)
+
+            self.finished.emit(total_new)
         except Exception as e:
             self.log_signal.emit(f"Erro no processamento: {str(e)}")
             self.finished.emit(-1)
@@ -241,7 +253,7 @@ class JobCard(QFrame):
         self.title_lbl = QLabel(job_data.get("title", "Título indisponível"))
         self.title_lbl.setFont(QFont("Inter", 9, QFont.Weight.Bold))
         self.title_lbl.setStyleSheet(f"color: {C.TEXT};")
-        self.title_lbl.setWordWrap(False)
+        self.title_lbl.setWordWrap(True)
         info_lay.addWidget(self.title_lbl)
         
         self.company_lbl = QLabel(f"{job_data.get('company')}  ·  {job_data.get('location')}")
@@ -270,7 +282,7 @@ class JobRadarWidget(QWidget):
         hdr = QHBoxLayout()
         
         icon_lbl = QLabel()
-        icon_lbl.setPixmap(qta.icon("fa5s.radar", color=C.PRI).pixmap(20, 20))
+        icon_lbl.setPixmap(qta.icon("fa5s.broadcast-tower", color=C.PRI).pixmap(20, 20))
         hdr.addWidget(icon_lbl)
         
         title_lbl = QLabel("RADAR INTELIGENTE DE VAGAS")
@@ -304,6 +316,54 @@ class JobRadarWidget(QWidget):
         
         layout.addLayout(hdr)
         
+        # ── Filter Row ──────────────────────────────────────
+        filter_row = QHBoxLayout()
+        filter_row.setSpacing(8)
+
+        filter_row.addWidget(QLabel("LIMITE:"))
+        self.limit_spin = QSpinBox()
+        self.limit_spin.setRange(1, 50)
+        self.limit_spin.setValue(8)
+        self.limit_spin.setFixedWidth(55)
+        self.limit_spin.setStyleSheet(f"""
+            QSpinBox {{ background: #080808; color: {C.WHITE}; border: 1px solid {C.BORDER};
+                        border-radius: 3px; padding: 2px 4px; font-family: 'Inter'; font-size: 9px; }}
+            QSpinBox:focus {{ border: 1px solid {C.PRI}; }}
+        """)
+        filter_row.addWidget(self.limit_spin)
+
+        filter_row.addSpacing(8)
+
+        filter_row.addWidget(QLabel("MATCH MÍN:"))
+        self.min_match_spin = QSpinBox()
+        self.min_match_spin.setRange(0, 100)
+        self.min_match_spin.setValue(0)
+        self.min_match_spin.setSuffix("%")
+        self.min_match_spin.setFixedWidth(60)
+        self.min_match_spin.setStyleSheet(f"""
+            QSpinBox {{ background: #080808; color: {C.WHITE}; border: 1px solid {C.BORDER};
+                        border-radius: 3px; padding: 2px 4px; font-family: 'Inter'; font-size: 9px; }}
+            QSpinBox:focus {{ border: 1px solid {C.PRI}; }}
+        """)
+        self.min_match_spin.valueChanged.connect(self._on_filter_changed)
+        filter_row.addWidget(self.min_match_spin)
+
+        filter_row.addSpacing(12)
+
+        self.source_lbl = QLabel("\uf085  LinkedIn  ·  Google Jobs")
+        self.source_lbl.setFont(QFont("Inter", 7))
+        self.source_lbl.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent;")
+        filter_row.addWidget(self.source_lbl)
+
+        filter_row.addStretch()
+
+        self.filter_count_lbl = QLabel("")
+        self.filter_count_lbl.setFont(QFont("Inter", 8, QFont.Weight.Bold))
+        self.filter_count_lbl.setStyleSheet(f"color: {C.TEXT_MED}; background: transparent;")
+        filter_row.addWidget(self.filter_count_lbl)
+
+        layout.addLayout(filter_row)
+
         # Progress Bar
         self.progress_bar = QProgressBar()
         self.progress_bar.setFixedHeight(4)
@@ -331,6 +391,7 @@ class JobRadarWidget(QWidget):
         
         # Left Panel (List)
         left_widget = QWidget()
+        left_widget.setMinimumWidth(280)
         left_lay = QVBoxLayout(left_widget)
         left_lay.setContentsMargins(0, 0, 0, 0)
         left_lay.setSpacing(6)
@@ -396,12 +457,15 @@ class JobRadarWidget(QWidget):
             except:
                 self._jobs = []
                 
+        min_score = self.min_match_spin.value() if hasattr(self, 'min_match_spin') else 0
+        
         if not self._jobs:
             lbl = QLabel("Nenhuma vaga encontrada no radar.\nClique em 'Buscar Vagas' para monitorar.")
             lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             lbl.setFont(QFont("Inter", 9))
             lbl.setStyleSheet(f"color: {C.TEXT_DIM};")
             self.scroll_lay.addWidget(lbl)
+            self.filter_count_lbl.setText("0 vagas")
         else:
             # Sort by match score if exists
             def get_score(j):
@@ -409,10 +473,24 @@ class JobRadarWidget(QWidget):
                 except: return 0
             self._jobs.sort(key=get_score, reverse=True)
             
+            visible_count = 0
             for job in self._jobs:
+                score = get_score(job)
+                if score < min_score:
+                    continue
                 card = JobCard(job)
                 card.clicked.connect(self.show_details)
                 self.scroll_lay.addWidget(card)
+                visible_count += 1
+                
+            total = len(self._jobs)
+            self.filter_count_lbl.setText(f"{visible_count} de {total} vagas")
+            if visible_count == 0 and total > 0:
+                lbl = QLabel(f"Nenhuma vaga com match ≥ {min_score}%.\nReduza o filtro de MATCH MÍN para ver mais resultados.")
+                lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                lbl.setFont(QFont("Inter", 9))
+                lbl.setStyleSheet(f"color: {C.TEXT_DIM};")
+                self.scroll_lay.addWidget(lbl)
                 
         self.scroll_lay.addStretch()
         
@@ -522,7 +600,8 @@ class JobRadarWidget(QWidget):
         desc_box = QTextEdit()
         desc_box.setPlainText(job.get("description", ""))
         desc_box.setReadOnly(True)
-        desc_box.setFixedHeight(120)
+        desc_box.setMaximumHeight(200)
+        desc_box.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         desc_box.setStyleSheet(f"background: #080808; border: 1px solid {C.BORDER}; color: {C.TEXT_MED}; font-family: 'Inter'; font-size: 8px;")
         desc_box.hide()
         
@@ -648,6 +727,9 @@ class JobRadarWidget(QWidget):
             except Exception as e:
                 print(f"[JobRadar] Erro no Apply Assist: {e}")
                 
+    def _on_filter_changed(self):
+        self.load_jobs()
+
     def _start_scanning(self):
         # Fetch target roles from profile
         profile_path = Path(__file__).resolve().parent.parent / "config" / "user_profile.json"
@@ -662,13 +744,16 @@ class JobRadarWidget(QWidget):
             except:
                 pass
                 
+        max_jobs = self.limit_spin.value() if hasattr(self, 'limit_spin') else 8
+        sources = ["linkedin", "google_jobs"]
+                
         # Start Worker thread
         self.progress_bar.show()
-        self.log_lbl.setText("Iniciando Radar Inteligente de Vagas LinkedIn...")
+        self.log_lbl.setText(f"Iniciando Radar de Vagas (LinkedIn + Google Jobs) para '{keywords}'...")
         self.log_lbl.show()
         self.refresh_btn.setEnabled(False)
         
-        self.worker = ScrapeWorker(keywords, max_jobs=8)
+        self.worker = ScrapeWorker(keywords, max_jobs=max_jobs, sources=sources)
         self.worker.log_signal.connect(self._update_log)
         self.worker.finished.connect(self._scan_finished)
         self.worker.start()
@@ -676,11 +761,11 @@ class JobRadarWidget(QWidget):
     def _update_log(self, text: str):
         self.log_lbl.setText(text)
         
-    def _scan_finished(self, new_jobs_count):
+    def _scan_finished(self, total_new):
         self.progress_bar.hide()
         self.refresh_btn.setEnabled(True)
-        if new_jobs_count >= 0:
-            self.log_lbl.setText(f"Radar finalizado! {new_jobs_count} novas vagas adicionadas.")
+        if total_new >= 0:
+            self.log_lbl.setText(f"Radar finalizado! {total_new} novas vagas encontradas (LinkedIn + Google Jobs).")
             self.load_jobs()
         else:
             self.log_lbl.setText("Erro ao executar busca automática. Verifique os logs do console.")
