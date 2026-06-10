@@ -80,6 +80,7 @@ TOOL_TO_PERMISSION: dict[str, str] = {
     "web_search":         "access_web_browser",
     "deep_research":      "access_web_browser",
     "linkedin_jobs_radar":"access_web_browser",
+    "freela_arsenal":     "access_web_browser",
     "apply_assist":       "access_web_browser",
     "youtube_video":      "access_web_browser",
     "flight_finder":      "access_web_browser",
