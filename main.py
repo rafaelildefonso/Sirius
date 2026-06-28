@@ -52,6 +52,7 @@ from actions.deep_research    import deep_research
 from actions.linkedin_jobs_radar import linkedin_jobs_radar
 from actions.apply_assist import apply_assist
 from actions.business_radar import business_radar
+from actions.freela_arsenal import freela_arsenal
 from config.permissions import (
     is_granted, get_category, grant_permission, PERMISSION_META,
 )
@@ -673,6 +674,63 @@ TOOL_DECLARATIONS = [
             "required": []
         }
     },
+    {
+        "name": "freela_arsenal",
+        "description": (
+            "Orquestrador completo de prospecção de freelas. "
+            "Combina Google Maps (navegador visível — encontra empresas sem site para prospecção ativa via WhatsApp), "
+            "Deep Research (leads de freelance na web), e análise unificada. "
+            "Use para achar freelas, prospectar clientes, ou ambos. "
+            "IMPORTANTE: Mostra progresso no log. Use o que sabe do usuário por contexto/memória. "
+            "Só pergunte se realmente não souber. Prefira assumir com base no histórico."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "objetivo": {
+                    "type": "STRING",
+                    "description": "'tudo' (default) | 'prospectar_clientes' | 'achar_vagas' | 'so_maps'"
+                },
+                "competencias": {
+                    "type": "STRING",
+                    "description": "Suas habilidades (ex: 'React, Python, Django')"
+                },
+                "target_audience": {
+                    "type": "STRING",
+                    "description": "Nicho de clientes (ex: 'restaurantes, pet shops')"
+                },
+                "segmentos": {
+                    "type": "STRING",
+                    "description": "Segmentos para buscar no Maps (ex: 'restaurante, pet shop')"
+                },
+                "cidade": {
+                    "type": "STRING",
+                    "description": "Cidade para prospecção (ex: 'Belo Horizonte')"
+                },
+                "regiao": {
+                    "type": "STRING",
+                    "description": "Região para deep research (ex: 'São Paulo', 'Brasil')"
+                },
+                "max_resultados": {
+                    "type": "STRING",
+                    "description": "Limite por segmento no Maps (default: 10, máx: 30)"
+                },
+                "mostrar_navegador": {
+                    "type": "STRING",
+                    "description": "'true' (default) para ver o Chrome abrindo, 'false' para headless"
+                },
+                "detalhado": {
+                    "type": "STRING",
+                    "description": "'true' para listar empresas no relatório"
+                },
+                "gerar_arquivos": {
+                    "type": "STRING",
+                    "description": "'true' (default) para salvar CSV/TXT, 'false' para não salvar"
+                }
+            },
+            "required": []
+        }
+    },
 ]
 
 class SiriusLive:
@@ -923,6 +981,10 @@ class SiriusLive:
 
             elif name == "business_radar":
                 r = await loop.run_in_executor(None, lambda: business_radar(parameters=args, player=self.ui, speak=self.speak))
+                result = r or "Done."
+
+            elif name == "freela_arsenal":
+                r = await loop.run_in_executor(None, lambda: freela_arsenal(parameters=args, player=self.ui, speak=self.speak))
                 result = r or "Done."
 
             elif name == "shutdown_sirius":
@@ -1470,6 +1532,10 @@ class SiriusLocal:
 
             elif name == "business_radar":
                 r = business_radar(parameters=args, player=self.ui, speak=self.speak)
+                result = r or "Done."
+
+            elif name == "freela_arsenal":
+                r = freela_arsenal(parameters=args, player=self.ui, speak=self.speak)
                 result = r or "Done."
 
             elif name == "shutdown_sirius":
