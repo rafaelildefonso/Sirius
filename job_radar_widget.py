@@ -7,7 +7,7 @@ from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSize
 from PyQt6.QtGui import QFont, QColor, QBrush, QPainter, QPen
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QScrollArea, QSplitter, QTextEdit, QFrame, QDialog,
+    QScrollArea, QSplitter, QTextEdit, QTextBrowser, QFrame, QDialog,
     QLineEdit, QPlainTextEdit, QSpinBox, QMessageBox, QProgressBar
 )
 import qtawesome as qta
@@ -550,10 +550,12 @@ class JobRadarWidget(QWidget):
         t_lbl.setStyleSheet(f"color: {color}; background: transparent;")
         sec.addWidget(t_lbl)
         
-        txt = QLabel(content)
+        txt = QTextBrowser()
         txt.setFont(QFont("Inter", 9))
-        txt.setStyleSheet(f"color: {C.TEXT}; background: transparent;")
-        txt.setWordWrap(True)
+        txt.setStyleSheet(f"color: {C.TEXT}; background: transparent; border: none;")
+        txt.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        txt.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        txt.setPlainText(content)
         sec.addWidget(txt)
         
         parent_layout.addLayout(sec)
@@ -567,10 +569,12 @@ class JobRadarWidget(QWidget):
         t_lbl.setStyleSheet(f"color: {color}; background: transparent;")
         sec.addWidget(t_lbl)
         
-        txt = QLabel(content)
+        txt = QTextBrowser()
         txt.setFont(QFont("Inter", 9))
-        txt.setStyleSheet(f"color: {C.TEXT}; background: transparent;")
-        txt.setWordWrap(True)
+        txt.setStyleSheet(f"color: {C.TEXT}; background: transparent; border: none;")
+        txt.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        txt.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        txt.setPlainText(content)
         sec.addWidget(txt)
         
         parent_layout.addLayout(sec)
@@ -590,10 +594,12 @@ class JobRadarWidget(QWidget):
             ico.setPixmap(qta.icon("fa5s.flag", color=C.RED).pixmap(10, 10))
             row.addWidget(ico)
             
-            lbl = QLabel(flag)
+            lbl = QTextBrowser()
             lbl.setFont(QFont("Inter", 9))
-            lbl.setStyleSheet(f"color: {C.WHITE}; background: transparent;")
-            lbl.setWordWrap(True)
+            lbl.setStyleSheet(f"color: {C.WHITE}; background: transparent; border: none;")
+            lbl.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            lbl.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            lbl.setPlainText(flag)
             row.addWidget(lbl, stretch=1)
             sec.addLayout(row)
             

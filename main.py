@@ -51,6 +51,7 @@ from actions.gmail            import gmail_action
 from actions.deep_research    import deep_research
 from actions.linkedin_jobs_radar import linkedin_jobs_radar
 from actions.apply_assist import apply_assist
+from actions.business_radar import business_radar
 from config.permissions import (
     is_granted, get_category, grant_permission, PERMISSION_META,
 )
@@ -657,6 +658,21 @@ TOOL_DECLARATIONS = [
             "required": []
         }
     },
+    {
+        "name": "business_radar",
+        "description": (
+            "Busca empresas no Google Maps e analisa potencial de compra de sites. "
+            "Use para prospectar (search), analisar compatibilidade (analyze), listar/abrir painel (list), ou exportar dados (export)."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {"type": "STRING", "description": "search (default) | analyze | list | export"},
+                "estado": {"type": "STRING", "description": "Estado alvo (ex: SP, RJ, MG)"}
+            },
+            "required": []
+        }
+    },
 ]
 
 class SiriusLive:
@@ -903,6 +919,10 @@ class SiriusLive:
 
             elif name == "apply_assist":
                 r = await loop.run_in_executor(None, lambda: apply_assist(parameters=args, player=self.ui, speak=self.speak))
+                result = r or "Done."
+
+            elif name == "business_radar":
+                r = await loop.run_in_executor(None, lambda: business_radar(parameters=args, player=self.ui, speak=self.speak))
                 result = r or "Done."
 
             elif name == "shutdown_sirius":
@@ -1446,6 +1466,10 @@ class SiriusLocal:
 
             elif name == "apply_assist":
                 r = apply_assist(parameters=args, player=self.ui, speak=self.speak)
+                result = r or "Done."
+
+            elif name == "business_radar":
+                r = business_radar(parameters=args, player=self.ui, speak=self.speak)
                 result = r or "Done."
 
             elif name == "shutdown_sirius":

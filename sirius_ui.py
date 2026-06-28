@@ -1949,6 +1949,13 @@ class MainWindow(QMainWindow):
         except Exception as e:
             print(f"[UI] Erro ao carregar JobRadarWidget: {e}")
 
+        try:
+            from ui.business_radar_widget import BusinessRadarWidget
+            self.business_radar = BusinessRadarWidget()
+            self.left_stack.addWidget(self.business_radar)
+        except Exception as e:
+            print(f"[UI] Erro ao carregar BusinessRadarWidget: {e}")
+
         body.addWidget(self.left_stack, stretch=5)
 
         self._right_panel = self._build_right_panel()
@@ -2271,8 +2278,21 @@ class MainWindow(QMainWindow):
         return w
 
     def _toggle_view(self):
-        if self.left_stack.currentIndex() == 0:
+        idx = self.left_stack.currentIndex()
+        if idx == 0:
             self.left_stack.setCurrentIndex(1)
+            self._view_btn.setText("RADAR PROSPECÇÃO")
+            self._view_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: transparent; color: {C.GREEN};
+                    border: 1px solid {C.GREEN_D}; border-radius: 3px; padding: 0 8px;
+                }}
+                QPushButton:hover {{
+                    background: rgba(0, 255, 136, 0.1); color: {C.WHITE};
+                }}
+            """)
+        elif idx == 1:
+            self.left_stack.setCurrentIndex(2)
             self._view_btn.setText("ASSISTENTE DE VOZ")
             self._view_btn.setStyleSheet(f"""
                 QPushButton {{

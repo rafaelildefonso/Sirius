@@ -18,14 +18,15 @@ if not ICON_PATH_STR:
 from PyInstaller.utils.hooks import collect_submodules, collect_data_files, collect_all
 
 _pkg_binaries, _pkg_datas, _pkg_hiddenimports = collect_all('packaging')
+_sd_binaries, _sd_datas, _sd_hiddenimports = collect_all('sounddevice')
 
 block_cipher = None
 
 a = Analysis(
     [str(BASE_DIR / 'main.py')],
     pathex=[str(BASE_DIR)],
-    binaries=[] + _pkg_binaries,
-    datas=[] + collect_data_files('qtawesome') + _pkg_datas,
+    binaries=[] + _pkg_binaries + _sd_binaries,
+    datas=[] + collect_data_files('qtawesome') + _pkg_datas + _sd_datas,
     hiddenimports=[
         # ── Google Gemini SDK ────────────────────────────────────
         'google.genai',
@@ -96,7 +97,8 @@ a = Analysis(
     + collect_submodules('google.auth')
     + collect_submodules('google.oauth2')
     + collect_submodules('comtypes')
-    + _pkg_hiddenimports,
+    + _pkg_hiddenimports
+    + _sd_hiddenimports,
     excludes=[
         'matplotlib',
         'scipy',
