@@ -7,10 +7,7 @@ from enum import Enum
 from core.llm_utils import call_llm_for_action
 
 
-def get_base_dir() -> Path:
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent
-    return Path(__file__).resolve().parent.parent
+from core.config_loader import get_base_dir
 
 
 BASE_DIR = get_base_dir()
@@ -75,7 +72,7 @@ def analyze_error(
         }
     """
     if attempt >= max_attempts:
-        print(f"[ErrorHandler] ⚠️ Max attempts reached for step {step.get('step')} — forcing replan")
+        print(f"[ErrorHandler] [WARN] Max attempts reached for step {step.get('step')} — forcing replan")
         return {
             "decision":      ErrorDecision.REPLAN,
             "reason":        f"Failed {attempt} times: {error[:100]}",
@@ -118,7 +115,7 @@ Attempt number: {attempt}"""
         return result
 
     except Exception as e:
-        print(f"[ErrorHandler] ⚠️ Analysis failed: {e} — defaulting to replan")
+        print(f"[ErrorHandler] [WARN] Analysis failed: {e} — defaulting to replan")
         return {
             "decision":       ErrorDecision.REPLAN,
             "reason":         str(e),
@@ -161,7 +158,7 @@ Return ONLY the Python code, no explanation."""
         }
 
     except Exception as e:
-        print(f"[ErrorHandler] ⚠️ Fix generation failed: {e}")
+        print(f"[ErrorHandler] [WARN] Fix generation failed: {e}")
         return {
             "step":        step.get("step"),
             "tool":        "generated_code",

@@ -6,12 +6,6 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-def _base_dir() -> Path:
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent
-    return Path(__file__).resolve().parent.parent
-
-
 def _get_os() -> str:
     from core.config_loader import get_config
     return (get_config("os_system") or "windows").lower()
@@ -183,7 +177,7 @@ def _schedule_windows(target_dt: datetime, task_name: str,
     if result.returncode != 0:
         script_path.unlink(missing_ok=True)
         err = (result.stderr or result.stdout).strip()
-        print(f"[Reminder] ❌ schtasks: {err}")
+        print(f"[Reminder] [FAIL] schtasks: {err}")
         return ""  
 
     return task_name
@@ -233,7 +227,7 @@ def _schedule_mac(target_dt: datetime, task_name: str,
     if result.returncode != 0:
         plist_path.unlink(missing_ok=True)
         script_path.unlink(missing_ok=True)
-        print(f"[Reminder] ❌ launchctl: {result.stderr.strip()}")
+        print(f"[Reminder] [FAIL] launchctl: {result.stderr.strip()}")
         return ""
 
     return label
@@ -257,7 +251,7 @@ def _schedule_linux(target_dt: datetime, task_name: str,
         )
         if result.returncode == 0:
             return task_name
-        print(f"[Reminder] ⚠️ systemd-run failed: {result.stderr.strip()}, trying 'at'")
+        print(f"[Reminder] [WARN] systemd-run failed: {result.stderr.strip()}, trying 'at'")
 
     if shutil.which("at"):
         at_time = target_dt.strftime("%H:%M %Y-%m-%d")
@@ -268,10 +262,10 @@ def _schedule_linux(target_dt: datetime, task_name: str,
         )
         if result.returncode == 0:
             return task_name
-        print(f"[Reminder] ❌ at: {result.stderr.strip()}")
+        print(f"[Reminder] [FAIL] at: {result.stderr.strip()}")
         return ""
 
-    print("[Reminder] ❌ Neither systemd-run nor at found on this Linux system.")
+    print("[Reminder] [FAIL] Neither systemd-run nor at found on this Linux system.")
     return ""
 
 def reminder(
@@ -314,14 +308,14 @@ def reminder(
             job_id = _schedule_linux(target_dt, task_name, script_path)
     except Exception as e:
         script_path.unlink(missing_ok=True)
-        print(f"[Reminder] ❌ Scheduling exception: {e}")
+        print(f"[Reminder] [FAIL] Scheduling exception: {e}")
         return "Something went wrong while scheduling the reminder."
 
     if not job_id:
         return "I couldn't register the reminder with the system scheduler."
 
     if player:
-        player.write_log(f"[Reminder] ✅ {date_str} {time_str} — {safe_msg[:40]}")
+        player.write_log(f"[Reminder] [OK] {date_str} {time_str} — {safe_msg[:40]}")
 
     friendly_time = target_dt.strftime("%B %d at %I:%M %p")
     return f"Reminder set for {friendly_time}."

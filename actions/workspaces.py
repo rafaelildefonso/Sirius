@@ -21,13 +21,9 @@ except ImportError:
 
 _SYSTEM = platform.system()
 
-def _get_base_dir() -> Path:
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent
-    # This assumes we are in actions/workspaces.py, so parent is actions/, parent.parent is root
-    return Path(__file__).resolve().parent.parent
+from core.config_loader import get_base_dir
 
-_CONFIG_PATH = _get_base_dir() / "config" / "workspaces.json"
+_CONFIG_PATH = get_base_dir() / "config" / "workspaces.json"
 
 def _load_workspaces() -> dict:
     if not _CONFIG_PATH.exists():
