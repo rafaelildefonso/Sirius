@@ -1,0 +1,49 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicedayzhu/tauri-apps-api/refs/heads/main/schema.json",
+  "productName": "SIRIUS",
+  "version": "0.1.0",
+  "identifier": "com.rafaelildefonso.sirius",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "python ../build_backend.py --cached && npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "SIRIUS",
+        "width": 980,
+        "height": 700,
+        "minWidth": 820,
+        "minHeight": 580,
+        "center": true,
+        "decorations": true,
+        "resizable": true,
+        "transparent": false,
+        "shadow": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "externalBin": [
+      "binaries/sirius-backend"
+    ],
+    "copyright": "",
+    "category": "DeveloperTool",
+    "shortDescription": "Voice-controlled AI personal assistant",
+    "longDescription": ""
+  }
+}

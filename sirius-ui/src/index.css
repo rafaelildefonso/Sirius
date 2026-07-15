@@ -1,0 +1,52 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #050505;
+  color: #e0f0ff;
+  font-family: 'Inter', 'Segoe UI', 'Noto Sans', Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ── Scrollbar ───────────────────────────────────────────────── */
+::-webkit-scrollbar {
+  width: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #252525;
+  border-radius: 2px;
+}
+
+/* ── Animations ───────────────────────────────────────────────── */
+@keyframes typewriter-cursor {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+.typing-cursor::after {
+  content: '▊';
+  animation: typewriter-cursor 0.8s step-end infinite;
+  color: #00aaff;
+}
+
+/* ── Drag & Drop ──────────────────────────────────────────────── */
+.drop-zone-drag-over {
+  border-color: #00aaff !important;
+  background: rgba(0, 170, 255, 0.05) !important;
+}
