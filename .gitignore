@@ -9,6 +9,16 @@ config/*.json
 memory/*.json
 memory/long_term.json
 
+# Database & Encryption (gerados pela camada de persistência)
+*.db
+*.db-shm
+*.db-wal
+config/.db_key
+.backend_build_hash
+
+# SSL certs (auto-gerados pelo dashboard FastAPI)
+config/certs/
+
 # Python Bytecode
 __pycache__/
 __pycache__
@@ -41,3 +51,15 @@ htmlcov/
 
 # Logs
 *.log
+
+# Tooling / IDE
+.agents/
+.opencode/
+
+# Tauri / Rust
+sirius-ui/src-tauri/target/
+sirius-ui/src-tauri/binaries/
+
+# Node
+sirius-ui/node_modules/
+sirius-ui/dist/
