@@ -1,5 +1,7 @@
+from __future__ import annotations
 from datetime import datetime
 import asyncio
+import os
 import re
 import threading
 import json
@@ -22,10 +24,24 @@ import sounddevice as sd
 import numpy as np
 from google import genai
 from google.genai import types
-from sirius_ui import SiriusUI
+
+# ── UI backend selection (WS_UI=1 uses WebSocket/Tauri; default is PyQt6) ─────
+_USE_WS = os.environ.get("SIRIUS_WS_UI", "").lower() in ("1", "true", "yes")
+_DASHBOARD: 'DashboardServer | None' = None  # shared dashboard instance
+_DASHBOARD_READY = threading.Event()  # set when dashboard port is confirmed open
+if _USE_WS:
+    import ws_server as _ws
+    _ws.start()
+    from ws_server import WsUI as SiriusUI
+else:
+    from PyQt6.QtCore import QSharedMemory
+    from PyQt6.QtNetwork import QLocalServer, QLocalSocket
+    from PyQt6.QtWidgets import QApplication
+    from sirius_ui import SiriusUI
 from memory.memory_manager import (
     load_memory, update_memory, format_memory_for_prompt,
-    should_extract_memory, extract_memory
+    should_extract_memory, extract_memory,
+    process_user_input, get_repo,
 )
 
 from actions.file_processor import file_processor
@@ -57,11 +73,7 @@ from config.permissions import (
 )
 
 
-def get_base_dir():
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent
-    return Path(__file__).resolve().parent
-
+from core.config_loader import get_base_dir
 
 BASE_DIR        = get_base_dir()
 PROMPT_PATH     = BASE_DIR / "core" / "prompt.txt"
@@ -80,6 +92,14 @@ def _get_api_key() -> str:
 
 
 _last_memory_input = ""
+_sirius_instance: "SiriusLive | None" = None
+
+def request_restart() -> None:
+    """Signal the running SiriusLive to disconnect and reconnect with fresh config."""
+    global _sirius_instance
+    if _sirius_instance is not None:
+        _sirius_instance.request_restart()
+        print("[SYS] Restart requested (config changed)")
 
 def _update_memory_async(user_text: str, sirius_text: str) -> None:
     global _last_memory_input
@@ -91,6 +111,17 @@ def _update_memory_async(user_text: str, sirius_text: str) -> None:
         return
     _last_memory_input = user_text
 
+    # New pipeline: classify + extract + persist via process_user_input
+    try:
+        event_id = process_user_input(user_text, source="user", context={"reply": sirius_text[:500]})
+        if event_id:
+            print(f"[Memory] Persisted as event {event_id[:12]}...")
+            return
+    except Exception as e:
+        if "429" not in str(e):
+            print(f"[Memory] process_user_input warning: {e}")
+
+    # Legacy fallback: LLM-based extraction for non-classified items
     try:
         api_key = _get_api_key()
         if not should_extract_memory(user_text, sirius_text, api_key):
@@ -98,12 +129,72 @@ def _update_memory_async(user_text: str, sirius_text: str) -> None:
         data = extract_memory(user_text, sirius_text, api_key)
         if data:
             update_memory(data)
-            print(f"[Memory] ✅ {list(data.keys())}")
+            print(f"[Memory] Legacy OK {list(data.keys())}")
     except Exception as e:
         if "429" not in str(e):
-            print(f"[Memory] ⚠️ {e}")
+            print(f"[Memory] Legacy warning: {e}")
+
+
+def _persist_message_to_db(instance: "SiriusLive", role: str, content: str) -> None:
+    """Persist a conversation message to the DB, creating a conversation lazily."""
+    try:
+        repo = get_repo()
+        if repo is None:
+            print(f"[Memory] DB persist skipped — repo not available")
+            return
+        if instance._conv_id is None:
+            instance._conv_id = repo.create_conversation(title=f"SIRIUS Live {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+            print(f"[Memory] Created conversation #{instance._conv_id}")
+        repo.add_message(int(instance._conv_id), role, content[:500])
+        print(f"[Memory] Persisted {role} message to conv #{instance._conv_id}")
+    except Exception as e:
+        print(f"[Memory] DB persist warning: {e}")
+
 
 _system_prompt_cache: str | None = None
+
+def _detect_lan_ip() -> str:
+    """Return the first non‑loopback IPv4 address (works offline)."""
+    import socket
+    for probe in ("8.8.8.8", "1.1.1.1", "192.168.1.1"):
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.settimeout(0.5)
+            s.connect((probe, 80))
+            addr = s.getsockname()[0]
+            s.close()
+            if not addr.startswith("127."):
+                return addr
+        except Exception:
+            pass
+    try:
+        addr = socket.gethostbyname(socket.gethostname())
+        if not addr.startswith("127."):
+            return addr
+    except Exception:
+        pass
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            addr = info[4][0]
+            if not addr.startswith("127.") and not addr.startswith("169.254."):
+                return addr
+    except Exception:
+        pass
+    return "127.0.0.1"
+
+
+def _is_port_open(host: str = '127.0.0.1', port: int = 8000, timeout: float = 0.5) -> bool:
+    """Check if a TCP port is accepting connections."""
+    import socket
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(timeout)
+        s.connect((host, port))
+        s.close()
+        return True
+    except Exception:
+        return False
+
 
 def _load_system_prompt() -> str:
     global _system_prompt_cache
@@ -437,12 +528,33 @@ TOOL_DECLARATIONS = [
         }
     },
     {
+        "name": "hide_interface",
+        "description": (
+            "Hides the interface window to the system tray. "
+            "The assistant continues running silently in the background. "
+            "User can restore the window from the system tray icon. "
+            "Call this when the user says goodbye like tchau, até logo, "
+            "pode fechar, or expresses intent to close the interface "
+            "but NOT to terminate the system. "
+            "The user can say this in ANY language. "
+            "If the user explicitly says 'fechar tudo' or wants to "
+            "shut down everything, use shutdown_sirius instead."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {},
+        }
+    },
+    {
         "name": "shutdown_sirius",
         "description": (
-            "Shuts down the assistant completely. "
-            "Call this when the user expresses intent to end the conversation, "
-            "close the assistant, say goodbye, or stop Sirius. "
-            "The user can say this in ANY language."
+            "Shuts down the assistant completely — closes the interface "
+            "AND terminates the backend process. "
+            "Call this ONLY when the user explicitly says 'fechar tudo', "
+            "'desligar tudo', 'shut down completely', or makes it clear "
+            "they want to stop the entire system. "
+            "DO NOT call this for simple goodbyes like 'tchau' or 'até logo' "
+            "— use hide_interface instead."
         ),
         "parameters": {
             "type": "OBJECT",
@@ -720,6 +832,7 @@ TOOL_DECLARATIONS = [
 class SiriusLive:
 
     def __init__(self, ui: SiriusUI):
+        import queue as _queue
         self.ui             = ui
         self.session        = None
         self.audio_in_queue = None
@@ -728,10 +841,87 @@ class SiriusLive:
         self._is_speaking   = False
         self._speaking_lock = threading.Lock()
         self._first_run     = True
-        self.ui.on_text_command = self._on_text_command
+        self._phone_active     = False   # True while phone mic is streaming; pauses PC mic
+        self._dashboard        = None
+        self._dashboard_ready  = threading.Event()
+        # If the early dashboard thread already started, link its ready event
+        if _DASHBOARD_READY.is_set() or _DASHBOARD is not None:
+            self._dashboard_ready.set()
+        self.ui.on_text_command   = self._on_text_command
+        self.ui.on_remote_clicked = self._make_remote_key
         self._turn_done_event: asyncio.Event | None = None
+        self._allow_mic: asyncio.Event | None = None
+        self._tts           = None
+        self._tts_queue     = _queue.Queue()
+        self._tts_ready     = threading.Event()
+        self._tts_busy       = threading.Event()   # set while local TTS is actively speaking
+        self._gemini_turn    = threading.Event()   # set while Gemini is producing audio for a turn
+        self._conv_id        = None                # DB conversation id for current session
+        self._restart_event  = threading.Event()   # set to force session restart
+        threading.Thread(target=self._lazy_init_tts, daemon=True).start()
+        threading.Thread(target=self._tts_worker, daemon=True).start()
+
+    def _make_remote_key(self):
+        """Generate remote key + QR data. Uses shared dashboard if available, else fallback."""
+        global _DASHBOARD, _DASHBOARD_READY
+        print(f"[DEBUG _make_remote_key] Called. _DASHBOARD={_DASHBOARD is not None}, self._dashboard={self._dashboard is not None}")
+
+        # Wait up to 5s for the dashboard server to start listening
+        # Check both the local event (session dashboard) and global (early dashboard)
+        if _DASHBOARD is not None:
+            _DASHBOARD_READY.wait(timeout=5.0)
+        else:
+            self._dashboard_ready.wait(timeout=5.0)
+
+        # Verify the port is actually open
+        port_open = _is_port_open()
+        print(f"[DEBUG _make_remote_key] Port 8000 open={port_open}")
+
+        if _DASHBOARD is not None:
+            if not port_open:
+                print(f"[DEBUG _make_remote_key] WARNING: _DASHBOARD exists but port 8000 not listening!")
+            key    = _DASHBOARD.new_key()
+            url    = _DASHBOARD.get_url()
+            manual = _DASHBOARD.get_manual_url()
+            login_url = f"{url}/auto-login?key={key}"
+            print(f"[DEBUG _make_remote_key] Using _DASHBOARD. url={url}, key={key}, login_url={login_url}")
+            return url, key, login_url, manual
+
+        if self._dashboard is not None:
+            if not port_open:
+                print(f"[DEBUG _make_remote_key] WARNING: self._dashboard exists but port 8000 not listening!")
+            key    = self._dashboard.new_key()
+            url    = self._dashboard.get_url()
+            manual = self._dashboard.get_manual_url()
+            login_url = f"{url}/auto-login?key={key}"
+            print(f"[DEBUG _make_remote_key] Using self._dashboard. url={url}, key={key}, login_url={login_url}")
+            return url, key, login_url, manual
+
+        # Fallback: generate key locally without DashboardServer
+        print(f"[DEBUG _make_remote_key] FALLBACK path — no dashboard object at all")
+        import secrets
+        import string
+        import socket
+
+        _key_chars = [c for c in (string.ascii_uppercase + string.digits)
+                      if c not in ('O', 'I', 'L', '0', '1')]
+        key = ''.join(secrets.choice(_key_chars) for _ in range(6))
+
+        ip = _detect_lan_ip()
+        port = 8000
+        url = f"http://{ip}:{port}"
+        manual = f"{ip}:{port}"
+        login_url = f"{url}/auto-login?key={key}"
+        print(f"[DEBUG _make_remote_key] FALLBACK url={url}, key={key}, login_url={login_url}")
+
+        return url, key, login_url, manual
+
+    def _on_phone_connected(self) -> None:
+        self.ui.write_log("SYS: Phone connected via Remote Dashboard.")
+        self.ui.notify_phone_connected()
 
     def _on_text_command(self, text: str):
+        self.ui.write_log(f"You: {text}")
         if not self._loop or not self.session:
             return
         asyncio.run_coroutine_threadsafe(
@@ -741,6 +931,39 @@ class SiriusLive:
             ),
             self._loop
         )
+
+    def _lazy_init_tts(self):
+        from core.config_loader import get_all_config
+        from core.tts import create_tts_player
+        try:
+            config = get_all_config()
+            self._tts = create_tts_player(config)
+        except Exception as e:
+            print(f"[SiriusLive] TTS init error: {e}")
+        finally:
+            self._tts_ready.set()
+
+    def _tts_worker(self):
+        self._tts_ready.wait(timeout=120)
+        while True:
+            text = self._tts_queue.get()
+            try:
+                if text and self._tts:
+                    # Wait for any active Gemini turn to finish before speaking locally
+                    # Timeout of 10s to avoid deadlock if _gemini_turn never clears
+                    waited = 0
+                    while self._gemini_turn.is_set() and waited < 100:
+                        self._gemini_turn.wait(timeout=0.5)
+                        waited += 1
+                    if self._gemini_turn.is_set():
+                        print("[TTS] _gemini_turn still set after 50s — forcing clear")
+                        self._gemini_turn.clear()
+                    self._tts_busy.set()
+                    self._tts.speak(text, on_start=lambda: self.set_speaking(True), on_done=lambda: self.set_speaking(False))
+            except Exception as e:
+                print(f"[TTS] speak error: {e}")
+            finally:
+                self._tts_busy.clear()
 
     def set_speaking(self, value: bool):
         with self._speaking_lock:
@@ -751,20 +974,40 @@ class SiriusLive:
             self.ui.set_state("LISTENING")
 
     def speak(self, text: str):
-        if not self._loop or not self.session:
+        if not text or not self._tts:
             return
-        asyncio.run_coroutine_threadsafe(
-            self.session.send_client_content(
-                turns={"parts": [{"text": text}]},
-                turn_complete=True
-            ),
-            self._loop
-        )
+        self._tts_queue.put(text)
+
+    def request_restart(self) -> None:
+        """Signal the run loop to disconnect and reconnect (picks up new config)."""
+        self._restart_event.set()
 
     def speak_error(self, tool_name: str, error: str):
         short = str(error)[:120]
         self.ui.write_log(f"ERR: {tool_name} — {short}")
         self.speak(f"Sir, {tool_name} encountered an error. {short}")
+
+    @staticmethod
+    def _merge_segments(segments: list[str]) -> str:
+        """Merge incremental transcript segments, removing overlapping text."""
+        if not segments:
+            return ""
+        result = segments[0]
+        for seg in segments[1:]:
+            overlap = 0
+            for i in range(min(len(result), len(seg)), 0, -1):
+                if result[-i:] == seg[:i]:
+                    overlap = i
+                    break
+            if overlap:
+                result += seg[overlap:]
+            else:
+                # No overlap — likely incremental words; join with space
+                if result and seg:
+                    result += " " + seg
+                else:
+                    result += seg
+        return result.strip()
 
     def _build_config(self) -> types.LiveConnectConfig:
         from datetime import datetime
@@ -792,7 +1035,6 @@ class SiriusLive:
             input_audio_transcription={},
             system_instruction="\n".join(parts),
             tools=[{"function_declarations": TOOL_DECLARATIONS}],
-            session_resumption=types.SessionResumptionConfig(),
             speech_config=types.SpeechConfig(
                 voice_config=types.VoiceConfig(
                     prebuilt_voice_config=types.PrebuiltVoiceConfig(
@@ -806,7 +1048,7 @@ class SiriusLive:
         name = fc.name
         args = dict(fc.args or {})
 
-        print(f"[SIRIUS] 🔧 {name}  {args}")
+        print(f"[SIRIUS] Tool: {name}  {args}")
         self.ui.set_state("THINKING")
 
         if name == "save_memory":
@@ -815,19 +1057,39 @@ class SiriusLive:
             value    = args.get("value", "")
             if key and value:
                 update_memory({category: {key: {"value": value}}})
-                print(f"[Memory] 💾 save_memory: {category}/{key} = {value}")
+                print(f"[Memory] save_memory: {category}/{key} = {value}")
             if not self.ui.muted:
                 self.ui.set_state("LISTENING")
             return types.FunctionResponse(
                 id=fc.id, name=name,
                 response={"result": "ok", "silent": True}
             )
-
+        if name == "hide_interface":
+            self.ui.write_log("SYS: Hiding interface.")
+            if hasattr(self.ui, "request_hide_interface"):
+                self.ui.request_hide_interface()
+            return types.FunctionResponse(
+                id=fc.id, name=name,
+                response={"result": "ok", "silent": True}
+            )
+        if name == "shutdown_sirius":
+            self.ui.write_log("SYS: Shutdown requested.")
+            if hasattr(self.ui, 'request_close_app'):
+                self.ui.request_close_app()
+            def _shutdown():
+                import time, os
+                time.sleep(2.5)
+                os._exit(0)
+            threading.Thread(target=_shutdown, daemon=True).start()
+            return types.FunctionResponse(
+                id=fc.id, name=name,
+                response={"result": "ok", "silent": True}
+            )
         loop   = asyncio.get_event_loop()
         result = "Done."
 
         # ── Permission gate ──────────────────────────────────────────────
-        _NO_PERM_CHECK = {"save_memory", "shutdown_sirius"}
+        _NO_PERM_CHECK = {"save_memory", "shutdown_sirius", "hide_interface"}
         if name not in _NO_PERM_CHECK:
             _perm_key = get_category(name)
             if _perm_key and not is_granted(name):
@@ -967,14 +1229,6 @@ class SiriusLive:
                 r = await loop.run_in_executor(None, lambda: freela_arsenal(parameters=args, player=self.ui, speak=self.speak))
                 result = r or "Done."
 
-            elif name == "shutdown_sirius":
-                self.ui.write_log("SYS: Shutdown requested.")
-                self.speak("Goodbye, sir.")
-                def _shutdown():
-                    import time, os
-                    time.sleep(1)
-                    os._exit(0)
-                threading.Thread(target=_shutdown, daemon=True).start()
 
             else:
                 result = f"Unknown tool: {name}"
@@ -987,7 +1241,7 @@ class SiriusLive:
         if not self.ui.muted:
             self.ui.set_state("LISTENING")
 
-        print(f"[SIRIUS] 📤 {name} → {str(result)[:500]}")
+        print(f"[SIRIUS] -> {name} -> {str(result)[:500]}")
         return types.FunctionResponse(
             id=fc.id, name=name,
             response={"result": result}
@@ -999,20 +1253,18 @@ class SiriusLive:
             await self.session.send_realtime_input(media=msg)
 
     async def _listen_audio(self):
-        print("[SIRIUS] 🎤 Mic started")
+        print("[SIRIUS] Mic started")
         loop = asyncio.get_event_loop()
+        self._audio_stream = None
 
         def callback(indata, frames, time_info, status):
             with self._speaking_lock:
                 sirius_speaking = self._is_speaking
-            if not sirius_speaking and not self.ui.muted:
+            if not sirius_speaking:
                 data = indata.tobytes()
-                
-                # Calculate voice level for UI feedback
                 rms = np.sqrt(np.mean(indata**2))
-                level = min(1.0, rms * 15) # Scaling factor
+                level = min(1.0, rms * 15)
                 self.ui.set_voice_level(level)
-
                 loop.call_soon_threadsafe(
                     self.out_queue.put_nowait,
                     {"data": data, "mime_type": "audio/pcm"}
@@ -1021,22 +1273,65 @@ class SiriusLive:
                 self.ui.set_voice_level(0.0)
 
         try:
-            with sd.InputStream(
+            # Wait for frontend before opening mic
+            while not self.ui.has_client:
+                await asyncio.sleep(0.5)
+            # Wait for greeting to finish before opening mic
+            if self._allow_mic is not None:
+                await self._allow_mic.wait()
+            # Wait briefly for visibility state to arrive from frontend
+            for _ in range(50):  # up to 5s
+                if self.ui._visibility_set:
+                    break
+                await asyncio.sleep(0.1)
+
+            stream = sd.InputStream(
                 samplerate=SEND_SAMPLE_RATE,
                 channels=CHANNELS,
                 dtype="int16",
                 blocksize=CHUNK_SIZE,
                 callback=callback,
-            ):
-                print("[SIRIUS] 🎤 Mic stream open")
-                while True:
-                    await asyncio.sleep(0.1)
+            )
+            stream.start()
+            self._audio_stream = stream
+            print("[SIRIUS] Mic stream open")
+
+            # Always start active; visibility/mute changes handled by polling loop below
+            was_active = True
+            if not was_active:
+                stream.stop()
+                self.ui.set_voice_level(0.0)
+                print("[SIRIUS] Mic stream paused initially (inactive UI or muted)")
+
+            while True:
+                if self._restart_event.is_set():
+                    self._restart_event.clear()
+                    print("[SIRIUS] Restart requested — disconnecting")
+                    msg = "[SIRIUS] Restart requested by config change"
+                    raise RuntimeError(msg)
+                await asyncio.sleep(0.3)
+                is_active = self.ui.has_client and not self.ui.muted
+                if is_active != was_active:
+                    if not is_active:
+                        stream.stop()
+                        self.ui.set_voice_level(0.0)
+                        print(f"[SIRIUS] Mic stream paused (has_client={self.ui.has_client}, muted={self.ui.muted})")
+                    else:
+                        stream.start()
+                        print(f"[SIRIUS] Mic stream resumed (has_client={self.ui.has_client}, muted={self.ui.muted})")
+                    was_active = is_active
         except Exception as e:
-            print(f"[SIRIUS] ❌ Mic: {e}")
+            print(f"[SIRIUS] Mic error: {e}")
             raise
+        finally:
+            if self._audio_stream:
+                try:
+                    self._audio_stream.close()
+                except Exception:
+                    pass
 
     async def _receive_audio(self):
-        print("[SIRIUS] 👂 Recv started")
+        print("[SIRIUS] Recv started")
         out_buf, in_buf = [], []
 
         try:
@@ -1044,6 +1339,8 @@ class SiriusLive:
                 async for response in self.session.receive():
 
                     if response.data:
+                        if not self._gemini_turn.is_set():
+                            self._gemini_turn.set()
                         if self._turn_done_event and self._turn_done_event.is_set():
                             self._turn_done_event.clear()
                         self.audio_in_queue.put_nowait(response.data)
@@ -1051,28 +1348,63 @@ class SiriusLive:
                     if response.server_content:
                         sc = response.server_content
 
+                        if not self._gemini_turn.is_set():
+                            self._gemini_turn.set()
+
                         if sc.output_transcription and sc.output_transcription.text:
                             txt = _clean_transcript(sc.output_transcription.text)
                             if txt:
-                                out_buf.append(txt)
+                                if not out_buf:
+                                    out_buf.append(txt)
+                                elif out_buf[-1] in txt:
+                                    # Cumulative: new text contains the last segment
+                                    out_buf[-1] = txt
+                                elif txt in out_buf[-1]:
+                                    pass  # Subset — skip
+                                else:
+                                    out_buf.append(txt)
 
                         if sc.input_transcription and sc.input_transcription.text:
                             txt = _clean_transcript(sc.input_transcription.text)
                             if txt:
-                                in_buf.append(txt)
+                                if not in_buf:
+                                    in_buf.append(txt)
+                                elif in_buf[-1] in txt:
+                                    in_buf[-1] = txt
+                                elif txt in in_buf[-1]:
+                                    pass
+                                else:
+                                    in_buf.append(txt)
 
                         if sc.turn_complete:
                             if self._turn_done_event:
                                 self._turn_done_event.set()
+                            self._gemini_turn.clear()
 
-                            full_in = " ".join(in_buf).strip()
+                            full_in = self._merge_segments(in_buf)
                             if full_in:
                                 self.ui.write_log(f"You: {full_in}")
+                                if self._dashboard:
+                                    asyncio.create_task(self._dashboard.broadcast({
+                                        "type": "log", "speaker": "user",
+                                        "text": full_in,
+                                        "ts": datetime.now().isoformat(),
+                                    }))
+                                # Persist user message to DB
+                                _persist_message_to_db(self, "user", full_in)
                             in_buf = []
 
-                            full_out = " ".join(out_buf).strip()
+                            full_out = self._merge_segments(out_buf)
                             if full_out:
                                 self.ui.write_log(f"Sirius: {full_out}")
+                                if self._dashboard:
+                                    asyncio.create_task(self._dashboard.broadcast({
+                                        "type": "log", "speaker": "sirius",
+                                        "text": full_out,
+                                        "ts": datetime.now().isoformat(),
+                                    }))
+                                # Persist assistant message to DB
+                                _persist_message_to_db(self, "assistant", full_out)
                                 # Trigger background memory extraction
                                 threading.Thread(
                                     target=_update_memory_async,
@@ -1084,19 +1416,19 @@ class SiriusLive:
                     if response.tool_call:
                         fn_responses = []
                         for fc in response.tool_call.function_calls:
-                            print(f"[SIRIUS] 📞 {fc.name}")
+                            print(f"[SIRIUS] Call: {fc.name}")
                             fr = await self._execute_tool(fc)
                             fn_responses.append(fr)
                         await self.session.send_tool_response(
                             function_responses=fn_responses
                         )
         except Exception as e:
-            print(f"[SIRIUS] ❌ Recv: {e}")
+            print(f"[SIRIUS] Recv error: {e}")
             traceback.print_exc()
             raise
 
     async def _play_audio(self):
-        print("[SIRIUS] 🔊 Play started")
+        print("[SIRIUS] Play started")
 
         stream = sd.RawOutputStream(
             samplerate=RECEIVE_SAMPLE_RATE,
@@ -1122,26 +1454,127 @@ class SiriusLive:
                         self.set_speaking(False)
                         self._turn_done_event.clear()
                     continue
+
+                # Pause Gemini playback while local TTS is speaking
+                while self._tts_busy.is_set():
+                    await asyncio.sleep(0.1)
+
                 self.set_speaking(True)
                 await asyncio.to_thread(stream.write, chunk)
         except Exception as e:
-            print(f"[SIRIUS] ❌ Play: {e}")
+            print(f"[SIRIUS] Play error: {e}")
             raise
         finally:
             self.set_speaking(False)
             stream.stop()
             stream.close()
 
+    async def _relay_phone_audio(self) -> None:
+        """Forward phone mic PCM chunks from dashboard queue into the Gemini Live session."""
+        q = self._dashboard._phone_audio_queue
+        while True:
+            try:
+                chunk = await asyncio.wait_for(q.get(), timeout=1.0)
+            except asyncio.TimeoutError:
+                # No audio for 1 s → phone mic inactive, give PC mic back
+                self._phone_active = False
+                continue
+            self._phone_active = True   # phone is streaming — silence PC mic
+            with self._speaking_lock:
+                speaking = self._is_speaking
+            if not speaking and not self.ui.muted:
+                try:
+                    self.out_queue.put_nowait(chunk)
+                except asyncio.QueueFull:
+                    pass
+
+    # ── dashboard command relay ─────────────────────────────────────────────
+
+    async def _process_dashboard_commands(self) -> None:
+        while True:
+            try:
+                text = await asyncio.wait_for(
+                    self._dashboard._command_queue.get(), timeout=0.5
+                )
+                if not text:
+                    continue
+                # Wait up to 8s for session to become ready after a wake
+                for _ in range(80):
+                    if self.session:
+                        break
+                    await asyncio.sleep(0.1)
+                if self.session:
+                    await self.session.send_client_content(
+                        turns={"parts": [{"text": text}]},
+                        turn_complete=True,
+                    )
+                    self.ui.write_log(f"[Web]: {text}")
+                    _persist_message_to_db(self, "user", text)
+                else:
+                    print(f"[Dashboard] Dropped command (no session): {text}")
+            except asyncio.TimeoutError:
+                pass
+            except Exception as e:
+                print(f"[Dashboard] Command error: {e}")
+                await asyncio.sleep(0.5)
+
     async def run(self):
+        # Wait for a frontend client before connecting to Gemini
+        if hasattr(self.ui, 'set_startup_status'):
+            self.ui.set_startup_status("Pronto — aguardando interface...")
+        if hasattr(self.ui, 'wait_for_client_async'):
+            await self.ui.wait_for_client_async()
+        if hasattr(self.ui, 'set_startup_progress'):
+            self.ui.set_startup_progress(3, 5, "Conectando ao Gemini...")
+        if hasattr(self.ui, 'set_startup_status'):
+            self.ui.set_startup_status("Interface conectada. Iniciando...")
+        if hasattr(self.ui, 'set_startup_progress'):
+            self.ui.set_startup_progress(4, 5, "Estabelecendo conexão...")
         client = genai.Client(
             api_key=_get_api_key(),
             http_options={"api_version": "v1beta"}
         )
 
+        # Start dashboard (optional — needs: pip install fastapi "uvicorn[standard]" cryptography)
+        try:
+            from dashboard.server import DashboardServer
+            global _DASHBOARD
+            # Use the early dashboard if already started by the background thread
+            if _DASHBOARD is not None:
+                self._dashboard = _DASHBOARD
+                print(f"[DEBUG main] Reusing early dashboard instance (IP={self._dashboard._ip})")
+            else:
+                self._dashboard = DashboardServer()
+                self._dashboard._ready_event = self._dashboard_ready
+                print(f"[DEBUG main] Starting DashboardServer in background...")
+                print(f"[DEBUG main] Dashboard IP: {self._dashboard._ip}")
+                task = asyncio.ensure_future(self._dashboard.serve())
+                def _on_dashboard_done(fut):
+                    try:
+                        fut.result()
+                    except Exception as e:
+                        import traceback
+                        print(f"[Dashboard] SERVER TASK CRASHED: {e}")
+                        traceback.print_exc()
+                        self._dashboard = None
+                        self._dashboard_ready.set()
+                task.add_done_callback(_on_dashboard_done)
+            self._dashboard.set_connect_callback(self._on_phone_connected)
+            asyncio.ensure_future(self._process_dashboard_commands())
+            self.ui.write_log("SYS: Remote dashboard started.")
+        except Exception as e:
+            import traceback
+            print(f"[Dashboard] Disabled: {e}")
+            traceback.print_exc()
+            self._dashboard = None
+            self._dashboard_ready.set()
+
         while True:
             try:
-                print("[SIRIUS] 🔌 Connecting...")
+                print("[SIRIUS] Connecting...")
                 self.ui.set_state("THINKING")
+                self._gemini_turn.clear()
+                self._tts_busy.clear()
                 config = self._build_config()
 
                 async with (
@@ -1154,49 +1587,57 @@ class SiriusLive:
                     self.out_queue      = asyncio.Queue(maxsize=10)
                     self._turn_done_event = asyncio.Event()
 
-                    print("[SIRIUS] ✅ Connected.")
-                    self.ui.set_state("LISTENING")
+                    print("[SIRIUS] Connected.")
                     self.ui.write_log("SYS: SIRIUS online.")
+
+                    self._allow_mic = asyncio.Event()
+
+                    if self._dashboard:
+                        await self._dashboard.broadcast({"type": "status", "state": "active"})
 
                     tg.create_task(self._send_realtime())
                     tg.create_task(self._listen_audio())
                     tg.create_task(self._receive_audio())
                     tg.create_task(self._play_audio())
 
-                    if self._first_run:
-                        from datetime import datetime
-                        self._first_run = False
-                        now = datetime.now()
-                        time_str = now.strftime("%H:%M")
-                        
-                        hour = now.hour
-                        if 5 <= hour < 12:
-                            period = "Bom dia"
-                        elif 12 <= hour < 18:
-                            period = "Boa tarde"
-                        else:
-                            period = "Boa noite"
+                    if self._dashboard:
+                        tg.create_task(self._relay_phone_audio())
 
-                        memory = load_memory()
-                        user_name = memory.get("identity", {}).get("name", {}).get("value", "Senhor")
-                        
-                        greetings = [
-                            f"{period}, {user_name}. Agora são {time_str}. Quais são os seus planos para hoje?",
-                            f"Olá {user_name}, {period.lower()}. O relógio marca {time_str}. O que vamos realizar hoje?",
-                            f"{period}, {user_name}. São {time_str}. Como posso ajudar com seus planos?",
-                            f"Sirius online. {period}, {user_name}. O horário atual é {time_str}. Quais são as ordens?",
-                            f"Sistema pronto. {period}, {user_name}. São {time_str}. O que temos para hoje?",
-                        ]
-                        text = random.choice(greetings)
-                        greeting = f"Diga exatamente estas frases: {text}"
-                        self.speak(greeting)
+                    if self._first_run:
+                        self._first_run = False
+                        if hasattr(self.ui, 'set_startup_progress'):
+                            self.ui.set_startup_progress(5, 5, "SIRIUS pronto!")
+                        if hasattr(self.ui, 'set_startup_status'):
+                            self.ui.set_startup_status("● SIRIUS online")
+                        if hasattr(self.ui, 'hide_startup_panel'):
+                            self.ui.hide_startup_panel()
+
+                        if self.ui.has_client:
+                            self.ui.write_log("SYS: SIRIUS online. Pronto para ouvir.")
+                        else:
+                            print("[SIRIUS] No client — greeting skipped")
+                        self._allow_mic.set()
+                        self.ui.set_state("LISTENING")
+                    else:
+                        self._allow_mic.set()
+                        self.ui.set_state("LISTENING")
+
+                    self.ui.send_current_state()
 
             except Exception as e:
-                print(f"[SIRIUS] ⚠️ {e}")
+                print(f"[SIRIUS] Error: {e}")
+                traceback.print_exc()
+            except BaseException as e:
+                if isinstance(e, (KeyboardInterrupt, SystemExit)):
+                    raise
+                print(f"[SIRIUS] Session interrupted (ExceptionGroup): {e}")
                 traceback.print_exc()
             self.set_speaking(False)
             self.ui.set_state("THINKING")
-            print("[SIRIUS] 🔄 Reconnecting in 3s...")
+            self.ui.write_log("SYS: Reconectando...")
+            if self._dashboard:
+                await self._dashboard.broadcast({"type": "status", "state": "sleeping"})
+            print("[SIRIUS] Reconnecting in 3s...")
             await asyncio.sleep(3)
 
 # ---------------------------------------------------------------------------
@@ -1380,7 +1821,7 @@ class SiriusLocal:
         self._text_queue.put(text)
 
     def _execute_tool(self, name: str, args: dict) -> str:
-        print(f"[SIRIUS LOCAL] 🔧 {name}  {args}")
+        print(f"[SIRIUS LOCAL] Tool: {name}  {args}")
         self.ui.set_state("THINKING")
 
         if name == "save_memory":
@@ -1389,11 +1830,25 @@ class SiriusLocal:
             value    = args.get("value", "")
             if key and value:
                 update_memory({category: {key: {"value": value}}})
-                print(f"[Memory] 💾 save_memory: {category}/{key} = {value}")
+                print(f"[Memory] save_memory: {category}/{key} = {value}")
             if not self.ui.muted:
                 self.ui.set_state("LISTENING")
             return "ok"
-
+        if name == "hide_interface":
+            self.ui.write_log("SYS: Hiding interface.")
+            if hasattr(self.ui, "request_hide_interface"):
+                self.ui.request_hide_interface()
+            return "ok"
+        elif name == "shutdown_sirius":
+            self.ui.write_log("SYS: Shutdown requested.")
+            if hasattr(self.ui, 'request_close_app'):
+                self.ui.request_close_app()
+            def _shutdown():
+                import time, os
+                time.sleep(2.5)
+                os._exit(0)
+            threading.Thread(target=_shutdown, daemon=True).start()
+            return "Shutting down."
         result = "Done."
         try:
             if name == "open_app":
@@ -1513,15 +1968,6 @@ class SiriusLocal:
             elif name == "freela_arsenal":
                 r = freela_arsenal(parameters=args, player=self.ui, speak=self.speak)
                 result = r or "Done."
-
-            elif name == "shutdown_sirius":
-                self.ui.write_log("SYS: Shutdown requested.")
-                def _shutdown():
-                    import time, os
-                    self.speak("Goodbye, sir.")
-                    time.sleep(2.5)
-                    os._exit(0)
-                threading.Thread(target=_shutdown, daemon=True).start()
                 return "Shutting down."
 
             else:
@@ -1535,7 +1981,7 @@ class SiriusLocal:
         if not self.ui.muted:
             self.ui.set_state("LISTENING")
 
-        print(f"[SIRIUS LOCAL] 📤 {name} → {str(result)[:80]}")
+        print(f"[SIRIUS LOCAL] -> {name} -> {str(result)[:80]}")
         return result
 
     def _process_message(self, user_text: str) -> None:
@@ -1632,7 +2078,7 @@ class SiriusLocal:
                         targs = {}
 
                 tc_id = tc.get("id", "")
-                self.ui.write_log(f"SYS: ▶ {tname}")
+                self.ui.write_log(f"SYS: > {tname}")
                 result = self._execute_tool(tname, targs)
 
                 if result != "__SILENT__":
@@ -1685,73 +2131,133 @@ class SiriusLocal:
         vad = _VADBuffer()
         import queue as _queue
         q = _queue.Queue(maxsize=200)
+        stream = None
 
         def callback(indata, frames, time_info, status):
             with self._speaking_lock:
                 is_speaking = self._speaking
-            if not is_speaking and not self.ui.muted:
+            if not is_speaking:
                 try:
                     q.put_nowait(indata.copy())
                 except _queue.Full:
                     pass
 
         try:
-            with sd.InputStream(
+            # Wait for frontend before opening mic
+            import time as _time
+            while not self.ui.has_client:
+                _time.sleep(0.5)
+
+            stream = sd.InputStream(
                 samplerate=16000,
                 channels=CHANNELS,
                 dtype="float32",
                 blocksize=CHUNK_SIZE,
                 callback=callback,
-            ):
-                self.ui.write_log("SYS: Mic active (Whisper STT).")
-                while True:
-                    try:
-                        chunk = q.get(timeout=0.1)
-                        audio = vad.process(chunk.flatten())
-                        if audio is not None:
-                            self.ui.set_state("THINKING")
-                            text = self._stt.transcribe(audio)
-                            if text.strip():
-                                self._process_message(text)
-                    except _queue.Empty:
-                        pass
+            )
+            stream.start()
+            self.ui.write_log("SYS: Mic active (Whisper STT).")
+
+            was_active = self.ui.has_client and not self.ui.muted
+            if not was_active:
+                try:
+                    stream.stop()
+                except Exception:
+                    pass
+                self.ui.set_voice_level(0.0)
+
+            while True:
+                try:
+                    was_active = self._poll_mute_stream(stream, was_active)
+                    chunk = q.get(timeout=0.1)
+                    audio = vad.process(chunk.flatten())
+                    if audio is not None:
+                        self.ui.set_state("THINKING")
+                        text = self._stt.transcribe(audio)
+                        if text.strip():
+                            self._process_message(text)
+                except _queue.Empty:
+                    pass
         except Exception as e:
             print(f"[STT-Whisper] Mic error: {e}")
             traceback.print_exc()
+        finally:
+            try:
+                stream.close()
+            except Exception:
+                pass
 
     def _listen_vosk(self) -> None:
         import queue as _queue
         q = _queue.Queue(maxsize=200)
+        stream = None
 
         def callback(indata, frames, time_info, status):
             with self._speaking_lock:
                 is_speaking = self._speaking
-            if not is_speaking and not self.ui.muted:
+            if not is_speaking:
                 try:
                     q.put_nowait(indata.copy())
                 except _queue.Full:
                     pass
 
         try:
-            with sd.InputStream(
+            # Wait for frontend before opening mic
+            import time as _time
+            while not self.ui.has_client:
+                _time.sleep(0.5)
+
+            stream = sd.InputStream(
                 samplerate=16000,
                 channels=CHANNELS,
                 dtype="int16",
                 blocksize=4096,
                 callback=callback,
-            ):
-                self.ui.write_log("SYS: Mic active (Vosk STT).")
-                while True:
-                    try:
-                        chunk = q.get(timeout=0.1)
-                        text, is_final = self._stt.process_chunk(chunk.tobytes())
-                        if is_final and text.strip():
-                            self._process_message(text)
-                    except _queue.Empty:
-                        pass
+            )
+            stream.start()
+            self.ui.write_log("SYS: Mic active (Vosk STT).")
+
+            was_active = self.ui.has_client and not self.ui.muted
+            if not was_active:
+                try:
+                    stream.stop()
+                except Exception:
+                    pass
+                self.ui.set_voice_level(0.0)
+
+            while True:
+                try:
+                    was_active = self._poll_mute_stream(stream, was_active)
+                    chunk = q.get(timeout=0.1)
+                    text, is_final = self._stt.process_chunk(chunk.tobytes())
+                    if is_final and text.strip():
+                        self._process_message(text)
+                except _queue.Empty:
+                    pass
         except Exception as e:
             print(f"[STT-Vosk] Mic error: {e}")
             traceback.print_exc()
+        finally:
+            try:
+                stream.close()
+            except Exception:
+                pass
+
+    def _poll_mute_stream(self, stream, was_active: bool) -> bool:
+        is_active = self.ui.has_client and not self.ui.muted
+        if is_active != was_active:
+            if not is_active:
+                try:
+                    stream.stop()
+                except Exception:
+                    pass
+                self.ui.set_voice_level(0.0)
+            else:
+                try:
+                    stream.start()
+                except Exception:
+                    pass
+        return is_active
 
     def _text_command_loop(self) -> None:
         import queue as _queue
@@ -1765,7 +2271,13 @@ class SiriusLocal:
 
     def run(self) -> None:
         try:
+            # Wait for a frontend client before starting
+            self.ui.set_startup_status("Pronto — aguardando interface...")
+            self.ui.wait_for_client_sync()
+            self.ui.set_startup_status("Interface conectada. Inicializando...")
+
             from core.llm_client import ensure_llm_running, warmup_model
+            self.ui.set_startup_progress(3, 5, "Verificando LLM...")
             self.ui.write_log("SYS: Checking LLM…")
             if ensure_llm_running():
                 self.ui.write_log("SYS: LLM OK.")
@@ -1784,10 +2296,12 @@ class SiriusLocal:
 
             def _do_warmup():
                 try:
+                    self.ui.set_startup_progress(3, 5, "Inicializando LLM...")
                     static_prompt = _load_system_prompt()
                     warmup_model(system_prompt=static_prompt)
                     self.ui.write_log("SYS: LLM ready.")
                     self.ui.mark_startup_ready("llm")
+                    self.ui.set_startup_progress(3, 5, "LLM pronto")
                 except Exception as e:
                     self.ui.write_log(f"ERR: LLM warmup — {e}")
                     self.ui.mark_startup_ready("llm", error=True)
@@ -1796,6 +2310,7 @@ class SiriusLocal:
 
             def _do_stt():
                 try:
+                    self.ui.set_startup_progress(3, 5, f"Carregando STT ({stt_engine.upper()})...")
                     self.ui.write_log(f"SYS: Loading {stt_engine.upper()} STT…")
                     if stt_engine == "vosk":
                         from core.stt import VoskSTT
@@ -1808,6 +2323,7 @@ class SiriusLocal:
                         self._stt = WhisperSTT(stt_model, language=stt_language)
                     self.ui.write_log("SYS: STT ready.")
                     self.ui.mark_startup_ready("stt")
+                    self.ui.set_startup_progress(3, 5, "STT pronto")
                 except Exception as e:
                     self.ui.write_log(f"ERR: STT — {e}")
                     self.ui.mark_startup_ready("stt", error=True)
@@ -1816,15 +2332,16 @@ class SiriusLocal:
 
             def _do_tts():
                 try:
+                    self.ui.set_startup_progress(4, 5, "Carregando voz...")
                     self.ui.write_log(f"SYS: Loading {tts_engine.upper()} TTS…")
                     from core.tts import create_tts_player
                     self._tts = create_tts_player(self._config)
                     self._tts_ready.set()
                     self.ui.write_log("SYS: TTS ready.")
                     self.ui.mark_startup_ready("tts")
+                    self.ui.set_startup_progress(5, 5, "SIRIUS pronto!")
                     self.ui.set_startup_status("● All systems ready.")
                     self.ui.hide_startup_panel()
-                    self.speak("SIRIUS online.")
                 except Exception as e:
                     traceback.print_exc()
                     self.ui.write_log(f"ERR: TTS — {e}")
@@ -1840,11 +2357,19 @@ class SiriusLocal:
             _stt_done.wait(timeout=60)
 
             self.ui.write_log("SYS: SIRIUS online.")
-            self.ui.set_state("LISTENING")
-            self.ui.set_startup_status("● SIRIUS online · Voice loading in background…")
 
-            threading.Thread(target=self._tts_worker,        daemon=True).start()
-            threading.Thread(target=self._text_command_loop,  daemon=True).start()
+            # Start TTS worker early so it can process the greeting
+            threading.Thread(target=self._tts_worker, daemon=True).start()
+
+            # Wait for TTS to be ready, then speak greeting
+            self._tts_ready.wait(timeout=120)
+            self._tts_queue.put("SIRIUS online.")
+            import time as _time
+            _time.sleep(0.5)  # Brief pause for TTS to start speaking
+
+            # Now set LISTENING and start listen
+            self.ui.set_state("LISTENING")
+            threading.Thread(target=self._text_command_loop, daemon=True).start()
 
             if stt_engine == "vosk":
                 self._listen_vosk()
@@ -1856,6 +2381,71 @@ class SiriusLocal:
             traceback.print_exc()
 
 
+if not _USE_WS:
+
+    def _check_single_instance() -> bool:
+        """If another instance exists, tell it to show window and return True."""
+        _SHARED_KEY = "SIRIUS_SINGLE_INSTANCE"
+        _SERVER_KEY = "SIRIUS_LOCAL_SERVER"
+
+        app = QApplication.instance() or QApplication(sys.argv)
+
+        shared_mem = QSharedMemory(_SHARED_KEY)
+        if shared_mem.attach():
+            socket = QLocalSocket()
+            socket.connectToServer(_SERVER_KEY)
+            if socket.waitForConnected(2000):
+                socket.write(b"show")
+                socket.waitForBytesWritten(1000)
+                socket.disconnectFromServer()
+            return True
+
+        shared_mem.create(1)
+        app._sirius_shared_mem = shared_mem
+
+        QLocalServer.removeServer(_SERVER_KEY)
+        server = QLocalServer()
+        server.listen(_SERVER_KEY)
+        app._sirius_server = server
+        return False
+
+    def _setup_ipc_server(app, show_window_cb):
+        """Wire IPC server to a show-window callback."""
+        server = getattr(app, "_sirius_server", None)
+        if server is None:
+            return
+
+        def _on_connection():
+            while server.hasPendingConnections():
+                conn = server.nextPendingConnection()
+                if conn.waitForReadyRead(2000):
+                    conn.readAll()
+                    show_window_cb()
+                conn.disconnectFromServer()
+
+        server.newConnection.connect(_on_connection)
+
+
+def _migrate_legacy_configs():
+    """Move config keys from api_keys.json to configs.json (legacy migration)."""
+    from core.config_loader import _read_json, _write_json, _CONFIGS_FILE, _SECRETS_FILE
+    api_keys = _read_json(_SECRETS_FILE)
+    config_keys = {"assistant_mode", "user_name", "llm_provider", "stt_engine",
+                   "stt_language", "stt_model", "tts_engine", "tts_voice",
+                   "tts_speed", "elevenlabs_api_key", "llm_url", "llm_model",
+                   "os_system", "llm_provider"}
+    migrated = {k: v for k, v in api_keys.items() if k in config_keys}
+    if not migrated:
+        return
+    configs = _read_json(_CONFIGS_FILE)
+    configs.update(migrated)
+    _write_json(_CONFIGS_FILE, configs)
+    # Remove migrated keys from api_keys.json
+    for k in migrated:
+        api_keys.pop(k, None)
+    _write_json(_SECRETS_FILE, api_keys)
+
+
 def main():
     # Preload torch to optimize Kokoro load
     def _preload_torch():
@@ -1865,49 +2455,138 @@ def main():
             pass
     threading.Thread(target=_preload_torch, daemon=True).start()
 
+    if not _USE_WS and _check_single_instance():
+        return  # Another instance is running — exit silently
+
+    if _USE_WS:
+        _migrate_legacy_configs()
+
     ui = SiriusUI()
 
+    if _USE_WS:
+        ui.show_startup_panel()
+
+        # Start remote dashboard early (available before Assistant connects)
+        def _start_dashboard():
+            try:
+                from dashboard.server import DashboardServer
+                ds = DashboardServer()
+                global _DASHBOARD, _DASHBOARD_READY
+                ds._ready_event = _DASHBOARD_READY
+                _DASHBOARD = ds
+                print(f"[DEBUG main] Early dashboard thread started. IP={ds._ip}")
+                asyncio.run(ds.serve())
+            except Exception as e:
+                import traceback
+                print(f"[MAIN] Dashboard disabled: {e}")
+                traceback.print_exc()
+                _DASHBOARD = None
+                _DASHBOARD_READY.set()
+        print("[DEBUG main] Starting early dashboard thread...")
+        threading.Thread(target=_start_dashboard, daemon=True).start()
+
+    if not _USE_WS:
+        _setup_ipc_server(ui._app, ui._win.show_window)
+
     def runner():
+        if _USE_WS:
+            # Check WS server status FIRST — before blocking on onboarding
+            if not _ws.was_started():
+                print("[RUNNER] WS server not started — another backend instance is already running. Skipping assistant to avoid duplicate voice output.")
+                _ws.show_windows_notification("SIRIUS", "Outra instância já está rodando. Esta será encerrada.")
+                return
+            ui.set_startup_progress(1, 5, "Verificando configuração inicial...")
+            ui.wait_for_onboarding()
         ui.wait_for_api_key()
 
-        from core.config_loader import get_all_config
+        from core.config_loader import get_all_config, get_secret
         cfg = get_all_config()
 
-        mode     = cfg.get("assistant_mode", "gemini")
-        provider = cfg.get("llm_provider", "ollama")
-        if mode == "local" or provider in ("ollama", "openai"):
-            if mode != "local":
-                ui.write_log(f"SYS: assistant_mode='{mode}' but llm_provider='{provider}' — forcing Local Mode")
-            ui.write_log("SYS: Booting Local Offline Mode...")
-            
-            # Install dependencies on first run
-            ui.write_log("SYS: Checking local dependencies...")
-            _install_done = threading.Event()
-            def _do_install():
-                try:
-                    from core.installer import install_for_config
-                    install_for_config(cfg, log=ui.write_log)
-                except Exception as e:
-                    ui.write_log(f"ERR: Dependency install — {e}")
-                finally:
-                    _install_done.set()
-            threading.Thread(target=_do_install, daemon=True).start()
-            _install_done.wait()
+        mode = cfg.get("assistant_mode", "gemini")
+        print(f"[RUNNER] Config loaded — assistant_mode={mode!r}, llm_provider={cfg.get('llm_provider', '<none>')!r}")
+        print(f"[RUNNER] Full config keys: {list(cfg.keys())}")
 
-            sirius = SiriusLocal(ui)
-            try:
+        # Safeguard: if config says "local" but Gemini key exists, log and treat as gemini
+        if mode == "local":
+            gemini_key = cfg.get("gemini_api_key") or get_secret("gemini_api_key")
+            if gemini_key:
+                print(f"[RUNNER] assistant_mode='local' but gemini_api_key IS SET — forcing gemini mode")
+                mode = "gemini"
+            else:
+                print(f"[RUNNER] assistant_mode='local' and no gemini key — staying local")
+
+        # Safeguard: sync llm_provider with assistant_mode and persist
+        from core.config_loader import set_config
+        llm_prov = cfg.get("llm_provider", "").strip().lower()
+        if mode == "gemini" and llm_prov != "gemini":
+            print(f"[RUNNER] assistant_mode='gemini' but llm_provider='{llm_prov}' — fixing to 'gemini'")
+            ui.write_log(f"SYS: assistant_mode='gemini' but llm_provider='{llm_prov}' — fixed to 'gemini'")
+            set_config("llm_provider", "gemini")
+        elif mode == "local" and llm_prov not in ("ollama", "openai", ""):
+            print(f"[RUNNER] assistant_mode='local' but llm_provider='{llm_prov}' — fixing to 'ollama'")
+            ui.write_log(f"SYS: assistant_mode='local' but llm_provider='{llm_prov}' — fixed to 'ollama'")
+            set_config("llm_provider", "ollama")
+
+        if _USE_WS:
+            ui.set_startup_progress(2, 5, "Iniciando motor de IA...")
+
+        try:
+            if mode == "local":
+                ui.write_log("SYS: Booting Local Offline Mode...")
+
+                # Install dependencies on first run
+                ui.write_log("SYS: Checking local dependencies...")
+                _install_done = threading.Event()
+                def _do_install():
+                    try:
+                        from core.installer import install_for_config
+                        install_for_config(cfg, log=ui.write_log)
+                    except Exception as e:
+                        ui.write_log(f"ERR: Dependency install — {e}")
+                    finally:
+                        _install_done.set()
+                threading.Thread(target=_do_install, daemon=True).start()
+                _install_done.wait()
+
+                sirius = SiriusLocal(ui)
                 sirius.run()
-            except KeyboardInterrupt:
-                print("\n🔴 Shutting down...")
-        else:
-            sirius = SiriusLive(ui)
-            try:
+            else:
+                print(f"[RUNNER] Starting SiriusLive (mode={mode!r})...")
+                if _USE_WS:
+                    ui.set_startup_progress(3, 5, "Aguardando interface...")
+                sirius = SiriusLive(ui)
+                global _sirius_instance
+                _sirius_instance = sirius
                 asyncio.run(sirius.run())
-            except KeyboardInterrupt:
-                print("\n🔴 Shutting down...")
+        except ValueError as e:
+            msg = f"Configuração incompleta — {e}"
+            ui.write_log(f"ERR: {msg}")
+            print(f"[RUNNER] Config error: {e}")
+            if _USE_WS:
+                ui.set_startup_status(msg)
+                ui.hide_startup_panel()
+                _ws.show_windows_notification("SIRIUS", msg)
+        except Exception as e:
+            msg = f"Erro ao iniciar assistente — {e}"
+            ui.write_log(f"ERR: {msg}")
+            traceback.print_exc()
+            if _USE_WS:
+                ui.set_startup_status(msg)
+                ui.hide_startup_panel()
+                _ws.show_windows_notification("SIRIUS", msg)
+        except KeyboardInterrupt:
+            print("\nShutting down...")
 
     threading.Thread(target=runner, daemon=True).start()
-    ui.root.mainloop()
+    if _USE_WS:
+        try:
+            while True:
+                import time
+                time.sleep(1)
+        except KeyboardInterrupt:
+            print("\nShutting down...")
+    else:
+        ui.root.mainloop()
 
 if __name__ == "__main__":
     main()

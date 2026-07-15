@@ -9,9 +9,17 @@ disabled, Sirius shows a runtime popup before proceeding.
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
-_PERM_PATH = Path(__file__).parent / "permissions.json"
+
+def _perm_path() -> Path:
+    """Return writable path for permissions.json (config dir, not MEI temp)."""
+    if getattr(sys, "frozen", False):
+        base = Path(sys.executable).parent
+    else:
+        base = Path(__file__).resolve().parent.parent
+    return base / "config" / "permissions.json"
 
 # ── Metadata (displayed in the UI) ────────────────────────────────────────────
 
@@ -100,10 +108,11 @@ _DEFAULTS: dict[str, bool] = {k: True for k in PERMISSION_META}
 
 def get_permissions() -> dict[str, bool]:
     """Return the current permission state, filling missing keys with True."""
+    path = _perm_path()
     data: dict[str, bool] = dict(_DEFAULTS)
-    if _PERM_PATH.exists():
+    if path.exists():
         try:
-            saved = json.loads(_PERM_PATH.read_text(encoding="utf-8"))
+            saved = json.loads(path.read_text(encoding="utf-8"))
             data.update({k: bool(v) for k, v in saved.items() if k in _DEFAULTS})
         except Exception:
             pass
@@ -112,7 +121,9 @@ def get_permissions() -> dict[str, bool]:
 
 def save_permissions(perms: dict[str, bool]) -> None:
     """Write permissions to disk."""
-    _PERM_PATH.write_text(json.dumps(perms, indent=4), encoding="utf-8")
+    path = _perm_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(perms, indent=4), encoding="utf-8")
 
 
 def is_granted(tool_name: str) -> bool:

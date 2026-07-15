@@ -18,24 +18,21 @@ from PyQt6.QtCore import (
     QTimer, QUrl, pyqtSignal,
 )
 from PyQt6.QtGui import (
-    QBrush, QColor, QDragEnterEvent, QDropEvent, QFont,
+    QAction, QBrush, QColor, QDragEnterEvent, QDropEvent, QFont,
     QKeySequence, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap,
     QRadialGradient, QShortcut,
 )
 from PyQt6.QtWidgets import (
     QApplication, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
-    QMainWindow, QPushButton, QScrollArea, QSizePolicy, QStackedWidget,
-    QTextEdit, QVBoxLayout, QWidget, QProgressBar, QComboBox,
+    QMainWindow, QMenu, QPushButton, QScrollArea, QSizePolicy, QStackedWidget,
+    QSystemTrayIcon, QTextEdit, QVBoxLayout, QWidget, QProgressBar, QComboBox,
 )
 
 import qtawesome as qta
 
-def _base_dir() -> Path:
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent
-    return Path(__file__).resolve().parent
+from core.config_loader import get_base_dir
 
-BASE_DIR   = _base_dir()
+BASE_DIR   = get_base_dir()
 CONFIG_DIR = BASE_DIR / "config"
 API_FILE   = CONFIG_DIR / "api_keys.json"
 CONFIG_FILE = CONFIG_DIR / "configs.json"
@@ -250,6 +247,58 @@ class _SysMetrics:
 
 
 _metrics = _SysMetrics()
+
+# ── Auto-start (Windows) ──────────────────────────────────────────────
+def _auto_start_registry_key() -> str:
+    return r"Software\Microsoft\Windows\CurrentVersion\Run"
+
+def _auto_start_value_name() -> str:
+    return "SIRIUS"
+
+def _get_auto_start_command() -> str:
+    if getattr(sys, "frozen", False):
+        return f'"{sys.executable}"'
+    script = Path(__file__).resolve().parent / "main.py"
+    pythonw = Path(sys.executable).parent / "pythonw.exe"
+    exe = pythonw if pythonw.exists() else sys.executable
+    return f'"{exe}" "{script}"'
+
+def set_auto_start(enabled: bool) -> None:
+    try:
+        import winreg
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER, _auto_start_registry_key(),
+            0, winreg.KEY_SET_VALUE,
+        )
+        if enabled:
+            winreg.SetValueEx(
+                key, _auto_start_value_name(), 0,
+                winreg.REG_SZ, _get_auto_start_command(),
+            )
+        else:
+            try:
+                winreg.DeleteValue(key, _auto_start_value_name())
+            except FileNotFoundError:
+                pass
+        winreg.CloseKey(key)
+    except Exception as e:
+        print(f"[AutoStart] {e}")
+
+def is_auto_start_enabled() -> bool:
+    try:
+        import winreg
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER, _auto_start_registry_key(),
+            0, winreg.KEY_READ,
+        )
+        winreg.QueryValueEx(key, _auto_start_value_name())
+        winreg.CloseKey(key)
+        return True
+    except (FileNotFoundError, OSError):
+        return False
+    except Exception as e:
+        print(f"[AutoStart] {e}")
+        return False
 
 class HudCanvas(QWidget):
     def __init__(self, parent=None):
@@ -1210,6 +1259,26 @@ class SettingsOverlay(QWidget):
         self._n_db = _inp(password=False, ph="ID do database usado como calendário")
         layout.addWidget(self._n_db)
 
+        layout.addWidget(_sep())
+        layout.addWidget(_lbl("COMPORTAMENTO", bold=True, color=C.ACC2))
+
+        auto_row = QHBoxLayout(); auto_row.setSpacing(6)
+        auto_lbl = QLabel("Iniciar com o Windows")
+        auto_lbl.setFont(QFont("Inter", 8))
+        auto_lbl.setStyleSheet(f"color: {C.TEXT}; background: transparent;")
+        auto_row.addWidget(auto_lbl)
+        auto_row.addStretch()
+        self._auto_toggle = ToggleSwitch(checked=is_auto_start_enabled())
+        self._auto_toggle.toggled.connect(self._on_auto_start_toggle)
+        auto_row.addWidget(self._auto_toggle)
+        layout.addLayout(auto_row)
+
+        auto_hint = QLabel("Registra o Sirius para iniciar automaticamente ao ligar o PC")
+        auto_hint.setFont(QFont("Inter", 7))
+        auto_hint.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent;")
+        auto_hint.setWordWrap(True)
+        layout.addWidget(auto_hint)
+
         layout.addStretch()
         save_btn = QPushButton("SALVAR E FECHAR")
         save_btn.setFixedHeight(34); save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -1304,6 +1373,9 @@ class SettingsOverlay(QWidget):
         self._perm_toggles[perm_key] = toggle
         return row
 
+    def _on_auto_start_toggle(self, enabled: bool):
+        set_auto_start(enabled)
+
     def _on_perm_toggle(self, perm_key: str, value: bool):
         from config.permissions import get_permissions, save_permissions
         perms = get_permissions(); perms[perm_key] = value; save_permissions(perms)
@@ -1386,7 +1458,7 @@ class SettingsOverlay(QWidget):
             f = QFrame(); f.setFrameShape(QFrame.Shape.HLine)
             f.setStyleSheet(f"color: {C.BORDER}; margin: 6px 0;"); return f
 
-        def _toggle_row(keys_labels: list, getter, setter):
+        def _toggle_row(keys_labels: list, getter, setter, icons: dict | None = None):
             row = QHBoxLayout(); row.setSpacing(5)
             btns: dict[str, QPushButton] = {}
             def _click(k):
@@ -1398,6 +1470,8 @@ class SettingsOverlay(QWidget):
                 b.setFixedHeight(26)
                 b.setFont(QFont("Inter", 7, QFont.Weight.Bold))
                 b.setCursor(Qt.CursorShape.PointingHandCursor)
+                if icons and k in icons:
+                    b.setIcon(qta.icon(icons[k]))
                 b.clicked.connect(lambda _, kk=k: _click(kk))
                 row.addWidget(b)
                 btns[k] = b
@@ -1430,9 +1504,10 @@ class SettingsOverlay(QWidget):
         stt_sec_lay.setSpacing(8)
         stt_sec_lay.addWidget(_lbl("SPEECH-TO-TEXT ENGINE", bold=True, color=C.PRI))
         stt_row, self._stt_btns = _toggle_row(
-            [("whisper","🎙 Whisper"), ("vosk","🔊 Vosk")],
+            [("whisper","Whisper"), ("vosk","Vosk")],
             lambda: self._sel_stt,
             self._set_stt,
+            icons={"whisper": "fa5s.microphone", "vosk": "fa5s.wave-square"},
         )
         stt_sec_lay.addLayout(stt_row)
 
@@ -1477,9 +1552,10 @@ class SettingsOverlay(QWidget):
         # ── LLM ────────────────────────────────────────────────────────
         layout.addWidget(_lbl("LOCAL LLM", bold=True, color=C.PRI))
         llm_prov_row, self._llm_prov_btns = _toggle_row(
-            [("ollama", "🦙 Ollama"), ("openai", "🔌 LM Studio / OpenAI"), ("gemini", "☁️ Gemini")],
+            [("ollama", "Ollama"), ("openai", "LM Studio / OpenAI"), ("gemini", "Gemini")],
             lambda: self._sel_llm_provider,
             self._set_llm_provider,
+            icons={"ollama": "fa5s.robot", "openai": "fa5s.plug", "gemini": "fa5s.cloud"},
         )
         layout.addLayout(llm_prov_row)
 
@@ -1506,9 +1582,10 @@ class SettingsOverlay(QWidget):
         tts_sec_lay.setSpacing(8)
         tts_sec_lay.addWidget(_lbl("TEXT-TO-SPEECH ENGINE", bold=True, color=C.PRI))
         tts_row, self._tts_btns = _toggle_row(
-            [("edgetts","🔈 EdgeTTS"), ("kokoro","🤖 Kokoro"), ("elevenlabs","⚡ ElevenLabs")],
+            [("edgetts","EdgeTTS"), ("kokoro","Kokoro"), ("elevenlabs","ElevenLabs")],
             lambda: self._sel_tts,
             self._set_tts,
+            icons={"edgetts": "fa5s.volume-up", "kokoro": "fa5s.android", "elevenlabs": "fa5s.bolt"},
         )
         tts_sec_lay.addLayout(tts_row)
 
@@ -1902,6 +1979,237 @@ class PermissionRequestDialog(QWidget):
             cb(decision)
 
 
+class RemoteKeyOverlay(QWidget):
+    """Floating overlay — QR code for instant phone pairing + manual key fallback."""
+
+    closed = pyqtSignal()
+
+    _OW, _OH = 400, 465
+
+    def __init__(self, url: str, key: str, auto_login_url: str = "",
+                 manual_url: str = "", expiry_secs: int = 600, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setStyleSheet(f"""
+            RemoteKeyOverlay {{
+                background: rgba(0, 4, 12, 0.95);
+                border: 1px solid {C.BORDER_B};
+                border-radius: 14px;
+            }}
+        """)
+        self._expiry          = time.time() + expiry_secs
+        self._on_new_key      = None
+        self._auto_login_url  = auto_login_url
+        self._manual_url      = manual_url or url
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(24, 16, 24, 16)
+        lay.setSpacing(5)
+
+        def _lbl(txt, fs=9, bold=False, color=C.PRI,
+                 align=Qt.AlignmentFlag.AlignCenter):
+            w = QLabel(txt)
+            w.setAlignment(align)
+            w.setFont(QFont("Courier New", fs,
+                            QFont.Weight.Bold if bold else QFont.Weight.Normal))
+            w.setStyleSheet(f"color: {color}; background: transparent;")
+            w.setWordWrap(True)
+            return w
+
+        lay.addWidget(_lbl("◈  REMOTE ACCESS", 12, True))
+        sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet(f"color: {C.BORDER}; margin: 1px 0;")
+        lay.addWidget(sep)
+
+        # ── QR code ───────────────────────────────────────────────────────────
+        self._qr_label = QLabel()
+        self._qr_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._qr_label.setFixedSize(176, 176)
+        self._qr_label.setStyleSheet(
+            "background: white; border-radius: 10px; padding: 4px;"
+        )
+        qr_row = QHBoxLayout()
+        qr_row.addStretch()
+        qr_row.addWidget(self._qr_label)
+        qr_row.addStretch()
+        lay.addLayout(qr_row)
+
+        self._update_qr(auto_login_url)
+
+        lay.addWidget(_lbl("Scan with phone camera to connect instantly", 8, color=C.TEXT_DIM))
+
+        sep2 = QFrame(); sep2.setFrameShape(QFrame.Shape.HLine)
+        sep2.setStyleSheet(f"color: {C.BORDER}; margin: 1px 0;")
+        lay.addWidget(sep2)
+
+        lay.addWidget(_lbl("Or enter manually:", 7, color=C.TEXT_DIM,
+                           align=Qt.AlignmentFlag.AlignLeft))
+
+        self._url_lbl = QLabel(self._manual_url)
+        self._url_lbl.setFont(QFont("Courier New", 8))
+        self._url_lbl.setStyleSheet(f"color: {C.PRI_DIM}; background: transparent;")
+        self._url_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._url_lbl.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse)
+        lay.addWidget(self._url_lbl)
+
+        self._key_lbl = QLabel(key)
+        self._key_lbl.setFont(QFont("Courier New", 28, QFont.Weight.Bold))
+        self._key_lbl.setStyleSheet(f"""
+            color: {C.ACC};
+            background: {C.PANEL2};
+            border: 1px solid {C.BORDER_B};
+            border-radius: 8px;
+            padding: 6px 4px;
+            letter-spacing: 10px;
+        """)
+        self._key_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(self._key_lbl)
+
+        self._timer_lbl = QLabel()
+        self._timer_lbl.setFont(QFont("Courier New", 8))
+        self._timer_lbl.setStyleSheet(f"color: {C.TEXT_MED}; background: transparent;")
+        self._timer_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(self._timer_lbl)
+
+        btn_row = QHBoxLayout(); btn_row.setSpacing(8)
+        new_btn = QPushButton("NEW KEY")
+        new_btn.setFixedHeight(32)
+        new_btn.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+        new_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        new_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {C.PANEL}; color: {C.PRI};
+                border: 1px solid {C.PRI_DIM}; border-radius: 5px;
+            }}
+            QPushButton:hover {{ background: {C.PRI_GHO}; border: 1px solid {C.PRI}; }}
+        """)
+        new_btn.clicked.connect(self._refresh_key)
+        btn_row.addWidget(new_btn)
+
+        close_btn = QPushButton("DISMISS")
+        close_btn.setFixedHeight(32)
+        close_btn.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+        close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        close_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent; color: {C.TEXT_MED};
+                border: 1px solid {C.BORDER}; border-radius: 5px;
+            }}
+            QPushButton:hover {{ color: {C.TEXT}; border: 1px solid {C.BORDER_B}; }}
+        """)
+        close_btn.clicked.connect(self._do_close)
+        btn_row.addWidget(close_btn)
+        lay.addLayout(btn_row)
+
+        self._ctimer = QTimer(self)
+        self._ctimer.timeout.connect(self._tick)
+        self._ctimer.start(1000)
+        self._tick()
+
+    def set_new_key_callback(self, fn) -> None:
+        self._on_new_key = fn
+
+    def _update_qr(self, url: str) -> None:
+        if not url:
+            self._qr_label.setText("—")
+            return
+        try:
+            import qrcode as _qrmod
+            import PIL.Image as _PILImage
+            from io import BytesIO
+            qr = _qrmod.QRCode(
+                box_size=5, border=2,
+                error_correction=_qrmod.constants.ERROR_CORRECT_M,
+            )
+            qr.add_data(url)
+            qr.make(fit=True)
+            # Force PIL backend to avoid qrcode[pure] save incompatibility
+            img = qr.make_image(image_factory=_qrmod.image.pil.PilImage,
+                                fill_color="black", back_color="white")
+            buf = BytesIO()
+            img.save(buf, format="PNG")
+            px = QPixmap()
+            px.loadFromData(buf.getvalue())
+            self._qr_label.setPixmap(
+                px.scaled(170, 170,
+                          Qt.AspectRatioMode.KeepAspectRatio,
+                          Qt.TransformationMode.SmoothTransformation)
+            )
+        except ImportError:
+            self._qr_label.setText("pip install\nqrcode[pil]")
+            self._qr_label.setFont(QFont("Courier New", 8))
+            self._qr_label.setStyleSheet(
+                "color: #888; background: white; border-radius: 10px; padding: 4px;"
+            )
+        except Exception:
+            self._qr_label.setText(url[:28])
+            self._qr_label.setFont(QFont("Courier New", 7))
+            self._qr_label.setStyleSheet(
+                f"color: {C.PRI}; background: white; border-radius: 10px; padding: 4px;"
+            )
+
+    def _tick(self):
+        remaining = max(0, int(self._expiry - time.time()))
+        m, s = divmod(remaining, 60)
+        self._timer_lbl.setText(f"Key expires in  {m:02d}:{s:02d}")
+        if remaining == 0:
+            self._do_close()
+
+    def mark_connected(self) -> None:
+        """Call from any thread when a phone successfully connects."""
+        self._ctimer.stop()
+        self._key_lbl.setText("CONNECTED")
+        self._key_lbl.setStyleSheet(f"""
+            color: {C.GREEN};
+            background: rgba(34,197,94,0.08);
+            border: 2px solid rgba(34,197,94,0.4);
+            border-radius: 8px;
+            padding: 6px 4px;
+            letter-spacing: 4px;
+        """)
+        self._qr_label.setText("+")
+        self._qr_label.setFont(QFont("Courier New", 54, QFont.Weight.Bold))
+        self._qr_label.setStyleSheet(
+            "color: #00ff88; background: #001a0d; border-radius: 10px;"
+        )
+        self._timer_lbl.setText("Phone connected — SIRIUS ready")
+        self._timer_lbl.setStyleSheet(f"color: {C.GREEN}; background: transparent;")
+
+    def _refresh_key(self):
+        if self._on_new_key:
+            result = self._on_new_key()
+            if result:
+                url    = result[0]
+                key    = result[1]
+                auto   = result[2] if len(result) >= 3 else ""
+                manual = result[3] if len(result) >= 4 else url
+                self._manual_url     = manual or url
+                self._url_lbl.setText(self._manual_url)
+                self._key_lbl.setText(key)
+                self._auto_login_url = auto
+                self._update_qr(auto or url)
+                self._expiry = time.time() + 600
+                self._key_lbl.setStyleSheet(f"""
+                    color: {C.ACC};
+                    background: {C.PANEL2};
+                    border: 1px solid {C.BORDER_B};
+                    border-radius: 8px;
+                    padding: 6px 4px;
+                    letter-spacing: 10px;
+                """)
+                self._timer_lbl.setStyleSheet(
+                    f"color: {C.TEXT_MED}; background: transparent;"
+                )
+                self._ctimer.start(1000)
+                self._tick()
+
+    def _do_close(self):
+        self._ctimer.stop()
+        self.hide()
+        self.closed.emit()
+
+
 class MainWindow(QMainWindow):
     _log_sig     = pyqtSignal(str)
     _state_sig   = pyqtSignal(str)
@@ -1922,6 +2230,7 @@ class MainWindow(QMainWindow):
 
         self.on_text_command  = None
         self._muted           = False
+        self._muted_by_user   = False
         self._current_file: str | None = None
 
         central = QWidget()
@@ -1968,6 +2277,8 @@ class MainWindow(QMainWindow):
         self._state_sig.connect(self._apply_state)
         self._startup_sig.connect(self._on_startup_sig)
         self._startup_panel: StartupPanel | None = None
+        self.on_remote_clicked = None
+        self._remote_overlay: RemoteKeyOverlay | None = None
 
         self._overlay: SetupOverlay | None = None
         self._ready = self._check_config()
@@ -1984,9 +2295,75 @@ class MainWindow(QMainWindow):
         sc_full = QShortcut(QKeySequence("F11"), self)
         sc_full.activated.connect(self._toggle_fullscreen)
 
+        # ── System tray (background mode) ───────────────────────────
+        QApplication.setQuitOnLastWindowClosed(False)
+        self._setup_tray()
+
+    def _setup_tray(self):
+        icon = self.windowIcon()
+        if icon.isNull():
+            return
+        self._tray_icon = QSystemTrayIcon(icon, self)
+        self._tray_icon.setToolTip("SIRIUS — AI Assistant")
+
+        menu = QMenu(self)
+        self._tray_show_act = menu.addAction("Mostrar / Ocultar")
+        self._tray_show_act.triggered.connect(self._toggle_window)
+        menu.addSeparator()
+        self._tray_mute_act = menu.addAction("Desmutar" if self._muted else "Mutar")
+        self._tray_mute_act.triggered.connect(self._tray_toggle_mute)
+        menu.addSeparator()
+        quit_act = menu.addAction("Sair")
+        quit_act.triggered.connect(self._quit_app)
+
+        self._tray_icon.setContextMenu(menu)
+        self._tray_icon.activated.connect(self._on_tray_activated)
+        self._tray_icon.show()
+
+    def _on_tray_activated(self, reason):
+        if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
+            self._toggle_window()
+
+    def _toggle_window(self):
+        if self.isVisible():
+            self.hide()
+        else:
+            self.show_window()
+
+    def show_window(self):
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def hideEvent(self, event):
+        if self._tray_icon and self._tray_icon.isVisible():
+            self._muted_by_user = self._muted
+            if not self._muted:
+                self._set_muted_direct(True)
+                self._log.append_log("SYS: Background — microphone muted.")
+        super().hideEvent(event)
+
+    def showEvent(self, event):
+        if hasattr(self, '_muted_by_user'):
+            if self._muted != self._muted_by_user:
+                self._set_muted_direct(self._muted_by_user)
+        super().showEvent(event)
+
+    def _quit_app(self):
+        if self._tray_icon:
+            self._tray_icon.hide()
+        QApplication.quit()
+
+    def closeEvent(self, event):
+        if self._tray_icon and self._tray_icon.isVisible():
+            event.ignore()
+            self.hide()
+        else:
+            event.accept()
+
     def _set_icon(self):
         from PyQt6.QtGui import QIcon
-        base = _base_dir()
+        base = get_base_dir()
         for name in ("face.ico", "face.png"):
             p = base / name
             if p.exists():
@@ -2048,6 +2425,14 @@ class MainWindow(QMainWindow):
             ow, oh = 600, 560
             cw = self.centralWidget()
             self._settings_overlay.setGeometry(
+                (cw.width()  - ow) // 2,
+                (cw.height() - oh) // 2,
+                ow, oh,
+            )
+        if self._remote_overlay and self._remote_overlay.isVisible():
+            ow, oh = RemoteKeyOverlay._OW, RemoteKeyOverlay._OH
+            cw = self.centralWidget()
+            self._remote_overlay.setGeometry(
                 (cw.width()  - ow) // 2,
                 (cw.height() - oh) // 2,
                 ow, oh,
@@ -2169,6 +2554,22 @@ class MainWindow(QMainWindow):
         self._mute_btn.clicked.connect(self._toggle_mute)
         self._style_mute_btn()
         lay.addWidget(self._mute_btn)
+
+        self._remote_btn = QPushButton("◉  REMOTE CONTROL")
+        self._remote_btn.setFixedHeight(30)
+        self._remote_btn.setFont(QFont("Inter", 8, QFont.Weight.Medium))
+        self._remote_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._remote_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: #00091a; color: {C.PRI};
+                border: 1px solid {C.PRI_DIM}; border-radius: 3px;
+            }}
+            QPushButton:hover {{
+                background: {C.PRI_GHO}; border: 1px solid {C.PRI};
+            }}
+        """)
+        self._remote_btn.clicked.connect(self._open_remote)
+        lay.addWidget(self._remote_btn)
 
         fs_btn = QPushButton("FULLSCREEN  [F11]")
         fs_btn.setIcon(qta.icon("fa5s.expand", color=C.TEXT_MED))
@@ -2350,12 +2751,32 @@ class MainWindow(QMainWindow):
         self._muted = not self._muted
         self.hud.muted = self._muted
         self._style_mute_btn()
+        if self._tray_mute_act:
+            self._tray_mute_act.setText("Desmutar" if self._muted else "Mutar")
         if self._muted:
             self._apply_state("MUTED")
             self._log.append_log("SYS: Microphone muted.")
         else:
             self._apply_state("LISTENING")
             self._log.append_log("SYS: Microphone active.")
+
+    def _set_muted_direct(self, value: bool):
+        if value == self._muted:
+            return
+        self._muted = value
+        self.hud.muted = value
+        self._style_mute_btn()
+        if self._tray_mute_act:
+            self._tray_mute_act.setText("Desmutar" if value else "Mutar")
+        if value:
+            self._apply_state("MUTED")
+        else:
+            self._apply_state("LISTENING")
+
+    def _tray_toggle_mute(self):
+        self._muted_by_user = not self._muted_by_user
+        self._set_muted_direct(self._muted_by_user)
+        self._log.append_log("SYS: Microphone muted." if self._muted else "SYS: Microphone active.")
 
     def _style_mute_btn(self):
         if self._muted:
@@ -2410,18 +2831,25 @@ class MainWindow(QMainWindow):
         self._overlay = ov
 
     def _on_setup_done(self, key: str, or_key: str, os_name: str):
-        from core.config_loader import set_secret, set_config, save_configs
+        from core.config_loader import set_secret, set_config
         os.makedirs(CONFIG_DIR, exist_ok=True)
         set_secret("GEMINI_API_KEY", key)
         set_secret("OPENROUTER_API_KEY", or_key)
         set_config("os_system", os_name)
-        save_configs({"os_system": os_name})
+        # Merge into api_keys.json instead of overwriting
+        existing = {}
+        if API_FILE.exists():
+            try:
+                existing = json.loads(API_FILE.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        existing.update({
+            "gemini_api_key": key,
+            "openrouter_api_key": or_key,
+            "os_system": os_name
+        })
         API_FILE.write_text(
-            json.dumps({
-                "gemini_api_key": key,
-                "openrouter_api_key": or_key,
-                "os_system": os_name
-            }, indent=4),
+            json.dumps(existing, indent=4),
             encoding="utf-8",
         )
         self._ready = True
@@ -2430,6 +2858,35 @@ class MainWindow(QMainWindow):
             self._overlay = None
         self._apply_state("LISTENING")
         self._log.append_log(f"System: Initialised. OS={os_name.upper()}. SIRIUS online.")
+
+    def notify_phone_connected(self) -> None:
+        if self._remote_overlay and self._remote_overlay.isVisible():
+            self._remote_overlay.mark_connected()
+
+    def _open_remote(self):
+        if not self.on_remote_clicked:
+            self._log_sig.emit("SYS: Dashboard not running — remote unavailable.")
+            return
+        result = self.on_remote_clicked()
+        if not result:
+            self._log_sig.emit("SYS: Could not generate remote key.")
+            return
+        url, key, auto, manual = result
+        if self._remote_overlay:
+            self._remote_overlay._do_close()
+        ow, oh = RemoteKeyOverlay._OW, RemoteKeyOverlay._OH
+        ov = RemoteKeyOverlay(url, key, auto_login_url=auto, manual_url=manual, parent=self)
+        ov.set_new_key_callback(self.on_remote_clicked)
+        cw = self.centralWidget()
+        ov.setGeometry(
+            (cw.width() - ow) // 2,
+            (cw.height() - oh) // 2,
+            ow, oh
+        )
+        ov.closed.connect(lambda: setattr(self, '_remote_overlay', None))
+        ov.show()
+        self._remote_overlay = ov
+        self._log_sig.emit(f"SYS: Remote key generated — manual: {manual or url}")
 
 class _RootShim:
     def __init__(self, app: QApplication):
@@ -2447,7 +2904,7 @@ class SiriusUI:
 
         # Set application-level window icon
         from PyQt6.QtGui import QIcon
-        base = _base_dir()
+        base = get_base_dir()
         for name in ("face.ico", "face.png"):
             p = base / name
             if p.exists():
@@ -2455,8 +2912,13 @@ class SiriusUI:
                 break
 
         self._win = MainWindow()
-        self._win.show()
+        if "--background" not in sys.argv:
+            self._win.show()
         self.root = _RootShim(self._app)
+
+    @property
+    def has_client(self) -> bool:
+        return self._win.isVisible()
 
     @property
     def muted(self) -> bool:
@@ -2494,6 +2956,17 @@ class SiriusUI:
         while not self._win._ready:
             time.sleep(0.1)
 
+    async def wait_for_client_async(self) -> None:
+        """Block until the PyQt6 window becomes visible."""
+        import asyncio
+        while not self._win.isVisible():
+            await asyncio.sleep(0.5)
+
+    def wait_for_client_sync(self) -> None:
+        """Block until the PyQt6 window becomes visible."""
+        while not self._win.isVisible():
+            time.sleep(0.5)
+
     def start_speaking(self):
         self.set_state("SPEAKING")
 
@@ -2522,6 +2995,17 @@ class SiriusUI:
 
     def hide_startup_panel(self) -> None:
         self._win._startup_sig.emit("hide", "")
+
+    @property
+    def on_remote_clicked(self):
+        return self._win.on_remote_clicked
+
+    @on_remote_clicked.setter
+    def on_remote_clicked(self, cb):
+        self._win.on_remote_clicked = cb
+
+    def notify_phone_connected(self) -> None:
+        self._win.notify_phone_connected()
 
 
 class StartupPanel(QWidget):
@@ -2621,7 +3105,7 @@ class StartupPanel(QWidget):
         row = self._rows[key]
         ok     = status == "ready"
         color  = row["color"] if ok else C.RED
-        label  = "READY  ✓" if ok else "ERROR  ✗"
+        label  = "READY  +" if ok else "ERROR  x"
 
         bar = row["bar"]
         bar.setRange(0, 100)

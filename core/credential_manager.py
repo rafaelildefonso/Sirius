@@ -14,7 +14,7 @@ GOOGLE_ACCOUNT = "oauth_token"
 
 
 def _fallback_path() -> Path:
-    from core.google_auth import get_base_dir
+    from core.config_loader import get_base_dir
     return get_base_dir() / "config" / "google_token.json"
 
 

@@ -8,10 +8,7 @@ import requests
 from core.config_loader import get_notion_creds as _get_notion_creds, set_notion_creds as _set_notion_creds
 
 
-def get_base_dir() -> Path:
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent
-    return Path(__file__).resolve().parent.parent
+from core.config_loader import get_base_dir
 
 
 def get_notion_headers(token: str) -> dict:

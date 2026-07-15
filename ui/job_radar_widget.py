@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QScrollArea, QSplitter, QTextEdit, QFrame, QDialog,
     QLineEdit, QPlainTextEdit, QSpinBox, QMessageBox, QProgressBar,
-    QSizePolicy
+    QSizePolicy, QCheckBox
 )
 import qtawesome as qta
 
@@ -262,6 +262,17 @@ class JobCard(QFrame):
         info_lay.addWidget(self.company_lbl)
         
         layout.addLayout(info_lay, stretch=1)
+
+        # Status badge for closed jobs
+        self.status_badge = QLabel("FECHADA")
+        self.status_badge.setFont(QFont("Inter", 6, QFont.Weight.Bold))
+        self.status_badge.setFixedSize(50, 14)
+        self.status_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.status_badge.setStyleSheet(f"""
+            background: {C.RED}; color: #fff; border-radius: 3px;
+        """)
+        job_status = job_data.get("status", "")
+        self.status_badge.setVisible(job_status == "closed")
         
     def mousePressEvent(self, e):
         if e.button() == Qt.MouseButton.LeftButton:
@@ -354,6 +365,18 @@ class JobRadarWidget(QWidget):
         self.source_lbl.setFont(QFont("Inter", 7))
         self.source_lbl.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent;")
         filter_row.addWidget(self.source_lbl)
+
+        filter_row.addSpacing(8)
+
+        self.hide_closed_cb = QCheckBox("Ocultar fechadas")
+        self.hide_closed_cb.setFont(QFont("Inter", 7))
+        self.hide_closed_cb.setStyleSheet(f"""
+            QCheckBox {{ color: {C.TEXT_MED}; background: transparent; spacing: 4px; }}
+            QCheckBox::indicator {{ width: 12px; height: 12px; border: 1px solid {C.BORDER}; border-radius: 2px; background: #080808; }}
+            QCheckBox::indicator:checked {{ background: {C.PRI}; border: 1px solid {C.PRI}; }}
+        """)
+        self.hide_closed_cb.stateChanged.connect(self._on_filter_changed)
+        filter_row.addWidget(self.hide_closed_cb)
 
         filter_row.addStretch()
 
@@ -458,6 +481,7 @@ class JobRadarWidget(QWidget):
                 self._jobs = []
                 
         min_score = self.min_match_spin.value() if hasattr(self, 'min_match_spin') else 0
+        hide_closed = self.hide_closed_cb.isChecked() if hasattr(self, 'hide_closed_cb') else False
         
         if not self._jobs:
             lbl = QLabel("Nenhuma vaga encontrada no radar.\nClique em 'Buscar Vagas' para monitorar.")
@@ -478,6 +502,9 @@ class JobRadarWidget(QWidget):
                 score = get_score(job)
                 if score < min_score:
                     continue
+                job_status = job.get("status", "")
+                if hide_closed and job_status == "closed":
+                    continue
                 card = JobCard(job)
                 card.clicked.connect(self.show_details)
                 self.scroll_lay.addWidget(card)
@@ -486,7 +513,11 @@ class JobRadarWidget(QWidget):
             total = len(self._jobs)
             self.filter_count_lbl.setText(f"{visible_count} de {total} vagas")
             if visible_count == 0 and total > 0:
-                lbl = QLabel(f"Nenhuma vaga com match ≥ {min_score}%.\nReduza o filtro de MATCH MÍN para ver mais resultados.")
+                if hide_closed:
+                    lbl_text = "Nenhuma vaga encontrada com os filtros atuais."
+                else:
+                    lbl_text = f"Nenhuma vaga com match ≥ {min_score}%.\nReduza o filtro de MATCH MÍN para ver mais resultados."
+                lbl = QLabel(lbl_text)
                 lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 lbl.setFont(QFont("Inter", 9))
                 lbl.setStyleSheet(f"color: {C.TEXT_DIM};")
@@ -521,15 +552,23 @@ class JobRadarWidget(QWidget):
         header.addLayout(header_text)
         
         # Apply Button
-        apply_btn = QPushButton(" CANDIDATAR-SE")
-        apply_btn.setIcon(qta.icon("fa5s.external-link-alt", color=C.TEXT))
-        apply_btn.setFixedSize(140, 32)
-        apply_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        apply_btn.setStyleSheet(f"""
-            QPushButton {{ background: {C.GREEN}; color: {C.BG}; border: none; border-radius: 4px; font-family: 'Inter'; font-size: 9px; font-weight: bold; }}
-            QPushButton:hover {{ background: {C.WHITE}; }}
-        """)
-        apply_btn.clicked.connect(self._open_job_url)
+        job_status = job.get("status", "")
+        is_closed = job_status == "closed"
+        apply_btn = QPushButton(" VAGA FECHADA" if is_closed else " CANDIDATAR-SE")
+        apply_btn.setIcon(qta.icon("fa5s.external-link-alt" if not is_closed else "fa5s.ban", color=C.TEXT))
+        apply_btn.setFixedSize(150 if is_closed else 140, 32)
+        apply_btn.setCursor(Qt.CursorShape.PointingHandCursor if not is_closed else Qt.CursorShape.ForbiddenCursor)
+        if is_closed:
+            apply_btn.setStyleSheet(f"""
+                QPushButton {{ background: {C.RED}; color: #fff; border: none; border-radius: 4px; font-family: 'Inter'; font-size: 9px; font-weight: bold; }}
+            """)
+        else:
+            apply_btn.setStyleSheet(f"""
+                QPushButton {{ background: {C.GREEN}; color: {C.BG}; border: none; border-radius: 4px; font-family: 'Inter'; font-size: 9px; font-weight: bold; }}
+                QPushButton:hover {{ background: {C.WHITE}; }}
+            """)
+        if not is_closed:
+            apply_btn.clicked.connect(self._open_job_url)
         header.addWidget(apply_btn)
         self.details_lay.addLayout(header)
         

@@ -112,7 +112,7 @@ def install_for_config(config: dict, log: Callable | None = None) -> None:
 
     if not missing:
         if log:
-            log("SYS: All dependencies already installed ✓")
+            log("SYS: All dependencies already installed +")
         return
 
     pkg_names = ", ".join(p for _, p in missing)
@@ -135,4 +135,4 @@ def install_for_config(config: dict, log: Callable | None = None) -> None:
             log("SYS: Playwright browser ready.")
 
     if log:
-        log("SYS: All dependencies ready ✓")
+        log("SYS: All dependencies ready +")

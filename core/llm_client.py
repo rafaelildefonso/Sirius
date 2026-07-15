@@ -46,7 +46,15 @@ _DEFAULTS = {
 
 def get_llm_provider() -> str:
     """Returns 'ollama', 'openai', or 'gemini'."""
-    raw = _load_config().get("llm_provider", "ollama").strip().lower()
+    config = _load_config()
+    raw = config.get("llm_provider", "").strip().lower()
+    # Fresh reads bypass cache
+    if not raw:
+        am = config.get("assistant_mode", "").strip().lower()
+        raw = "gemini" if am == "gemini" else "ollama"
+        print(f"[LLM] llm_provider empty, falling back to assistant_mode={am!r} -> provider={raw!r}")
+    else:
+        print(f"[LLM] get_llm_provider -> raw={raw!r}")
     if raw in ("openai", "lmstudio", "localai", "jan", "llamacpp"):
         return "openai"
     if raw == "gemini":

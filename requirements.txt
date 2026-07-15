@@ -1,43 +1,78 @@
-sounddevice
-python-dotenv
-dotenv
-keyring
+# =============================================================================
+# SIRIUS — Core Runtime Dependencies
+# =============================================================================
 
+# Audio / I/O
+sounddevice
+numpy
+soundfile
+miniaudio
+
+# Google AI
 google-genai
 google-generativeai
+
+# Computer Vision & Screen
+opencv-python
 pillow
-requests
-beautifulsoup4
-duckduckgo-search
-playwright
+mss
+
+# Automation & System Control (Windows)
 pyautogui
 pyperclip
 pygetwindow
-opencv-python
-numpy
-mss
-Pillow
 psutil
 comtypes
 pycaw
 win10toast
 send2trash
-youtube-transcript-api
 pywinauto
 python-pptx
 PyQt6
 qtawesome
 
-google-api-python-client
-google-auth-httplib2
-google-auth-oauthlib
+# Web / Network
+requests
+beautifulsoup4
+playwright
+
+# Search APIs
+duckduckgo-search
 google-search-results
 tavily-python
 ddgs
 
-# Local engines (from Mark-XL)
-soundfile
-miniaudio
+# Google Workspace
+google-api-python-client
+google-auth-httplib2
+google-auth-oauthlib
+
+# Transcription / TTS
 faster-whisper
 edge-tts
 
+# Utilities
+python-dotenv
+dotenv
+keyring
+youtube-transcript-api
+
+# =============================================================================
+# Dashboard (Remote Control) — Required for phone/tablet remote access
+# =============================================================================
+fastapi
+uvicorn[standard]
+python-multipart
+qrcode[pil]
+
+# =============================================================================
+# Persistence Layer — Memory / Database
+# =============================================================================
+cryptography>=44.0.0                            # Fernet encryption for credentials
+# sentence-transformers                        # Uncomment for real embedding vectors (RAG)
+
+# =============================================================================
+# Development & Testing
+# =============================================================================
+pytest
+pytest-asyncio

@@ -28,10 +28,7 @@ _GOOGLE_AUTH_URI = "https://accounts.google.com/o/oauth2/auth"
 _auth_lock = threading.Lock()
 
 
-def get_base_dir() -> Path:
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent
-    return Path(__file__).resolve().parent.parent
+from core.config_loader import get_base_dir
 
 
 def get_google_service(service_name: str, version: str):
