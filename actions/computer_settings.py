@@ -32,11 +32,6 @@ except ImportError:
     _GW = False
 
 
-def _get_base_dir() -> Path:
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent
-    return Path(__file__).resolve().parent.parent
-
 def _get_api_key() -> str:
     from core.config_loader import get_secret
     key = get_secret("gemini_api_key", "")
@@ -612,7 +607,7 @@ def _detect_action(description: str) -> dict:
         f'User command (any language): "{description}"\n\n'
         f"Available actions: {available}\n\n"
         f'Return: {{"action": "action_name", "value": null_or_value}}\n'
-        f"Rules: volume_set→int 0-100; type_text→exact text; press_key→key name; reload_n→int."
+        f"Rules: volume_set->int 0-100; type_text->exact text; press_key->key name; reload_n->int."
     )
     try:
         text = call_llm_for_action(prompt, system=system)

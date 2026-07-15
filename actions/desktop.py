@@ -20,11 +20,6 @@ except ImportError:
 _OS = platform.system()  # "Windows" | "Darwin" | "Linux"
 
 
-def _get_base_dir() -> Path:
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent
-    return Path(__file__).resolve().parent.parent
-
 def _get_api_key() -> str:
     from core.config_loader import get_secret
     key = get_secret("gemini_api_key", "")
@@ -319,7 +314,7 @@ def organize_desktop(mode: str = "by_type") -> str:
             continue
 
         shutil.move(str(item), str(new_path))
-        moved.append(f"{item.name} → {folder_name}/")
+        moved.append(f"{item.name} -> {folder_name}/")
 
     result = f"Desktop organized ({mode}): {len(moved)} files moved."
     if moved:
@@ -342,14 +337,14 @@ def list_desktop() -> str:
                 count = len(list(item.iterdir()))
             except PermissionError:
                 count = "?"
-            items.append(f"📁 {item.name}/ ({count} items)")
+            items.append(f"[DIR] {item.name}/ ({count} items)")
         else:
             size     = item.stat().st_size
             size_str = (
                 f"{size / 1024:.1f} KB" if size < 1024 * 1024
                 else f"{size / 1024 / 1024:.1f} MB"
             )
-            items.append(f"📄 {item.name} ({size_str})")
+            items.append(f"[FILE] {item.name} ({size_str})")
 
     if not items:
         return "Desktop is empty."

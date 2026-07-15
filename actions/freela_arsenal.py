@@ -51,7 +51,7 @@ def _format_maps_result(resultado, detalhado=False):
     """Formata resultado do Maps scraper para texto."""
     r = resultado["resumo"]
     lines = [
-        f"\U0001f5fa  PROSPECÇÃO GOOGLE MAPS",
+        f"[MAPS]  PROSPECÇÃO GOOGLE MAPS",
         f"   Total de empresas encontradas: {r['total_encontrado']}",
         f"   Com telefone: {r['com_telefone']}",
         f"   Com site: {r['com_site']}",
@@ -203,7 +203,7 @@ def freela_arsenal(parameters: dict, player=None, speak=None) -> str:
             _log(f"ERRO no Deep Research: {e}")
 
     # ── Montar relatório ──
-    report_parts = ["=" * 50, "  \U0001f4a1 FREELA ARSENAL — RELATÓRIO COMPLETO", "=" * 50, ""]
+    report_parts = ["=" * 50, "  FREELA ARSENAL - RELATÓRIO COMPLETO", "=" * 50, ""]
     now_str = datetime.now().strftime("%d/%m/%Y %H:%M")
     report_parts.append(f"Gerado em: {now_str}")
     report_parts.append(f"Objetivo: {objetivo}")
@@ -219,7 +219,7 @@ def freela_arsenal(parameters: dict, player=None, speak=None) -> str:
         report_parts.append("")
 
     if erros:
-        report_parts.append("⚠️  Alertas:")
+        report_parts.append("[WARN]  Alertas:")
         for e in erros:
             report_parts.append(f"   - {e}")
         report_parts.append("")
@@ -228,7 +228,7 @@ def freela_arsenal(parameters: dict, player=None, speak=None) -> str:
     total_whatsapp = maps_result["resumo"]["whatsapp_gerados"] if maps_result else 0
 
     report_parts.append("=" * 50)
-    report_parts.append("  \U0001f3af RESUMO FINAL")
+    report_parts.append("  >> RESUMO FINAL")
     report_parts.append(f"  Empresas encontradas (Maps): {total_empresas}")
     report_parts.append(f"  Links WhatsApp gerados: {total_whatsapp}")
     report_parts.append(f"  Fontes consultadas: {'Maps' if rodar_maps else ''}{' + Deep Research' if rodar_dr else ''}")
@@ -241,9 +241,9 @@ def freela_arsenal(parameters: dict, player=None, speak=None) -> str:
         try:
             arquivos = _salvar_resultados(objetivo, maps_result, dr_result)
             if arquivos:
-                final_report += "\n\n\U0001f4c4 Arquivos salvos:\n" + "\n".join(f"  - {a}" for a in arquivos)
+                final_report += "\n\n[FILE] Arquivos salvos:\n" + "\n".join(f"  - {a}" for a in arquivos)
         except Exception as e:
-            final_report += f"\n\n⚠️  Erro ao salvar arquivos: {e}"
+            final_report += f"\n\n[WARN]  Erro ao salvar arquivos: {e}"
 
     _log("Freela Arsenal concluído.")
 

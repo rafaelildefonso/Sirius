@@ -2,20 +2,21 @@
 file_processor.py — SIRIUS Universal File Processor
 
 Supported types:
-  image   → describe, ocr, resize, convert, compress, crop
-  pdf     → summarize, extract_text, extract_pages, to_word
-  docx    → summarize, extract_text, reformat, translate_hint
-  txt/md  → summarize, reformat, translate_hint, word_count
-  csv     → analyze, filter, sort, convert, stats
-  xlsx    → analyze, filter, convert, stats
-  json    → validate, format, extract, convert
-  code    → explain, review, fix, run, document
-  audio   → transcribe, trim, convert, info
-  video   → trim, extract_audio, extract_frame, info, compress
-  zip     → list, extract
-  pptx    → summarize, extract_text, to_pdf
+  image   -> describe, ocr, resize, convert, compress, crop
+  pdf     -> summarize, extract_text, extract_pages, to_word
+  docx    -> summarize, extract_text, reformat, translate_hint
+  txt/md  -> summarize, reformat, translate_hint, word_count
+  csv     -> analyze, filter, sort, convert, stats
+  xlsx    -> analyze, filter, convert, stats
+  json    -> validate, format, extract, convert
+  code    -> explain, review, fix, run, document
+  audio   -> transcribe, trim, convert, info
+  video   -> trim, extract_audio, extract_frame, info, compress
+  zip     -> list, extract
+  pptx    -> summarize, extract_text, to_pdf
 """
 
+import io
 import os
 import re
 import json
@@ -26,13 +27,7 @@ import tempfile
 from pathlib import Path
 from datetime import datetime
 
-from core.llm_utils import call_llm_for_action
-
-
-def _get_base_dir() -> Path:
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent
-    return Path(__file__).resolve().parent.parent
+from core.llm_utils import call_llm_for_action, call_vision_for_action
 
 
 def _detect_type(path: Path) -> str:
@@ -84,6 +79,10 @@ def _process_image(path: Path, action: str, params: dict, speak=None) -> str:
     if action in ("describe", "ocr", "analyze", "read", "extract_text"):
         try:
             img    = Image.open(path)
+            buf    = io.BytesIO()
+            img.save(buf, format="PNG")
+            img_bytes = buf.getvalue()
+
             prompt = {
                 "describe": "Describe this image in detail.",
                 "ocr":      "Extract all text visible in this image. Return only the text, formatted clearly.",
@@ -95,7 +94,7 @@ def _process_image(path: Path, action: str, params: dict, speak=None) -> str:
             if params.get("instruction"):
                 prompt = params["instruction"]
 
-            result = call_llm_for_action(prompt)
+            result = call_vision_for_action(prompt, img_bytes, "image/png")
 
             if len(result) > 500 and params.get("save", True):
                 out = _output_path(path, "result", ".txt")
@@ -149,7 +148,7 @@ def _process_image(path: Path, action: str, params: dict, speak=None) -> str:
             img.save(out, "JPEG", quality=quality, optimize=True)
             before = _file_size_str(path)
             after  = _file_size_str(out)
-            return f"Compressed: {before} → {after}. Saved: {out.name}"
+            return f"Compressed: {before} -> {after}. Saved: {out.name}"
         except Exception as e:
             return f"Compress failed: {e}"
 
@@ -645,7 +644,7 @@ def _process_video(path: Path, action: str, params: dict, speak=None) -> str:
             )
             before = _file_size_str(path)
             after  = _file_size_str(out)
-            return f"Compressed: {before} → {after}. Saved: {out.name}"
+            return f"Compressed: {before} -> {after}. Saved: {out.name}"
         except Exception as e:
             return f"Compress failed: {e}"
 

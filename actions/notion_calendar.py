@@ -378,7 +378,7 @@ def _list_notion_databases(headers: dict) -> str:
 
     results = data.get("results", [])
     if not results:
-        return "Nenhum database ou data source encontrado. Verifique se a integração foi compartilhada com algum database em Share → Add connections."
+        return "Nenhum database ou data source encontrado. Verifique se a integração foi compartilhada com algum database em Share -> Add connections."
 
     seen = {}
     for ds in results:
@@ -400,11 +400,11 @@ def _list_notion_databases(headers: dict) -> str:
             seen[db_id] = {"name": name, "has_date": has_date, "ds_ids": []}
         seen[db_id]["ds_ids"].append(ds.get("id", "?"))
 
-    lines = ["📦 Databases disponíveis no Notion:\n"]
+    lines = ["[INSTALL] Databases disponíveis no Notion:\n"]
     for db_id, info in seen.items():
-        date_tag = "✅ tem data" if info["has_date"] else "❌ sem data"
+        date_tag = "[OK] tem data" if info["has_date"] else "[FAIL] sem data"
         ds_ids = ", ".join(info["ds_ids"])
-        lines.append(f"  • {info['name']} ({date_tag})\n    Database ID: {db_id}\n    Data Source ID(s): {ds_ids}\n")
+        lines.append(f"  - {info['name']} ({date_tag})\n    Database ID: {db_id}\n    Data Source ID(s): {ds_ids}\n")
 
     result = "".join(lines)
     api_cache.set(cache_key, result, ttl=3600)
@@ -464,7 +464,7 @@ def _get_data_source_id(notion_id: str, headers: dict) -> str:
         raise ValueError(
             "ID não encontrado pela API do Notion (404). "
             "Verifique se: (1) o ID copiado da URL está correto, "
-            "(2) a integração foi compartilhada com o database em Share → Add connections. "
+            "(2) a integração foi compartilhada com o database em Share -> Add connections. "
             "Use a ação 'list_databases' para ver todos os databases disponíveis."
         )
     erro = ds_resp if ds_resp.status_code != 404 else db_resp

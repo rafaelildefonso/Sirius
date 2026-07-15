@@ -119,10 +119,10 @@ def list_files(path: str = "desktop", show_hidden: bool = False) -> str:
             if not show_hidden and item.name.startswith("."):
                 continue
             if item.is_dir():
-                items.append(f"📁 {item.name}/")
+                items.append(f"[DIR] {item.name}/")
             else:
                 size = _format_size(item.stat().st_size)
-                items.append(f"📄 {item.name} ({size})")
+                items.append(f"[FILE] {item.name} ({size})")
 
         if not items:
             return f"Directory is empty: {target.name}/"
@@ -205,7 +205,7 @@ def move_file(path: str, name: str = "", destination: str = "") -> str:
 
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(src), str(dst))
-        return f"Moved: {src.name} → {dst.parent.name}/"
+        return f"Moved: {src.name} -> {dst.parent.name}/"
 
     except Exception as e:
         return f"Could not move: {e}"
@@ -236,7 +236,7 @@ def copy_file(path: str, name: str = "", destination: str = "") -> str:
         else:
             shutil.copy2(str(src), str(dst))
 
-        return f"Copied: {src.name} → {dst.parent.name}/"
+        return f"Copied: {src.name} -> {dst.parent.name}/"
 
     except Exception as e:
         return f"Could not copy: {e}"
@@ -258,7 +258,7 @@ def rename_file(path: str, name: str = "", new_name: str = "") -> str:
             return f"A file named '{new_name}' already exists here."
 
         target.rename(new_path)
-        return f"Renamed: {target.name} → {new_name}"
+        return f"Renamed: {target.name} -> {new_name}"
 
     except Exception as e:
         return f"Could not rename: {e}"
@@ -327,7 +327,7 @@ def find_files(name: str = "", extension: str = "",
             if name and name.lower() not in item.name.lower():
                 continue
             size = _format_size(item.stat().st_size)
-            results.append(f"📄 {item.name} ({size}) — {item.parent}")
+            results.append(f"[FILE] {item.name} ({size}) — {item.parent}")
             if len(results) >= max_results:
                 break
 
@@ -427,7 +427,7 @@ def organize_desktop() -> str:
                 continue
 
             shutil.move(str(item), str(new_path))
-            moved.append(f"{item.name} → {target_dir.name}/")
+            moved.append(f"{item.name} -> {target_dir.name}/")
 
         result = f"Desktop organized: {len(moved)} files moved."
         if moved:

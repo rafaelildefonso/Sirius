@@ -143,12 +143,12 @@ def _real_profile_dir(browser: str) -> str:
 
     for p in candidates:
         if p.exists():
-            print(f"[Browser] ✅ Real profile found for {browser}: {p}")
+            print(f"[Browser] [OK] Real profile found for {browser}: {p}")
             return str(p)
 
     fallback = home / ".sirius_profiles" / browser
     fallback.mkdir(parents=True, exist_ok=True)
-    print(f"[Browser] ⚠️  Real profile not found for {browser}, using: {fallback}")
+    print(f"[Browser] [WARN]  Real profile not found for {browser}, using: {fallback}")
     return str(fallback)
 
 def _firefox_profile_dir() -> Optional[str]:
@@ -340,7 +340,7 @@ def _resolve_browser(name: str) -> dict | None:
     if spec.get("special") == "opera_windows":
         exe = _find_opera_windows()
         if not exe:
-            print(f"[Browser] ⚠️  Opera executable not found on Windows.")
+            print(f"[Browser] [WARN]  Opera executable not found on Windows.")
         return {"engine": engine, "exe": exe, "channel": channel}
 
     for b in bins:
@@ -535,7 +535,7 @@ class _BrowserSession:
 
             await asyncio.sleep(0.5)  
             self._page = await self._context.new_page()
-            print(f"[Browser] ✅ Firefox launched")
+            print(f"[Browser] [OK] Firefox launched")
             return
 
         if engine_name == "webkit":
@@ -550,7 +550,7 @@ class _BrowserSession:
             self._context = await engine_obj.launch_persistent_context(safari_profile, **kwargs)
             await asyncio.sleep(0.5)
             self._page = await self._context.new_page()
-            print(f"[Browser] ✅ Safari launched")
+            print(f"[Browser] [OK] Safari launched")
             return
 
         profile = _real_profile_dir(self.browser_name)
@@ -586,17 +586,17 @@ class _BrowserSession:
             pg = await ctx.new_page()
             self._context = ctx
             self._page    = pg
-            print(f"[Browser] ✅ Launched [{label}] profile={profile}")
+            print(f"[Browser] [OK] Launched [{label}] profile={profile}")
             return
         except Exception as e:
             err_msg = str(e).lower()
             is_lock = any(k in err_msg for k in ["lock", "in use", "used by another", "is_open"])
             
             if is_lock:
-                print(f"[Browser] ⚠️  Profile locked for {label}: {e}")
+                print(f"[Browser] [WARN]  Profile locked for {label}: {e}")
                 raise e
 
-            print(f"[Browser] ⚠️  Launch failed for {label}: {e}")
+            print(f"[Browser] [WARN]  Launch failed for {label}: {e}")
             
             sirius_profile = str(Path.home() / ".sirius_profiles" / self.browser_name)
             Path(sirius_profile).mkdir(parents=True, exist_ok=True)
@@ -607,7 +607,7 @@ class _BrowserSession:
                 pg = await ctx.new_page()
                 self._context = ctx
                 self._page    = pg
-                print(f"[Browser] ✅ Launched [{label}] with SIRIUS profile")
+                print(f"[Browser] [OK] Launched [{label}] with SIRIUS profile")
             except Exception as e2:
                 # Cleanup if partially opened
                 if 'ctx' in locals():
@@ -742,9 +742,9 @@ class _BrowserSession:
                 el = page.locator(selector).first
                 await el.clear()
                 await el.type(str(value), delay=40)
-                results.append(f"✓ {selector}")
+                results.append(f"+ {selector}")
             except Exception as e:
-                results.append(f"✗ {selector}: {e}")
+                results.append(f"x {selector}: {e}")
         return "Form filled: " + ", ".join(results)
 
     async def smart_click(self, description: str) -> str:
@@ -889,7 +889,7 @@ class _SessionRegistry:
         browser_name = _ALIASES.get(browser_name.lower().strip(), browser_name.lower().strip())
         self._get_or_create(browser_name)
         self._active_browser = browser_name
-        return f"Active browser → {browser_name}"
+        return f"Active browser -> {browser_name}"
 
     def close_one(self, browser_name: str) -> str:
         with self._lock:
@@ -920,8 +920,8 @@ class _SessionRegistry:
                 return "No active browser sessions."
             lines = []
             for name in self._sessions:
-                marker = " ◀ active" if name == self._active_browser else ""
-                lines.append(f"  • {name}{marker}")
+                marker = " <- active" if name == self._active_browser else ""
+                lines.append(f"  - {name}{marker}")
             return "Open browsers:\n" + "\n".join(lines)
 
 

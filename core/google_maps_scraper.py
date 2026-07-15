@@ -205,7 +205,7 @@ def salvar_whatsapp_messages(links, caminho):
         f.write(f"Gerado em: {datetime.now().strftime('%d/%m/%Y %H:%M')}\n")
         f.write("=" * 60 + "\n\n")
         for r in links:
-            f.write(f"\U0001f4cd {r['nome']}\n")
+            f.write(f"[PIN] {r['nome']}\n")
             f.write(f"   Segmento : {r['segmento']}\n")
             f.write(f"   Telefone : {r['telefone']}\n")
             f.write(f"   Endereço : {r.get('endereco', '')}\n")
@@ -257,7 +257,7 @@ def scrape_google_maps(segmentos, cidade, max_por_segmento=10, mostrar_navegador
                 log_func(f"[{idx}/{len(segmentos)}] Buscando '{seg}' no Maps...")
             empresas = buscar_segmento(page, seg, cidade, max_por_segmento, log_func)
             if log_func:
-                log_func(f"  → {len(empresas)} empresas encontradas para '{seg}'. Coletando detalhes...")
+                log_func(f"  -> {len(empresas)} empresas encontradas para '{seg}'. Coletando detalhes...")
             for i, emp in enumerate(empresas, 1):
                 if log_func:
                     log_func(f"    [{i}/{len(empresas)}] {emp['nome']}")

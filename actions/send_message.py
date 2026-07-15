@@ -18,11 +18,6 @@ try:
 except ImportError:
     _PYPERCLIP = False
 
-def _base_dir() -> Path:
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent
-    return Path(__file__).resolve().parent.parent
-
 def _get_os() -> str:
     from core.config_loader import get_config
     return (get_config("os_system") or "windows").lower()
@@ -105,7 +100,7 @@ def _open_app(app_name: str) -> bool:
             return launched
 
     except Exception as e:
-        print(f"[SendMessage] ⚠️ Could not open {app_name}: {e}")
+        print(f"[SendMessage] [WARN] Could not open {app_name}: {e}")
         return False
 
 
@@ -116,7 +111,7 @@ def _open_browser_url(url: str) -> bool:
         time.sleep(4.0) 
         return True
     except Exception as e:
-        print(f"[SendMessage] ⚠️ Could not open browser: {e}")
+        print(f"[SendMessage] [WARN] Could not open browser: {e}")
         return False
 
 def _search_in_app(query: str) -> None:
@@ -244,9 +239,9 @@ def send_message(
         return "PyAutoGUI is not installed — cannot control the desktop."
 
     preview = message_text[:50] + ("…" if len(message_text) > 50 else "")
-    print(f"[SendMessage] 📨 {platform} → {receiver}: {preview}")
+    print(f"[SendMessage] [INBOX] {platform} -> {receiver}: {preview}")
     if player:
-        player.write_log(f"[msg] {platform} → {receiver}")
+        player.write_log(f"[msg] {platform} -> {receiver}")
 
     try:
         handler = _resolve_platform(platform)
@@ -254,7 +249,7 @@ def send_message(
     except Exception as e:
         result = f"Could not send message: {e}"
 
-    print(f"[SendMessage] {'✅' if 'sent' in result.lower() else '❌'} {result}")
+    print(f"[SendMessage] {'[OK]' if 'sent' in result.lower() else '[FAIL]'} {result}")
     if player:
         player.write_log(f"[msg] {result}")
 

@@ -7,12 +7,6 @@ from core.cache import search_cache
 from core.llm_utils import _get_mode, call_search_for_action
 
 
-def _get_base_dir() -> Path:
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent
-    return Path(__file__).resolve().parent.parent
-
-
 from core.config_loader import get_secret
 
 
@@ -127,7 +121,7 @@ def _compare(items: list[str], aspect: str) -> str:
     try:
         return _gemini_search(query)
     except Exception as e:
-        print(f"[WebSearch] ⚠️ Gemini compare failed: {e} — falling back to DDG")
+        print(f"[WebSearch] [WARN] Gemini compare failed: {e} - falling back to DDG")
 
     # DDG fallback: fetch results per item and merge
     all_results: dict[str, list] = {}
@@ -137,12 +131,12 @@ def _compare(items: list[str], aspect: str) -> str:
         except Exception:
             all_results[item] = []
 
-    lines = [f"Comparison — {aspect.upper()}", "─" * 40]
+    lines = [f"Comparison - {aspect.upper()}", "=" * 40]
     for item in items:
-        lines.append(f"\n▸ {item}")
+        lines.append(f"\n> {item}")
         for r in all_results.get(item, [])[:2]:
             if r.get("snippet"):
-                lines.append(f"  • {r['snippet']}")
+                lines.append(f"  - {r['snippet']}")
     return "\n".join(lines)
 
 def web_search(
@@ -166,7 +160,7 @@ def web_search(
     if player:
         player.write_log(f"[Search] {query or ', '.join(items)}")
 
-    print(f"[WebSearch] 🔍 Query: {query!r}  Mode: {mode}")
+    print(f"[WebSearch] [SEARCH] Query: {query!r}  Mode: {mode}")
 
     _mode = _get_mode()
     if _mode == "local":
@@ -176,9 +170,9 @@ def web_search(
                 try:
                     results = _ddg_search(f"{item} {aspect}", max_results=3)
                     if results:
-                        parts.append(f"▸ {item}")
+                        parts.append(f"> {item}")
                         for r in results[:2]:
-                            parts.append(f"  • {r.get('snippet', '')}")
+                            parts.append(f"  - {r.get('snippet', '')}")
                 except Exception:
                     parts.append(f"▸ {item}: no results")
             return "\n".join(parts) if parts else "No comparison results."
@@ -193,37 +187,37 @@ def web_search(
 
     try:
         if mode == "compare" and items:
-            print(f"[WebSearch] 📊 Comparing: {items}")
+            print(f"[WebSearch] [CHART] Comparing: {items}")
             result = _compare(items, aspect)
-            print("[WebSearch] ✅ Compare done.")
+            print("[WebSearch] [OK] Compare done.")
             return result
 
         if mode == "shopping":
-            print(f"[WebSearch] 🛍️ Shopping search: {query}")
+            print(f"[WebSearch] [SHOPPING] Shopping search: {query}")
             try:
                 result = _shopping_search(query)
-                print("[WebSearch] ✅ Shopping Gemini OK.")
+                print("[WebSearch] [OK] Shopping Gemini OK.")
                 return result
             except Exception as e:
-                print(f"[WebSearch] ⚠️ Shopping Gemini failed ({e}) — trying DDG...")
+                print(f"[WebSearch] [WARN] Shopping Gemini failed ({e}) — trying DDG...")
                 shopping_query = f"{query} comprar preço"
                 results = _ddg_search(shopping_query)
                 result  = _format_ddg(shopping_query, results)
-                print(f"[WebSearch] ✅ Shopping DDG: {len(results)} result(s).")
+                print(f"[WebSearch] [OK] Shopping DDG: {len(results)} result(s).")
                 return result
 
-        print("[WebSearch] 🌐 Trying Gemini...")
+        print("[WebSearch] [WEB] Trying Gemini...")
         try:
             result = _gemini_search(query)
-            print("[WebSearch] ✅ Gemini OK.")
+            print("[WebSearch] [OK] Gemini OK.")
             return result
         except Exception as e:
-            print(f"[WebSearch] ⚠️ Gemini failed ({e}) — trying DDG...")
+            print(f"[WebSearch] [WARN] Gemini failed ({e}) — trying DDG...")
             results = _ddg_search(query)
             result  = _format_ddg(query, results)
-            print(f"[WebSearch] ✅ DDG: {len(results)} result(s).")
+            print(f"[WebSearch] [OK] DDG: {len(results)} result(s).")
             return result
 
     except Exception as e:
-        print(f"[WebSearch] ❌ All backends failed: {e}")
+        print(f"[WebSearch] [FAIL] All backends failed: {e}")
         return f"Search failed, sir: {e}"

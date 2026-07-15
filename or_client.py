@@ -67,6 +67,9 @@ _rate_limited: dict[str, float] = {}
 class OpenRouterClient:
 
     def __init__(self) -> None:
+        self._refresh_key()
+
+    def _refresh_key(self) -> None:
         self.api_key  = _load_api_key()
         self._headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -131,17 +134,17 @@ class OpenRouterClient:
                     return content.strip() if content else None
 
                 logger.warning(
-                    f"[OpenRouter] {model} → HTTP {resp.status_code} "
+                    f"[OpenRouter] {model} -> HTTP {resp.status_code} "
                     f"(attempt {attempt}/{MAX_RETRIES_PER_MODEL})"
                 )
 
             except requests.exceptions.Timeout:
                 logger.warning(
-                    f"[OpenRouter] {model} → Timeout "
+                    f"[OpenRouter] {model} -> Timeout "
                     f"(attempt {attempt}/{MAX_RETRIES_PER_MODEL})"
                 )
             except Exception as e:
-                logger.error(f"[OpenRouter] {model} → Unexpected error: {e}")
+                logger.error(f"[OpenRouter] {model} -> Unexpected error: {e}")
 
             if attempt < MAX_RETRIES_PER_MODEL:
                 time.sleep(RETRY_DELAY)
@@ -157,6 +160,13 @@ class OpenRouterClient:
         temperature: float = DEFAULT_TEMPERATURE,
         response_format: Optional[dict] = None,
     ) -> str:
+        if not self.api_key:
+            logger.warning("[OpenRouter] API key not configured — skipping call")
+            raise RuntimeError(
+                "[OpenRouter] API key not configured. "
+                "Set OpenRouter API key in Settings."
+            )
+
         if model and not self._is_rate_limited(model):
             result = self._call(model, messages, max_tokens, temperature, response_format)
             if result:
@@ -172,7 +182,7 @@ class OpenRouterClient:
             logger.info(f"[OpenRouter] Trying: {m}")
             result = self._call(m, messages, max_tokens, temperature, response_format)
             if result:
-                logger.info(f"[OpenRouter] ✓ Success: {m}")
+                logger.info(f"[OpenRouter] + Success: {m}")
                 return result
 
         raise RuntimeError(
@@ -191,6 +201,7 @@ class OpenRouterClient:
         max_tokens: int = DEFAULT_MAX_TOKENS,
         temperature: float = DEFAULT_TEMPERATURE,
     ) -> str:
+        self._refresh_key()
         cache_key = f"or_chat:{hash(prompt)}:{hash(system)}"
         cached = llm_cache.get(cache_key)
         if cached is not None:
@@ -215,6 +226,7 @@ class OpenRouterClient:
         model: Optional[str] = None,
         max_tokens: int = DEFAULT_MAX_TOKENS,
     ) -> dict:
+        self._refresh_key()
         cache_key = f"or_json:{hash(prompt)}:{hash(system)}"
         cached = llm_cache.get(cache_key)
         if cached is not None:
@@ -258,6 +270,7 @@ class OpenRouterClient:
         model: Optional[str] = None,
         max_tokens: int = 1024,
     ) -> str:
+        self._refresh_key()
         messages = [
             {"role": "system", "content": system},
             {
@@ -285,6 +298,7 @@ class OpenRouterClient:
         model: Optional[str] = None,
         max_tokens: int = 1024,
     ) -> str:
+        self._refresh_key()
         path = Path(image_path)
         mime_map = {
             ".png":  "image/png",
@@ -307,7 +321,7 @@ class OpenRouterClient:
         max_tokens: int = DEFAULT_MAX_TOKENS,
         temperature: float = DEFAULT_TEMPERATURE,
     ) -> str:
-    
+        self._refresh_key()
         return self._call_with_fallback(
             TEXT_MODELS, messages, model, max_tokens, temperature
         )
@@ -332,9 +346,9 @@ if __name__ == "__main__":
     try:
         reply = client.chat("Introduce yourself in one sentence.")
         print(f"  Response : {reply}")
-        print(f"  Status   : PASS ✓")
+        print(f"  Status   : PASS +")
     except Exception as e:
-        print(f"  Status   : FAIL ✗ — {e}")
+        print(f"  Status   : FAIL x — {e}")
 
     print("\n[TEST 2] JSON mode...")
     try:
@@ -343,9 +357,9 @@ if __name__ == "__main__":
             system="Return only valid JSON. No extra text."
         )
         print(f"  Response : {data}")
-        print(f"  Status   : PASS ✓")
+        print(f"  Status   : PASS +")
     except Exception as e:
-        print(f"  Status   : FAIL ✗ — {e}")
+        print(f"  Status   : FAIL x — {e}")
 
     print("\n[TEST 3] Multi-turn conversation...")
     try:
@@ -357,16 +371,16 @@ if __name__ == "__main__":
         ]
         reply = client.multi_turn(history)
         print(f"  Response : {reply}")
-        print(f"  Status   : PASS ✓")
+        print(f"  Status   : PASS +")
     except Exception as e:
-        print(f"  Status   : FAIL ✗ — {e}")
+        print(f"  Status   : FAIL x — {e}")
 
     print("\n[TEST 4] Model pool info...")
     info = client.available_models()
     print(f"  Text models   : {info['total_text']}")
     print(f"  Vision models : {info['total_vision']}")
     print(f"  Rate limited  : {info['rate_limited'] or 'none'}")
-    print(f"  Status        : PASS ✓")
+    print(f"  Status        : PASS +")
 
     print("\n" + "=" * 55)
     print("  All tests complete.")

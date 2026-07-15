@@ -38,7 +38,7 @@ def _fetch_page_text(url: str, timeout: int = 5) -> str:
         # Limit to first 4000 chars to avoid huge token usage
         return text[:4000]
     except Exception as e:
-        print(f"[DeepResearch] ⚠️ Could not fetch {url}: {e}")
+        print(f"[DeepResearch] [WARN] Could not fetch {url}: {e}")
         return ""
 
 
@@ -153,7 +153,7 @@ def _search_tavily(query: str, max_results: int = 20) -> list[dict]:
     tavily_key = api_keys.get("tavily_api_key", "").strip()
 
     if not tavily_key:
-        print("[DeepResearch] ℹ️ Tavily API key not configured, skipping")
+        print("[DeepResearch] [i] Tavily API key not configured, skipping")
         return []
 
     try:
@@ -169,15 +169,15 @@ def _search_tavily(query: str, max_results: int = 20) -> list[dict]:
                 "url": result.get("url", "")
             })
 
-        print(f"[DeepResearch] ✅ Tavily: {len(results)} results")
+        print(f"[DeepResearch] [OK] Tavily: {len(results)} results")
         search_cache.set(cache_key, results, ttl=3600)
         return results
     except ImportError:
         if tavily_key:
-            print("[DeepResearch] ⚠️ tavily-python not installed, skipping Tavily")
+            print("[DeepResearch] [WARN] tavily-python not installed, skipping Tavily")
         return []
     except Exception as e:
-        print(f"[DeepResearch] ⚠️ Tavily search failed: {e}")
+        print(f"[DeepResearch] [WARN] Tavily search failed: {e}")
         return []
 
 
@@ -191,7 +191,7 @@ def _search_serpapi(query: str, region: str, max_results: int = 20) -> list[dict
     serpapi_key = api_keys.get("serpapi_key", "").strip()
 
     if not serpapi_key:
-        print("[DeepResearch] ℹ️ SerpAPI key not configured, skipping")
+        print("[DeepResearch] [i] SerpAPI key not configured, skipping")
         return []
 
     try:
@@ -219,15 +219,15 @@ def _search_serpapi(query: str, region: str, max_results: int = 20) -> list[dict
                 "url": result.get("link", "")
             })
 
-        print(f"[DeepResearch] ✅ SerpAPI: {len(organic_results)} results")
+        print(f"[DeepResearch] [OK] SerpAPI: {len(organic_results)} results")
         search_cache.set(cache_key, organic_results, ttl=3600)
         return organic_results
     except ImportError:
         if serpapi_key:
-            print("[DeepResearch] ⚠️ google-search-results not installed, skipping SerpAPI")
+            print("[DeepResearch] [WARN] google-search-results not installed, skipping SerpAPI")
         return []
     except Exception as e:
-        print(f"[DeepResearch] ⚠️ SerpAPI search failed: {e}")
+        print(f"[DeepResearch] [WARN] SerpAPI search failed: {e}")
         return []
 
 
@@ -244,7 +244,7 @@ def _search_gemini(query: str) -> list[dict]:
         gemini_key = api_keys.get("gemini_api_key", "").strip()
 
         if not gemini_key:
-            print("[DeepResearch] ℹ️ Gemini API key not configured, skipping Gemini Search")
+            print("[DeepResearch] [i] Gemini API key not configured, skipping Gemini Search")
             return []
 
         client = genai.Client(api_key=gemini_key)
@@ -264,7 +264,7 @@ def _search_gemini(query: str) -> list[dict]:
             import json
             results = json.loads(text)
             if isinstance(results, list):
-                print(f"[DeepResearch] ✅ Gemini: {len(results)} results")
+                print(f"[DeepResearch] [OK] Gemini: {len(results)} results")
                 search_cache.set(cache_key, results, ttl=3600)
                 return results
         except:
@@ -274,12 +274,12 @@ def _search_gemini(query: str) -> list[dict]:
         url_pattern = r'https?://[^\s<>"{}|\\^`\[\]]+'
         urls = re.findall(url_pattern, text)
         results = [{"title": "Result", "snippet": text[:200], "url": url} for url in urls[:15]]
-        print(f"[DeepResearch] ✅ Gemini (fallback): {len(results)} results")
+        print(f"[DeepResearch] [OK] Gemini (fallback): {len(results)} results")
         search_cache.set(cache_key, results, ttl=3600)
         return results
 
     except Exception as e:
-        print(f"[DeepResearch] ⚠️ Gemini search failed: {e}")
+        print(f"[DeepResearch] [WARN] Gemini search failed: {e}")
         return []
 
 
@@ -295,7 +295,7 @@ def _search_ddg(query: str, max_results: int = 15) -> list[dict]:
         try:
             from duckduckgo_search import DDGS
         except ImportError:
-            print("[DeepResearch] ⚠️ DuckDuckGo search library not installed")
+            print("[DeepResearch] [WARN] DuckDuckGo search library not installed")
             return []
 
     results = []
@@ -307,10 +307,10 @@ def _search_ddg(query: str, max_results: int = 15) -> list[dict]:
                     "snippet": r.get("body", ""),
                     "url": r.get("href", "")
                 })
-        print(f"[DeepResearch] ✅ DuckDuckGo: {len(results)} results")
+        print(f"[DeepResearch] [OK] DuckDuckGo: {len(results)} results")
         search_cache.set(cache_key, results, ttl=3600)
     except Exception as e:
-        print(f"[DeepResearch] ⚠️ DuckDuckGo search failed: {e}")
+        print(f"[DeepResearch] [WARN] DuckDuckGo search failed: {e}")
 
     return results
 
@@ -373,7 +373,7 @@ def _evaluate_lead_enhanced(url: str, text: str, snippet: str, competencies: str
             api_cache.set(cache_key, result, ttl=3600)
             return result
     except Exception as e:
-        print(f"[DeepResearch] ⚠️ LLM evaluation failed for {url}: {e}")
+        print(f"[DeepResearch] [WARN] LLM evaluation failed for {url}: {e}")
     return None
 
 def deep_research(parameters: dict, player=None) -> str:
@@ -395,13 +395,13 @@ def deep_research(parameters: dict, player=None) -> str:
 
     # Generate multiple search queries
     queries = _build_search_queries(target, region)
-    print(f"[DeepResearch] 🔍 Generated {len(queries)} search queries")
+    print(f"[DeepResearch] [SEARCH] Generated {len(queries)} search queries")
 
     all_results = []
 
     # Try each search strategy
     for query in queries[:2]:  # Use first 2 queries to avoid too many requests
-        print(f"[DeepResearch] 🔍 Query: {query!r}")
+        print(f"[DeepResearch] [SEARCH] Query: {query!r}")
 
         # Try Tavily (if configured)
         tavily_results = _search_tavily(query, max_results=20)
@@ -428,16 +428,16 @@ def deep_research(parameters: dict, player=None) -> str:
 
     # Filter relevant domains
     filtered_results = [r for r in all_results if _is_relevant_domain(r.get("url", ""))]
-    print(f"[DeepResearch] 🎯 Filtered to {len(filtered_results)} relevant domains")
+    print(f"[DeepResearch] [TARGET] Filtered to {len(filtered_results)} relevant domains")
 
     # Deduplicate results
     unique_results = _deduplicate_results(filtered_results)
-    print(f"[DeepResearch] 🔄 Deduplicated to {len(unique_results)} unique results")
+    print(f"[DeepResearch] [RETRY] Deduplicated to {len(unique_results)} unique results")
 
     if not unique_results:
         return "Found search results, but none passed the relevance filters."
 
-    print(f"[DeepResearch] ✅ Found {len(unique_results)} potential leads. Analyzing sites...")
+    print(f"[DeepResearch] [OK] Found {len(unique_results)} potential leads. Analyzing sites...")
     if player:
         player.write_log(f"[DeepResearch] Found {len(unique_results)} leads. Analyzing sites...")
 
@@ -448,12 +448,12 @@ def deep_research(parameters: dict, player=None) -> str:
         url = r["url"]
         snippet = r["snippet"]
 
-        print(f"[DeepResearch] 🌐 Fetching {url}...")
+        print(f"[DeepResearch] [WEB] Fetching {url}...")
         text = _fetch_page_text(url)
         if not text:
             text = "Could not fetch webpage content. Evaluate based on snippet."
 
-        print(f"[DeepResearch] 🧠 Evaluating {url}...")
+        print(f"[DeepResearch] [AI] Evaluating {url}...")
         return _evaluate_lead_enhanced(url, text, snippet, competencies, target, region)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
@@ -489,14 +489,14 @@ def deep_research(parameters: dict, player=None) -> str:
         url = lead.get("url", "")
 
         response_lines.append(f"{i}. {name} (Confiança: {conf}% | Local: {loc_conf}%)")
-        if phone != "Unknown": response_lines.append(f"   📞 {phone}")
-        if email != "Unknown": response_lines.append(f"   ✉️ {email}")
-        response_lines.append(f"   🌐 {url}")
-        response_lines.append(f"   💡 {reason}")
+        if phone != "Unknown": response_lines.append(f"   Phone: {phone}")
+        if email != "Unknown": response_lines.append(f"   Email: {email}")
+        response_lines.append(f"   [WEB] {url}")
+        response_lines.append(f"   Reason: {reason}")
         response_lines.append("")
 
     final_report = "\n".join(response_lines).strip()
-    print("[DeepResearch] ✅ Research complete.")
+    print("[DeepResearch] [OK] Research complete.")
 
     if player:
         import os
