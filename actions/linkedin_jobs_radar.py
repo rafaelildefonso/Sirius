@@ -37,14 +37,14 @@ def linkedin_jobs_radar(parameters: dict, player=None, speak=None) -> str:
                 
                 # Update button text/style
                 from ui.job_radar_widget import C
-                player._win._view_btn.setText("ASSISTENTE DE VOZ")
+                player._win._view_btn.setText("RADAR PROSPECÇÃO")
                 player._win._view_btn.setStyleSheet(f"""
                     QPushButton {{
-                        background: transparent; color: {C.ACC};
-                        border: 1px solid {C.ACC}; border-radius: 3px; padding: 0 8px;
+                        background: transparent; color: {C.GREEN};
+                        border: 1px solid {C.GREEN_D}; border-radius: 3px; padding: 0 8px;
                     }}
                     QPushButton:hover {{
-                        background: rgba(255, 107, 0, 0.1); color: {C.WHITE};
+                        background: rgba(0, 255, 136, 0.1); color: {C.WHITE};
                     }}
                 """)
                 
@@ -95,10 +95,19 @@ def linkedin_jobs_radar(parameters: dict, player=None, speak=None) -> str:
         return msg
         
     elif action == "list":
-        # Toggle view to radar
         if player and hasattr(player, "_win"):
             player._win.left_stack.setCurrentIndex(1)
-            player._win._view_btn.setText("ASSISTENTE DE VOZ")
+            from ui.job_radar_widget import C
+            player._win._view_btn.setText("RADAR PROSPECÇÃO")
+            player._win._view_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: transparent; color: {C.GREEN};
+                    border: 1px solid {C.GREEN_D}; border-radius: 3px; padding: 0 8px;
+                }}
+                QPushButton:hover {{
+                    background: rgba(0, 255, 136, 0.1); color: {C.WHITE};
+                }}
+            """)
             
         msg = "Abrindo o painel do radar de vagas para você visualizar as oportunidades encontradas."
         if speak:
