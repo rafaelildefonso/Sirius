@@ -457,7 +457,7 @@ async def scrape_google_jobs_via_playwright(keywords: str, max_jobs: int = 10) -
 
 
 async def scrape_google_jobs(keywords: str, max_jobs: int = 10):
-    """Scrapes Google Jobs via SerpAPI (async httpx → sync requests) → Playwright fallback."""
+    """Scrapes Google Jobs via SerpAPI (async httpx -> sync requests) -> Playwright fallback."""
     jobs_found = await scrape_google_jobs_via_serpapi(keywords, max_jobs)
 
     if not jobs_found:

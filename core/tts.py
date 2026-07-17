@@ -56,7 +56,7 @@ def _compress_silence(
     threshold: float    = 0.003,  # RMS below this = silence; lower = less clipping
 ) -> np.ndarray:
     """
-    Shorten Kokoro's very long punctuation pauses (1-2 s → ≤500 ms).
+    Shorten Kokoro's very long punctuation pauses (1-2 s -> <=500 ms).
     Conservative settings preserve natural prosody; only trims extreme pauses.
     """
     max_samp  = int(max_silence_ms * sample_rate / 1000)
@@ -165,7 +165,7 @@ def _import_kokoro_pipeline():
                 "Run: pip install kokoro>=0.9 soundfile"
             ) from first_err
 
-        # ── Version mismatch: upgrade kokoro silently and retry ──────────
+        # -- Version mismatch: upgrade kokoro silently and retry ----------
         print("[TTS] Kokoro/transformers version mismatch detected — upgrading kokoro…")
         import subprocess
         result = subprocess.run(
@@ -195,7 +195,7 @@ def _import_kokoro_pipeline():
             ) from retry_err
 
 
-# Kokoro voice prefix → KPipeline lang_code mapping
+# Kokoro voice prefix -> KPipeline lang_code mapping
 _KOKORO_LANG_CODES = {
     "a": "a",   # American English  (af_*, am_*)
     "b": "b",   # British English   (bf_*, bm_*)
@@ -273,7 +273,7 @@ class KokoroTTSEngine:
         try:
             self._pipeline = _create_pipeline()
         except Exception as _first_err:
-            # Offline flag set but model not cached yet → download once
+            # Offline flag set but model not cached yet -> download once
             _e = str(_first_err).lower()
             if any(k in _e for k in ("offline", "not found", "cache", "localentry", "does not exist")):
                 print("[TTS] Kokoro model not cached — downloading (internet required for first run)…")
@@ -298,9 +298,9 @@ class KokoroTTSEngine:
             if self._pipeline is None:
                 self._init()
 
-        # ── Concurrent synthesise + playback ────────────────────────────────
+        # -- Concurrent synthesise + playback --------------------------------
         # Kokoro generates audio chunks lazily.  Without threading, we:
-        #   synthesise chunk N → play N → synthesise N+1 → play N+1 …
+        #   synthesise chunk N -> play N -> synthesise N+1 -> play N+1 …
         # With a producer/consumer pair, chunk N+1 synthesises WHILE chunk N
         # plays, cutting perceived latency by the playback duration of all but
         # the last chunk (typically 1-3 s on multi-sentence responses).
@@ -318,7 +318,7 @@ class KokoroTTSEngine:
             except Exception as exc:
                 synth_error.append(exc)
             finally:
-                audio_q.put(None)                     # sentinel → player exits
+                audio_q.put(None)                     # sentinel -> player exits
 
         synth_thread = threading.Thread(target=_synth, daemon=True)
         synth_thread.start()

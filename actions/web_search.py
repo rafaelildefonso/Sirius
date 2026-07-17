@@ -174,7 +174,7 @@ def web_search(
                         for r in results[:2]:
                             parts.append(f"  - {r.get('snippet', '')}")
                 except Exception:
-                    parts.append(f"▸ {item}: no results")
+                    parts.append(f"* {item}: no results")
             return "\n".join(parts) if parts else "No comparison results."
 
         if mode == "shopping":

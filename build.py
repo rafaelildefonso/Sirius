@@ -125,7 +125,7 @@ def _ask_keep_credentials() -> bool:
 
 
 def _ensure_icon() -> Path | None:
-    """Convert face.png → face.ico for embedding as app icon."""
+    """Convert face.png -> face.ico for embedding as app icon."""
     import io
     import struct
     png = BASE_DIR / "face.png"

@@ -1,6 +1,6 @@
 """
 Classifier — automatically categorizes incoming user input into memory types (C0–C11).
-Uses a two‑stage approach: fast keyword/rule‑based pre‑filter, then LLM for ambiguous cases.
+Uses a two-stage approach: fast keyword/rule-based pre‑filter, then LLM for ambiguous cases.
 """
 
 from __future__ import annotations

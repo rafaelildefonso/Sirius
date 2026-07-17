@@ -135,7 +135,7 @@ Este score foi calculado por um motor de regras baseado nos dados objetivos acim
 Responda APENAS com um objeto JSON válido contendo exatamente as seguintes chaves (em português brasileiro):
 - "purchase_potential": Use o score pré-calculado ({local_score}) como base. Você pode ajustar em até ±5 pontos se houver um contexto forte não capturado pelas regras objetivas. Mantenha como inteiro de 0 a 100.
 - "reason": Uma explicação curta (1 frase) do motivo do score. Mencione se é uma empresa de pequeno ou grande porte, se tem site, e qual a qualidade dele.
-- "recommended_approach": Sugestão de abordagem comercial personalizada para o porte da empresa (ex: pequeno prestador de serviço regional → "Oferecer site institucional simples com WhatsApp", empresa média → "Site profissional com blog e agendamento online", grande empresa → vazio).
+- "recommended_approach": Sugestão de abordagem comercial personalizada para o porte da empresa (ex: pequeno prestador de serviço regional -> "Oferecer site institucional simples com WhatsApp", empresa média -> "Site profissional com blog e agendamento online", grande empresa -> vazio).
 - "red_flags": Lista de possíveis red flags. INCLUA "Empresa de grande porte, baixa chance de conversão" se a empresa parecer grande. INCLUA "Site já é bom, difícil vender upgrade" se o site for de qualidade boa. Deixe vazio se não houver.
 - "category": A categoria classificada do negócio (ex: "Restaurante", "Salão de Beleza", "Oficina Mecânica", "Clínica", "Loja", "Serviços", etc). Use os dados disponíveis para classificar.
 - "business_size": O porte estimado da empresa: "pequena", "media", ou "grande". Use o número de avaliações como referência (poucas avaliações = pequena, muitas = grande).

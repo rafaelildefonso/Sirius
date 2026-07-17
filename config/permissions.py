@@ -21,7 +21,7 @@ def _perm_path() -> Path:
         base = Path(__file__).resolve().parent.parent
     return base / "config" / "permissions.json"
 
-# ── Metadata (displayed in the UI) ────────────────────────────────────────────
+# -- Metadata (displayed in the UI) --------------------------------------------
 
 PERMISSION_META: dict[str, dict] = {
     "control_mouse_keyboard": {
@@ -71,7 +71,7 @@ PERMISSION_META: dict[str, dict] = {
     },
 }
 
-# ── Tool → Permission category ─────────────────────────────────────────────────
+# -- Tool -> Permission category -------------------------------------------------
 
 TOOL_TO_PERMISSION: dict[str, str] = {
     "computer_control":   "control_mouse_keyboard",
@@ -105,7 +105,7 @@ TOOL_TO_PERMISSION: dict[str, str] = {
 
 _DEFAULTS: dict[str, bool] = {k: True for k in PERMISSION_META}
 
-# ── Public API ─────────────────────────────────────────────────────────────────
+# -- Public API -----------------------------------------------------------------
 
 def get_permissions() -> dict[str, bool]:
     """Return the current permission state, filling missing keys with True."""

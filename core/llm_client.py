@@ -112,7 +112,7 @@ def ensure_ollama_running(timeout: int = 15) -> bool:
             )
             return False
 
-    # ── Ollama ──────────────────────────────────────────────────────────────
+    # -- Ollama --------------------------------------------------------------
     health = f"{url}/api/tags"
 
     def _is_up() -> bool:
@@ -153,12 +153,12 @@ def warmup_model(system_prompt: str | None = None) -> bool:
     Pre-load the model AND prime Ollama's KV prefix cache.
 
     Why the system_prompt matters
-    ─────────────────────────────
+    -----------------------------
     Ollama caches the KV attention state of the prompt prefix across requests.
     If warmup includes the same system prompt that real requests will use, Ollama
     evaluates those tokens ONCE at startup.  Every subsequent request only needs
     to evaluate the small delta (user message ± time context) instead of the full
-    300-500 token system prompt → drops first-token latency from ~17 s to <1 s.
+    300-500 token system prompt -> drops first-token latency from ~17 s to <1 s.
 
     Pass the *static* part of the system prompt (the JARVIS protocol text, without
     timestamps or per-minute context) so the prefix stays valid across calls.
@@ -194,13 +194,13 @@ def warmup_model(system_prompt: str | None = None) -> bool:
             print(f"[LLM] Warmup failed (non-fatal): {e}")
             return False
 
-    # ── Ollama ──────────────────────────────────────────────────────────────
+    # -- Ollama --------------------------------------------------------------
     payload = {
         "model":      model,
         "messages":   messages,
         "stream":     False,
         "keep_alive": -1,
-        # num_gpu:99 → push ALL transformer layers to GPU (Ollama caps at available)
+        # num_gpu:99 -> push ALL transformer layers to GPU (Ollama caps at available)
         # This is safe even without a GPU — Ollama silently ignores if n_gpu_layers=0
         "options":    {"num_predict": 1, "num_gpu": 99},
     }
@@ -328,7 +328,7 @@ def call_llm(
             resp.raise_for_status()
             choice = resp.json().get("choices", [{}])[0]
             msg    = choice.get("message", {})
-            # OpenAI tool_calls format → normalise to Ollama-style
+            # OpenAI tool_calls format -> normalise to Ollama-style
             raw_tc  = msg.get("tool_calls") or []
             tc_list = [
                 {
@@ -351,7 +351,7 @@ def call_llm(
         except Exception as e:
             raise RuntimeError(f"OpenAI-compatible LLM call failed: {e}")
 
-    # ── Ollama ──────────────────────────────────────────────────────────────
+    # -- Ollama --------------------------------------------------------------
     endpoint = f"{url}/api/chat"
     payload = {
         "model":      model,
@@ -484,7 +484,7 @@ def _stream_openai(
             resp.raise_for_status()
             full_content = ""
             buf          = ""
-            # tool_call fragments: index → {"id", "function": {"name", "arguments"}}
+            # tool_call fragments: index -> {"id", "function": {"name", "arguments"}}
             tc_fragments: dict[int, dict] = {}
 
             for raw in resp.iter_lines():
@@ -538,7 +538,7 @@ def _stream_openai(
             if buf.strip():
                 yield {"type": "sentence", "text": buf.strip()}
 
-            # Parse accumulated tool-call argument strings → dicts
+            # Parse accumulated tool-call argument strings -> dicts
             tool_calls: list = []
             for idx in sorted(tc_fragments):
                 frag = tc_fragments[idx]
@@ -650,7 +650,7 @@ def call_llm_stream(
         "messages":   messages,
         "stream":     True,
         "keep_alive": -1,
-        # 150 tokens ≈ 100 words ≈ 3-4 sentences — enough for any voice reply.
+        # 150 tokens ~= 100 words ~= 3-4 sentences — enough for any voice reply.
         # num_gpu:99 pushes all layers to GPU; num_thread removed (Ollama auto-tunes).
         "options":    {"num_predict": 150, "num_gpu": 99},
     }

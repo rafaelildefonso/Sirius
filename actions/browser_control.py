@@ -62,8 +62,8 @@ def _system_open(url: str, browser_exe: str | None = None):
 
 def _normalize_url(url: str) -> str:
     """
-    Bare words like "instagram" → "https://instagram.com"
-    Domains like "instagram.com" → "https://instagram.com"
+    Bare words like "instagram" -> "https://instagram.com"
+    Domains like "instagram.com" -> "https://instagram.com"
     Full URLs pass through unchanged.
     """
     url = url.strip()
@@ -71,7 +71,7 @@ def _normalize_url(url: str) -> str:
         return "about:blank"
     if "://" in url:
         return url
-    # No dot at all → assume .com  (e.g. "instagram" → "instagram.com")
+    # No dot at all -> assume .com  (e.g. "instagram" -> "instagram.com")
     if "." not in url:
         url = url + ".com"
     return "https://" + url
@@ -420,8 +420,8 @@ def _detect_default_browser() -> str:
 
 class _BrowserSession:
     """
-    Bir tarayıcı örneği için tam oturum.
-    Tüm tarayıcılar launch_persistent_context ile gerçek profil üzerinde açılır.
+    A full session for a single browser instance.
+    All browsers launch via launch_persistent_context on the real user profile.
     """
 
     def __init__(self, browser_name: str):
@@ -497,15 +497,15 @@ class _BrowserSession:
 
     async def _launch(self):
         """
-        Tarayıcıyı gerçek kullanıcı profiliyle başlatır.
-        Context zaten açıksa hiçbir şey yapmaz.
+        Launch browser with real user profile.
+        Does nothing if context is already open.
         """
         if self._context is not None:
             return
 
         if self._spec is None:
             raise RuntimeError(
-                f"'{self.browser_name}' bu platformda ({_OS}) desteklenmiyor."
+                f"'{self.browser_name}' is not supported on this platform ({_OS})."
             )
 
         engine_name = self._spec["engine"]
@@ -850,7 +850,7 @@ class _BrowserSession:
         return f"{self.browser_name} closed."
 
 class _SessionRegistry:
-    """Tüm aktif tarayıcı oturumlarını yönetir."""
+    """Manages all active browser sessions."""
 
     def __init__(self):
         self._sessions:       dict[str, _BrowserSession] = {}

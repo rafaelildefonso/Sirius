@@ -10,7 +10,7 @@ DOWNLOADS_DIR = Path.home() / "Downloads"
 CONFIG_DIR = BASE_DIR / "config"
 PROFILE_FILE = CONFIG_DIR / "user_profile.json"
 
-# ── Mensagem padrão para prospecção via WhatsApp ──
+# -- Mensagem padrão para prospecção via WhatsApp --
 DEFAULT_WHATSAPP_MSG = (
     "Olá, {nome}! Tudo bem?\n\n"
     "Sou da Marco Um, agência especializada em criação de sites profissionais. "
@@ -110,8 +110,8 @@ def freela_arsenal(parameters: dict, player=None, speak=None) -> str:
     Orquestrador central de prospecção de freelas.
 
     Combina:
-      1. Google Maps → encontra empresas sem site (prospecção ativa)
-      2. Deep Research → encontra leads de freelance na web
+      1. Google Maps -> encontra empresas sem site (prospecção ativa)
+      2. Deep Research -> encontra leads de freelance na web
 
     Parâmetros:
       - objetivo: "tudo" | "prospectar_clientes" | "achar_vagas" | "so_maps"
@@ -138,7 +138,7 @@ def freela_arsenal(parameters: dict, player=None, speak=None) -> str:
 
     segmentos = [s.strip() for s in segmentos_raw.split(",") if s.strip()]
 
-    # ── Fallbacks a partir do perfil do usuário ──
+    # -- Fallbacks a partir do perfil do usuário --
     if (not competencias or not target) and PROFILE_FILE.exists():
         try:
             with open(PROFILE_FILE, "r", encoding="utf-8") as f:
@@ -171,7 +171,7 @@ def freela_arsenal(parameters: dict, player=None, speak=None) -> str:
     if speak:
         speak("Iniciando prospecção. Vou abrir o navegador e buscar empresas. Aviso o progresso aqui no chat.")
 
-    # ── Execução ──
+    # -- Execução --
     maps_result = None
     dr_result = None
     erros = []
@@ -202,7 +202,7 @@ def freela_arsenal(parameters: dict, player=None, speak=None) -> str:
             erros.append(f"DeepResearch: {e}")
             _log(f"ERRO no Deep Research: {e}")
 
-    # ── Montar relatório ──
+    # -- Montar relatório --
     report_parts = ["=" * 50, "  FREELA ARSENAL - RELATÓRIO COMPLETO", "=" * 50, ""]
     now_str = datetime.now().strftime("%d/%m/%Y %H:%M")
     report_parts.append(f"Gerado em: {now_str}")
@@ -236,7 +236,7 @@ def freela_arsenal(parameters: dict, player=None, speak=None) -> str:
 
     final_report = "\n".join(report_parts)
 
-    # ── Salvar arquivos ──
+    # -- Salvar arquivos --
     if gerar_arquivos:
         try:
             arquivos = _salvar_resultados(objetivo, maps_result, dr_result)

@@ -25,7 +25,7 @@ class WhisperSTT:
         try:
             self._model = WhisperModel(model_name, device=device, compute_type=compute)
         except Exception as _first_err:
-            # Offline flag set but model not cached yet → download once, then offline forever
+            # Offline flag set but model not cached yet -> download once, then offline forever
             _e = str(_first_err).lower()
             if any(k in _e for k in ("offline", "not found", "cache", "localentry", "does not exist")):
                 print(f"[STT] '{model_name}' not cached — downloading (internet required for first run)…")

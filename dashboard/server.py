@@ -69,17 +69,17 @@ def _get_gemini_key() -> str | None:
 _KEY_CHARS = [c for c in (string.ascii_uppercase + string.digits)
               if c not in ('O', 'I', 'L', '0', '1')]
 
-# ── AES-256-CBC ───────────────────────────────────────────────────────────────
+# -- AES-256-CBC ---------------------------------------------------------------
 _AES_SALT = b'SIRIUS-DASHBOARD-v1'
 
 
 def _derive_key(session_key: str) -> bytes:
-    """SHA-256(sessionKey‖salt) → 32-byte AES-256 key (microseconds, no PBKDF2 needed)."""
+    """SHA-256(sessionKey||salt) -> 32-byte AES-256 key (microseconds, no PBKDF2 needed)."""
     return hashlib.sha256(session_key.encode('utf-8') + _AES_SALT).digest()
 
 
 def _decrypt_cbc(aes_key: bytes, enc_b64: str) -> str:
-    """Decrypt base64(IV[16] ‖ ciphertext) with AES-256-CBC + PKCS7."""
+    """Decrypt base64(IV[16] || ciphertext) with AES-256-CBC + PKCS7."""
     from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
     from cryptography.hazmat.primitives import padding as sym_pad
     raw      = base64.b64decode(enc_b64)
@@ -90,7 +90,7 @@ def _decrypt_cbc(aes_key: bytes, enc_b64: str) -> str:
     return (unpadder.update(padded) + unpadder.finalize()).decode('utf-8')
 
 
-# ── CryptoJS (auto-download once, served locally) ─────────────────────────────
+# -- CryptoJS (auto-download once, served locally) -----------------------------
 _CRYPTOJS_CDN  = ("https://cdnjs.cloudflare.com/ajax/libs/"
                   "crypto-js/4.2.0/crypto-js.min.js")
 _CRYPTOJS_FILE = STATIC_DIR / "crypto-js.min.js"
@@ -104,11 +104,11 @@ def _ensure_network_access(port: int) -> None:
     Windows : writes a .bat file, runs it elevated via Windows ShellExecuteW
               (native UAC dialog, guaranteed to appear). One-time setup.
     macOS   : osascript admin dialog if the Application Firewall is on.
-    Linux   : pkexec GUI → sudo -n → prints manual command as fallback.
+    Linux   : pkexec GUI -> sudo -n -> prints manual command as fallback.
     """
     import sys, subprocess, os, tempfile, threading
 
-    # ── Windows ──────────────────────────────────────────────────────────────
+    # -- Windows --------------------------------------------------------------
     if sys.platform == "win32":
         import ctypes, time
 
@@ -180,7 +180,7 @@ def _ensure_network_access(port: int) -> None:
                 pass
             return
 
-        # ── Try running directly (succeeds when already admin) ────────────────
+        # -- Try running directly (succeeds when already admin) ----------------
         try:
             r = subprocess.run(
                 [bat_path], capture_output=True, timeout=8, shell=True
@@ -195,7 +195,7 @@ def _ensure_network_access(port: int) -> None:
         except Exception:
             pass
 
-        # ── ShellExecuteW: native UAC elevation (most reliable on Windows) ────
+        # -- ShellExecuteW: native UAC elevation (most reliable on Windows) ----
         # ShellExecuteW with verb "runas" always shows the UAC dialog regardless
         # of UAC level settings. Non-blocking — uvicorn is already running.
         print("[Dashboard] One-time network setup required.")
@@ -231,7 +231,7 @@ def _ensure_network_access(port: int) -> None:
             threading.Thread(target=_cleanup, args=(bat_path,), daemon=True).start()
         return
 
-    # ── macOS ─────────────────────────────────────────────────────────────────
+    # -- macOS -----------------------------------------------------------------
     if sys.platform == "darwin":
         fw_ctl = "/usr/libexec/ApplicationFirewall/socketfilterfw"
         try:
@@ -259,7 +259,7 @@ def _ensure_network_access(port: int) -> None:
             pass  # macOS firewall is off by default — silent failure is fine
         return
 
-    # ── Linux ─────────────────────────────────────────────────────────────────
+    # -- Linux -----------------------------------------------------------------
     def _privileged(cmd: list[str]) -> bool:
         for prefix in (["pkexec"], ["sudo", "-n"]):
             try:
@@ -323,14 +323,14 @@ def _ensure_crypto_js() -> None:
 _ensure_crypto_js()
 
 
-# ── helpers ───────────────────────────────────────────────────────────────────
+# -- helpers -------------------------------------------------------------------
 
 def _detect_lan_ip() -> str:
-    """Return the first non‑loopback IPv4 address.
+    """Return the first non-loopback IPv4 address.
     Works completely offline; falls back to "127.0.0.1" only if no suitable address is found.
     """
     print("[DEBUG _detect_lan_ip] Starting LAN IP detection...")
-    # Try UDP‑socket trick – fast when a network route exists.
+    # Try UDP-socket trick – fast when a network route exists.
     for probe in ("8.8.8.8", "1.1.1.1", "192.168.1.1"):
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -368,7 +368,7 @@ def _detect_lan_ip() -> str:
     print("[DEBUG _detect_lan_ip] No LAN IP found, falling back to 127.0.0.1")
     return "127.0.0.1"
 
-# Backwards‑compatible alias used by existing code.
+# Backwards-compatible alias used by existing code.
 def _local_ip() -> str:
     return _detect_lan_ip()
 
@@ -756,22 +756,22 @@ def _read(name: str) -> str:
     return "<!DOCTYPE html><html><body style='background:#07090f;color:#dde3ed;font-family:sans-serif'><h1>SIRIUS</h1><p>Dashboard loading...</p></body></html>"
 
 
-# ── DashboardServer ───────────────────────────────────────────────────────────
+# -- DashboardServer -----------------------------------------------------------
 
 class DashboardServer:
 
     def __init__(self):
         self._ip                          = _local_ip()
         self._tokens: set[str]            = set()
-        self._token_keys: dict[str, str]  = {}   # auth_token → session_key
-        self._aes_cache:  dict[str, bytes]= {}   # session_key → AES bytes
+        self._token_keys: dict[str, str]  = {}   # auth_token -> session_key
+        self._aes_cache:  dict[str, bytes]= {}   # session_key -> AES bytes
         self._clients: set[WebSocket]     = set()
         self._history: list[dict]         = []
         self._command_queue               = asyncio.Queue()
         self._wake_callback               = None
         self._connect_callback            = None
         self._pending_keys: dict[str, float] = {}
-        self._device_sessions: dict[str, dict] = {}  # device_token → {session_key}
+        self._device_sessions: dict[str, dict] = {}  # device_token -> {session_key}
         self._phone_audio_queue: asyncio.Queue    = asyncio.Queue(maxsize=200)
         self._ready_event                 = None  # threading.Event set when server is listening
         self._uploads_dir                 = UPLOADS_DIR
@@ -779,7 +779,7 @@ class DashboardServer:
         self._app_html                    = None  # lazy-loaded on first request
         self.app                          = self._build_app()
 
-    # ── one-time key management ───────────────────────────────────────────
+    # -- one-time key management -------------------------------------------
 
     def new_key(self, expiry_secs: int = 600) -> str:
         now = time.time()
@@ -827,7 +827,7 @@ class DashboardServer:
         except Exception:
             return None
 
-    # ── callbacks ────────────────────────────────────────────────────────
+    # -- callbacks --------------------------------------------------------
 
     def set_wake_callback(self, fn) -> None:
         self._wake_callback = fn
@@ -835,7 +835,7 @@ class DashboardServer:
     def set_connect_callback(self, fn) -> None:
         self._connect_callback = fn
 
-    # ── broadcast ────────────────────────────────────────────────────────
+    # -- broadcast --------------------------------------------------------
 
     async def broadcast(self, msg: dict) -> None:
         self._history.append(msg)
@@ -849,7 +849,7 @@ class DashboardServer:
                 dead.add(ws)
         self._clients -= dead
 
-    # ── FastAPI app ───────────────────────────────────────────────────────
+    # -- FastAPI app -------------------------------------------------------
 
     def _build_app(self):
         """Return FastAPI app, or None if fastapi/uvicorn not installed."""
@@ -1035,7 +1035,7 @@ sessionStorage.setItem('sirius_token','{tok}');
                 self._wake_callback()
             return JSONResponse({"ok": True})
 
-        # ── Phone mic real-time audio → Gemini Live ──────────────────────────
+        # -- Phone mic real-time audio -> Gemini Live --------------------------
 
         @app.websocket("/ws/phone-audio")
         async def phone_audio_ws(websocket: WebSocket, token: str = ""):
@@ -1063,7 +1063,7 @@ sessionStorage.setItem('sirius_token','{tok}');
                     {"type": "sys", "text": "Phone microphone stopped."}
                 ))
 
-        # ── File sharing ──────────────────────────────────────────────────────
+        # -- File sharing ------------------------------------------------------
 
         def _safe_filename(raw: str) -> str:
             name = Path(raw).name                          # strip path components
@@ -1151,7 +1151,7 @@ sessionStorage.setItem('sirius_token','{tok}');
                 return JSONResponse({"error": "Not found"}, status_code=404)
             return FileResponse(str(path), filename=safe)
 
-        # ── Database-backed memory endpoints ──────────────────────────────
+        # -- Database-backed memory endpoints ------------------------------
 
         def _get_repo():
             try:
@@ -1256,12 +1256,12 @@ sessionStorage.setItem('sirius_token','{tok}');
 
         return app
 
-    # ── serve ─────────────────────────────────────────────────────────────
+    # -- serve -------------------------------------------------------------
 
     async def _serve_alias(self) -> None:
         """Second HTTPS server on PORT+1 sharing the same app and in-memory state.
         Chrome HTTPS-upgrades any bare IP:PORT the user types, so this port also needs TLS.
-        User types IP:8001 → Chrome tries https → self-signed cert warning → accept once → done."""
+        User types IP:8001 -> Chrome tries https -> self-signed cert warning -> accept once -> done."""
         ssl_key  = BASE_DIR / "config" / "certs" / "jarvis.key"
         ssl_cert = BASE_DIR / "config" / "certs" / "jarvis.crt"
         asyncio.get_event_loop().run_in_executor(None, _ensure_network_access, PORT + 1)

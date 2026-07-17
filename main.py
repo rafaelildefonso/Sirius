@@ -10,7 +10,7 @@ import traceback
 import random
 from pathlib import Path
 
-# ── Set AppUserModelID early so Windows taskbar can associate the pinned shortcut ──
+# -- Set AppUserModelID early so Windows taskbar can associate the pinned shortcut --
 if getattr(sys, "frozen", False) and sys.platform == "win32":
     try:
         import ctypes
@@ -25,7 +25,7 @@ import numpy as np
 from google import genai
 from google.genai import types
 
-# ── UI backend selection (WS_UI=1 uses WebSocket/Tauri; default is PyQt6) ─────
+# -- UI backend selection (WS_UI=1 uses WebSocket/Tauri; default is PyQt6) -----
 _USE_WS = os.environ.get("SIRIUS_WS_UI", "").lower() in ("1", "true", "yes")
 _DASHBOARD: 'DashboardServer | None' = None  # shared dashboard instance
 _DASHBOARD_READY = threading.Event()  # set when dashboard port is confirmed open
@@ -155,7 +155,7 @@ def _persist_message_to_db(instance: "SiriusLive", role: str, content: str) -> N
 _system_prompt_cache: str | None = None
 
 def _detect_lan_ip() -> str:
-    """Return the first non‑loopback IPv4 address (works offline)."""
+    """Return the first non-loopback IPv4 address (works offline)."""
     import socket
     for probe in ("8.8.8.8", "1.1.1.1", "192.168.1.1"):
         try:
@@ -1104,7 +1104,7 @@ class SiriusLive:
         loop   = asyncio.get_event_loop()
         result = "Done."
 
-        # ── Permission gate ──────────────────────────────────────────────
+        # -- Permission gate ----------------------------------------------
         _NO_PERM_CHECK = {"save_memory", "shutdown_sirius", "hide_interface"}
         if name not in _NO_PERM_CHECK:
             _perm_key = get_category(name)
@@ -1125,7 +1125,7 @@ class SiriusLive:
                         id=fc.id, name=name,
                         response={"error": f"Permissão negada pelo usuário: '{_label}'."}
                     )
-                # 'once' → proceed without saving
+                # 'once' -> proceed without saving
 
         try:
             if name == "open_app":
@@ -1496,7 +1496,7 @@ class SiriusLive:
             try:
                 chunk = await asyncio.wait_for(q.get(), timeout=1.0)
             except asyncio.TimeoutError:
-                # No audio for 1 s → phone mic inactive, give PC mic back
+                # No audio for 1 s -> phone mic inactive, give PC mic back
                 self._phone_active = False
                 continue
             self._phone_active = True   # phone is streaming — silence PC mic
@@ -1508,7 +1508,7 @@ class SiriusLive:
                 except asyncio.QueueFull:
                     pass
 
-    # ── dashboard command relay ─────────────────────────────────────────────
+    # -- dashboard command relay ---------------------------------------------
 
     async def _process_dashboard_commands(self) -> None:
         while True:
@@ -1628,7 +1628,7 @@ class SiriusLive:
                         if hasattr(self.ui, 'set_startup_progress'):
                             self.ui.set_startup_progress(5, 5, "SIRIUS pronto!")
                         if hasattr(self.ui, 'set_startup_status'):
-                            self.ui.set_startup_status("● SIRIUS online")
+                            self.ui.set_startup_status("* SIRIUS online")
                         if hasattr(self.ui, 'hide_startup_panel'):
                             self.ui.hide_startup_panel()
 
@@ -1714,7 +1714,7 @@ class _VADBuffer:
     def __init__(
         self,
         sample_rate:    int   = 16_000,
-        silence_sec:    float = 0.7,    # silence after last word → send to STT
+        silence_sec:    float = 0.7,    # silence after last word -> send to STT
         speech_thresh:  float = 0.008,  # RMS above this = speech
         silence_thresh: float = 0.004,  # RMS below this = silence
         min_speech_sec: float = 0.3,
@@ -1761,7 +1761,7 @@ class SiriusLocal:
     """
     Main assistant class for local offline mode.
     Replaces SiriusLive with:
-      STT (Whisper/Vosk) → Ollama LLM (tool calling) → TTS (Edge/Kokoro/ElevenLabs)
+      STT (Whisper/Vosk) -> Ollama LLM (tool calling) -> TTS (Edge/Kokoro/ElevenLabs)
     """
 
     def __init__(self, ui: SiriusUI):
@@ -2364,7 +2364,7 @@ class SiriusLocal:
                     self.ui.write_log("SYS: TTS ready.")
                     self.ui.mark_startup_ready("tts")
                     self.ui.set_startup_progress(5, 5, "SIRIUS pronto!")
-                    self.ui.set_startup_status("● All systems ready.")
+                    self.ui.set_startup_status("* All systems ready.")
                     self.ui.hide_startup_panel()
                 except Exception as e:
                     traceback.print_exc()
