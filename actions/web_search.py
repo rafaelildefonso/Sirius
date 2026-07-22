@@ -1,12 +1,11 @@
-#web_search.py
 import json
+import re
 import sys
+import threading
 from pathlib import Path
 
 from core.cache import search_cache
 from core.llm_utils import _get_mode, call_search_for_action
-
-
 from core.config_loader import get_secret
 
 
@@ -101,6 +100,34 @@ def _ddg_search(query: str, max_results: int = 6) -> list[dict]:
     return results
 
 
+def _ddg_news(query: str, max_results: int = 8) -> list[dict]:
+    cache_key = f"ddg_news:{query}:{max_results}"
+    cached = search_cache.get(cache_key)
+    if cached is not None:
+        return cached
+    try:
+        from ddgs import DDGS
+    except ImportError:
+        from duckduckgo_search import DDGS
+
+    results = []
+    try:
+        with DDGS() as ddgs:
+            for r in ddgs.news(query, max_results=max_results):
+                results.append({
+                    "title":   r.get("title",  ""),
+                    "snippet": r.get("body",   ""),
+                    "url":     r.get("url",    ""),
+                    "source":  r.get("source", ""),
+                })
+    except Exception as e:
+        print(f"[WebSearch] [WARN] DDG news() failed ({e}) — falling back to text search")
+        results = _ddg_search(query, max_results=max_results)
+
+    search_cache.set(cache_key, results, ttl=300)
+    return results
+
+
 def _format_ddg(query: str, results: list[dict]) -> str:
     if not results:
         return f"No results found for: {query}"
@@ -109,9 +136,29 @@ def _format_ddg(query: str, results: list[dict]) -> str:
     for i, r in enumerate(results, 1):
         if r.get("title"):   lines.append(f"{i}. {r['title']}")
         if r.get("snippet"): lines.append(f"   {r['snippet']}")
-        if r.get("url"):     lines.append(f"   {r['url']}")
+        if r.get("url"):     lines.append(f"   Source: {r['url']}")
         lines.append("")
     return "\n".join(lines).strip()
+
+
+def _format_news(query: str, results: list[dict]) -> str:
+    if not results:
+        return f"No news found for: {query}"
+
+    lines = [f"Latest news: {query}\n"]
+    for i, r in enumerate(results, 1):
+        title = r.get("title", "")
+        if not title:
+            continue
+        src = f"  [{r['source']}]" if r.get("source") else ""
+        lines.append(f"{i}. {title}{src}")
+        if r.get("snippet"):
+            lines.append(f"   {r['snippet'][:140]}")
+        if r.get("url"):
+            lines.append(f"   {r['url']}")
+        lines.append("")
+    return "\n".join(lines).strip()
+
 
 def _compare(items: list[str], aspect: str) -> str:
     query = (
@@ -123,7 +170,6 @@ def _compare(items: list[str], aspect: str) -> str:
     except Exception as e:
         print(f"[WebSearch] [WARN] Gemini compare failed: {e} - falling back to DDG")
 
-    # DDG fallback: fetch results per item and merge
     all_results: dict[str, list] = {}
     for item in items:
         try:
@@ -138,6 +184,109 @@ def _compare(items: list[str], aspect: str) -> str:
             if r.get("snippet"):
                 lines.append(f"  - {r['snippet']}")
     return "\n".join(lines)
+
+
+def _gemini_headlines(n: int = 5) -> tuple[list[str], str]:
+    cache_key = f"headlines:{n}"
+    cached = search_cache.get(cache_key)
+    if cached is not None:
+        return cached
+    from google import genai
+
+    client = genai.Client(api_key=_get_api_key())
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=f"Current world news: {n} headlines. Numbered list, titles only.",
+        config={"tools": [{"google_search": {}}]},
+    )
+
+    raw = ""
+    for part in response.candidates[0].content.parts:
+        if hasattr(part, "text") and part.text:
+            raw += part.text
+
+    headlines = []
+    for line in raw.strip().split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        if not re.match(r'^[\d]+[.\)\-]', line):
+            continue
+        clean = re.sub(r'^[\d]+[.\)\-]\s*', '', line)
+        clean = re.sub(r'^\*+\s*', '', clean).strip()
+        if clean and len(clean) > 10:
+            headlines.append(clean)
+
+    result = (headlines[:n], raw.strip())
+    search_cache.set(cache_key, result, ttl=600)
+    return result
+
+
+def _news(query: str) -> str:
+    gemini_query = f"latest news today: {query}" if query else "top world news today"
+    ddg_query    = query if query else "world news today"
+
+    result_box  = [None]
+    lock        = threading.Lock()
+    done_evt    = threading.Event()
+    failures    = [0]
+
+    def _store(r: str) -> None:
+        if r and len(r) > 60:
+            with lock:
+                if result_box[0] is None:
+                    result_box[0] = r
+            done_evt.set()
+        else:
+            with lock:
+                failures[0] += 1
+                if failures[0] >= 2:
+                    done_evt.set()
+
+    def _try_gemini():
+        try:
+            _store(_gemini_search(gemini_query))
+        except Exception as e:
+            print(f"[WebSearch] [WARN] Gemini news failed ({e})")
+            _store("")
+
+    def _try_ddg():
+        try:
+            results = _ddg_news(ddg_query, max_results=8)
+            _store(_format_news(ddg_query, results))
+        except Exception as e:
+            print(f"[WebSearch] [WARN] DDG news failed ({e})")
+            _store("")
+
+    threading.Thread(target=_try_gemini, daemon=True).start()
+    threading.Thread(target=_try_ddg,    daemon=True).start()
+
+    done_evt.wait(timeout=10.0)
+    return result_box[0] or f"No news found for: {query}"
+
+
+def _research(query: str) -> str:
+    research_query = (
+        f"Comprehensive, detailed explanation of: {query}. "
+        "Include background context, key facts, current state, and important nuances."
+    )
+    try:
+        return _gemini_search(research_query)
+    except Exception as e:
+        print(f"[WebSearch] [WARN] Research Gemini failed ({e}) — DDG fallback...")
+        results = _ddg_search(query, max_results=10)
+        return _format_ddg(query, results)
+
+
+def _price(query: str) -> str:
+    price_query = f"current price of {query} — how much does it cost today"
+    try:
+        return _gemini_search(price_query)
+    except Exception as e:
+        print(f"[WebSearch] [WARN] Price Gemini failed ({e}) — DDG fallback...")
+        results = _ddg_search(f"{query} price buy", max_results=6)
+        return _format_ddg(query, results)
+
 
 def web_search(
     parameters:     dict,
@@ -183,6 +332,15 @@ def web_search(
             result  = _format_ddg(shopping_query, results)
             return f"{result}\n\n{call_search_for_action(query)}"
 
+        if mode == "news":
+            return _format_news(query, _ddg_news(query))
+        if mode == "research":
+            results = _ddg_search(query, max_results=10)
+            return _format_ddg(query, results)
+        if mode == "price":
+            results = _ddg_search(f"{query} price buy", max_results=6)
+            return _format_ddg(query, results)
+
         return call_search_for_action(query)
 
     try:
@@ -191,6 +349,18 @@ def web_search(
             result = _compare(items, aspect)
             print("[WebSearch] [OK] Compare done.")
             return result
+
+        if mode == "news":
+            print(f"[WebSearch] [NEWS] Fetching news: {query}")
+            return _news(query)
+
+        if mode == "research":
+            print(f"[WebSearch] [RESEARCH] Deep research: {query}")
+            return _research(query)
+
+        if mode == "price":
+            print(f"[WebSearch] [PRICE] Price lookup: {query}")
+            return _price(query)
 
         if mode == "shopping":
             print(f"[WebSearch] [SHOPPING] Shopping search: {query}")

@@ -65,9 +65,9 @@ _CHANNELS           = 1
 _RECEIVE_SAMPLE_RATE = 24_000
 _CHUNK_SIZE         = 1_024
 
-_IMG_MAX_W = 640
-_IMG_MAX_H = 360
-_JPEG_Q    = 60
+_IMG_MAX_W = 1280
+_IMG_MAX_H = 720
+_JPEG_Q    = 82
 
 _SYSTEM_PROMPT = (
     "You are SIRIUS, an advanced AI assistant. "
@@ -331,6 +331,14 @@ class _VisionSession:
                             self._player.write_log(f"Sirius: {full}")
                             print(f"[Vision] [CHAT] {full}")
                     transcript = []
+                    if self._player and hasattr(self._player, "stop_camera_stream"):
+                        async def _deferred_close():
+                            await asyncio.sleep(2.0)
+                            try:
+                                self._player.stop_camera_stream()
+                            except Exception:
+                                pass
+                        asyncio.create_task(_deferred_close())
 
         except Exception as e:
             print(f"[Vision] [WARN]  Recv error: {e}")
@@ -391,6 +399,16 @@ def screen_process(
         if angle == "camera":
             image_bytes, mime_type = _capture_camera()
             print(f"[Vision] [CAMERA] Camera: {len(image_bytes):,} bytes")
+            if player and hasattr(player, "start_camera_stream"):
+                try:
+                    player.start_camera_stream()
+                except Exception as _e:
+                    print(f"[Vision] [WARN] Camera stream failed: {_e}")
+            elif player and hasattr(player, "show_camera_frame"):
+                try:
+                    player.show_camera_frame(image_bytes)
+                except Exception as _e:
+                    print(f"[Vision] [WARN] Camera preview failed: {_e}")
         else:
             image_bytes, mime_type = _capture_screen()
             print(f"[Vision] [PC] Screen: {len(image_bytes):,} bytes")
