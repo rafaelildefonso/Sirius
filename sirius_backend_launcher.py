@@ -11,6 +11,27 @@ import shutil
 import threading
 from pathlib import Path
 
+# ── Nuclear: force CREATE_NO_WINDOW on EVERY subprocess call on Windows ───────
+if sys.platform == "win32":
+    import subprocess as _subprocess
+    _orig_popen = _subprocess.Popen
+    class _Popen(_orig_popen):
+        def __init__(self, *args, **kwargs):
+            kwargs["creationflags"] = kwargs.get("creationflags", 0) | 0x08000000
+            kwargs.pop("startupinfo", None)
+            super().__init__(*args, **kwargs)
+    _subprocess.Popen = _Popen
+
+# -- Same AppUserModelID as Tauri so Windows groups both processes in Task Manager --
+if sys.platform == "win32":
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+            "com.rafaelildefonso.sirius"
+        )
+    except Exception:
+        pass
+
 
 def _migrate_from_roaming(data_dir: Path):
     """Copy existing data from old Roaming location to new Local location."""
