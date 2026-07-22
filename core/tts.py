@@ -18,6 +18,14 @@ import sounddevice as sd
 
 
 
+# -- Global audio chunk callback for FFT visualization --
+_audio_chunk_callback: Optional[Callable[[np.ndarray], None]] = None
+
+def set_audio_chunk_callback(cb: Optional[Callable[[np.ndarray], None]]) -> None:
+    global _audio_chunk_callback
+    _audio_chunk_callback = cb
+
+
 # USE_TF=0 stops transformers from importing TensorFlow (saves 4-8 s startup).
 # Do NOT set USE_TORCH or USE_JAX explicitly — forcing those values breaks
 # transformers' lazy-loader on certain versions, causing AutoModel and other
@@ -81,7 +89,10 @@ def _play_np(samples, sample_rate: int) -> None:
     """Play float32 mono (or stereo) audio via sounddevice.
     Accepts numpy arrays or PyTorch tensors.
     """
-    sd.play(_to_numpy(samples), sample_rate)
+    arr = _to_numpy(samples)
+    if _audio_chunk_callback is not None:
+        _audio_chunk_callback(arr)
+    sd.play(arr, sample_rate)
     sd.wait()
 
 
@@ -94,6 +105,8 @@ def _play_audio_bytes(audio_bytes: bytes) -> None:
         nchannels=1,
     )
     samples = np.array(decoded.samples, dtype=np.float32)
+    if _audio_chunk_callback is not None:
+        _audio_chunk_callback(samples)
     sd.play(samples, decoded.sample_rate)
     sd.wait()
 
