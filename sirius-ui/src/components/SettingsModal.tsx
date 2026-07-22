@@ -8,8 +8,7 @@ interface SettingsModalProps {
     secrets: Record<string, string>,
     permissions?: Record<string, boolean>,
   ) => void;
-  fetchConfig?: () => Promise<Record<string, string>>;
-  initialConfig?: Record<string, string> | null;
+  config?: Record<string, string> | null;
   permissions?: PermissionItem[];
   autoStart?: boolean;
   onSetAutoStart?: (enabled: boolean) => void;
@@ -18,9 +17,10 @@ interface SettingsModalProps {
   googleAuthLoading?: boolean;
   onCheckGoogleStatus?: () => void;
   onRunGoogleAuth?: () => void;
+  send?: (msg: Record<string, unknown>) => void;
 }
 
-type SettingsTab = "general" | "permissions" | "engines";
+type SettingsTab = "general" | "preferences" | "permissions" | "engines";
 
 const SECRET_KEYS = [
   "gemini_api_key",
@@ -37,8 +37,7 @@ const SECRET_KEYS = [
 function SettingsModal({
   onClose,
   onSaveConfig,
-  fetchConfig,
-  initialConfig,
+  config,
   permissions,
   autoStart,
   onSetAutoStart,
@@ -47,6 +46,7 @@ function SettingsModal({
   googleAuthLoading,
   onCheckGoogleStatus,
   onRunGoogleAuth,
+  send,
 }: SettingsModalProps) {
   const [tab, setTab] = useState<SettingsTab>("general");
   const [cfg, setCfg] = useState<Record<string, string>>({});
@@ -61,42 +61,29 @@ function SettingsModal({
     }
   }, [cfg["assistant_mode"], tab]);
 
+  // Sync local cfg/secrets whenever config prop changes
   useEffect(() => {
-    const load = async () => {
-      if (permissions) {
-        const p: Record<string, boolean> = {};
-        for (const item of permissions) {
-          p[item.key] = item.granted !== false;
-        }
-        setLocalPerms(p);
+    if (!config) return;
+    const s: Record<string, string> = {};
+    for (const key of SECRET_KEYS) {
+      if (config[key]) {
+        s[key] = config[key];
       }
-      // Always fetch fresh config to reflect latest saved values
-      if (fetchConfig) {
-        const data = await fetchConfig();
-        const s: Record<string, string> = {};
-        for (const key of SECRET_KEYS) {
-          if (data[key]) {
-            s[key] = data[key];
-          }
-        }
-        setCfg({ ...data });
-        setSecrets(s);
-        console.log("[SettingsModal] fetchConfig keys:", Object.keys(data));
-      } else if (initialConfig) {
-        const s: Record<string, string> = {};
-        for (const key of SECRET_KEYS) {
-          if (initialConfig[key]) {
-            s[key] = initialConfig[key];
-          }
-        }
-        setCfg({ ...initialConfig });
-        setSecrets(s);
-        console.log("[SettingsModal] initialConfig keys:", Object.keys(initialConfig));
-      }
-      setLoaded(true);
-    };
-    load();
-  }, [initialConfig, fetchConfig, permissions]);
+    }
+    setCfg({ ...config });
+    setSecrets(s);
+    setLoaded(true);
+  }, [config]);
+
+  // Initialize permissions map once
+  useEffect(() => {
+    if (!permissions) return;
+    const p: Record<string, boolean> = {};
+    for (const item of permissions) {
+      p[item.key] = item.granted !== false;
+    }
+    setLocalPerms(p);
+  }, [permissions]);
 
   useEffect(() => {
     onCheckGoogleStatus?.();
@@ -119,6 +106,7 @@ function SettingsModal({
 
   const tabs: { id: SettingsTab; label: string }[] = [
     { id: "general", label: "General" },
+    { id: "preferences", label: "Preferências" },
     { id: "permissions", label: "Permissions" },
     ...(cfg["assistant_mode"] === "local" ? [{ id: "engines" as SettingsTab, label: "Local Engines" }] : []),
   ];
@@ -162,7 +150,31 @@ function SettingsModal({
           <div className="flex-1 overflow-y-auto p-4">
             {!loaded ? (
               <p className="text-sirius-text-dim text-xs">Loading...</p>
-            ) : tab === "general" ? (
+            ) : tab === "preferences" ? (
+                <div className="space-y-3">
+                  <SectionTitle>Funcionalidades de voz</SectionTitle>
+                  <ToggleRow
+                    label="Falar Saudações"
+                    value={cfg["speak_greeting_enabled"] !== "false"}
+                    onChange={(v) => updateCfg("speak_greeting_enabled", v ? "true" : "false")}
+                  />
+                  <ToggleRow
+                    label="Falar Notícias"
+                    value={cfg["speak_news_enabled"] !== "false"}
+                    onChange={(v) => updateCfg("speak_news_enabled", v ? "true" : "false")}
+                  />
+                  <ToggleRow
+                    label="Falar Briefing"
+                    value={cfg["speak_briefing_enabled"] !== "false"}
+                    onChange={(v) => updateCfg("speak_briefing_enabled", v ? "true" : "false")}
+                  />
+                  <ToggleRow
+                    label="Falar Sugestões Proativas"
+                    value={cfg["speak_proactive_enabled"] !== "false"}
+                    onChange={(v) => updateCfg("speak_proactive_enabled", v ? "true" : "false")}
+                  />
+                </div>
+) : tab === "general" ? (
               <div className="space-y-3">
                 <SectionTitle>API Keys</SectionTitle>
                 <div className="flex items-center gap-1">
@@ -288,8 +300,44 @@ function SettingsModal({
                     />
                   </button>
                 </div>
+                <div className="flex items-center justify-between py-1">
+                  <label className="text-sirius-text-dim text-[10px] font-mono">
+                    Cor da Interface
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="color"
+                      value={cfg["ui_color"] ?? "#00d4ff"}
+                      onChange={(e) => updateCfg("ui_color", e.target.value)}
+                      className="w-6 h-6 rounded cursor-pointer border border-sirius-border bg-transparent"
+                    />
+                    <span className="text-[9px] font-mono text-sirius-text-dim w-14">
+                      {cfg["ui_color"] ?? "#00d4ff"}
+                    </span>
+                  </div>
+                </div>
+                <div className="flex justify-end py-1">
+                  <button
+                    onClick={() => send?.({ type: "create_desktop_shortcut" })}
+                    className="text-[10px] font-mono font-bold px-2 py-1 rounded text-sirius-text-dim hover:text-sirius-white border border-sirius-border hover:border-sirius-pri transition-colors"
+                  >
+                    + Criar Atalho Desktop
+                  </button>
+                </div>
+                <Separator />
+                <SectionTitle>Funcionalidades</SectionTitle>
+                <ToggleRow
+                  label="Briefing Matinal"
+                  value={cfg["morning_brief_enabled"] !== "false"}
+                  onChange={(v) => updateCfg("morning_brief_enabled", v ? "true" : "false")}
+                />
+                <ToggleRow
+                  label="Sugestões Proativas"
+                  value={cfg["proactive_mode_enabled"] !== "false"}
+                  onChange={(v) => updateCfg("proactive_mode_enabled", v ? "true" : "false")}
+                />
               </div>
-            ) : tab === "permissions" ? (
+) : tab === "permissions" ? (
               <div className="space-y-3">
                 <SectionTitle>Tool Permissions</SectionTitle>
                 {permissions && permissions.length > 0 ? (
@@ -532,6 +580,36 @@ function SelectInput({
           </option>
         ))}
       </select>
+    </div>
+  );
+}
+
+function ToggleRow({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: boolean;
+  onChange: (v: boolean) => void;
+}) {
+  return (
+    <div className="flex items-center justify-between py-1">
+      <label className="text-sirius-text-dim text-[10px] font-mono">
+        {label}
+      </label>
+      <button
+        onClick={() => onChange(!value)}
+        className={`w-8 h-4 rounded-full transition-colors relative ${
+          value ? "bg-sirius-pri" : "bg-sirius-border"
+        }`}
+      >
+        <span
+          className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-all ${
+            value ? "left-4" : "left-0.5"
+          }`}
+        />
+      </button>
     </div>
   );
 }

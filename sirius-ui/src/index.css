@@ -10,6 +10,11 @@
   box-sizing: border-box;
 }
 
+:root {
+  --sirius-pri: #00aaff;
+  --sirius-pri-dim: #004466;
+}
+
 html, body, #root {
   width: 100%;
   height: 100%;
