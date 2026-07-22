@@ -10,6 +10,9 @@ from dotenv import load_dotenv
 
 _CONFIGS_FILE = "configs.json"
 _SECRETS_FILE = "api_keys.json"
+_CONFIG_CACHE: dict | None = None
+_CONFIG_CACHE_TIME: float = 0
+_CONFIG_CACHE_TTL: float = 60.0
 
 
 def get_base_dir() -> Path:
@@ -89,6 +92,7 @@ def set_secret(key: str, value: str) -> None:
     _config_dir().mkdir(parents=True, exist_ok=True)
     dotenv_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
     os.environ[key] = value
+    _invalidate_config_cache()
 
 
 def get_config(key: str, default: str | None = None) -> str | None:
@@ -103,9 +107,20 @@ def set_config(key: str, value: str | int | bool) -> None:
     data = _read_json(_CONFIGS_FILE)
     data[key] = value
     _write_json(_CONFIGS_FILE, data)
+    _invalidate_config_cache()
 
+
+def _invalidate_config_cache() -> None:
+    global _CONFIG_CACHE, _CONFIG_CACHE_TIME
+    _CONFIG_CACHE = None
+    _CONFIG_CACHE_TIME = 0
 
 def get_all_config() -> dict:
+    import time as _time
+    global _CONFIG_CACHE, _CONFIG_CACHE_TIME
+    now = _time.time()
+    if _CONFIG_CACHE is not None and (now - _CONFIG_CACHE_TIME) < _CONFIG_CACHE_TTL:
+        return _CONFIG_CACHE
     configs = _read_json(_CONFIGS_FILE)
     legacy = _read_json(_SECRETS_FILE)
     merged = dict(legacy)
@@ -130,6 +145,8 @@ def get_all_config() -> dict:
             merged[key] = val
     am = merged.get("assistant_mode", "<not set>")
     print(f"[CONFIG] get_all_config() -> assistant_mode={am!r}, configs keys={list(configs.keys())}, legacy keys={list(legacy.keys())}")
+    _CONFIG_CACHE = merged
+    _CONFIG_CACHE_TIME = now
     return merged
 
 
@@ -144,6 +161,7 @@ def save_configs(data: dict) -> None:
     am = clean.get("assistant_mode", "<not set>")
     print(f"[CONFIG] save_configs() -> assistant_mode={am!r}, clean keys={list(clean.keys())}")
     _write_json(_CONFIGS_FILE, clean)
+    _invalidate_config_cache()
     # Read back and verify
     verify = _read_json(_CONFIGS_FILE)
     vam = verify.get("assistant_mode", "<not set>")

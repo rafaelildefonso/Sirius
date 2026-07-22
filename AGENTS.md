@@ -8,23 +8,23 @@ SIRIUS (by Rafael Ildefonso) is a cross-platform, real-time voice AI assistant t
 
 | File | Role |
 |------|------|
-| `main.py` | Entry point (~2600 lines). Selects UI via `SIRIUS_WS_UI` env var. Wires everything together. |
-| `ws_server.py` | WebSocket server on `ws://127.0.0.1:8765` for the Tauri/React frontend. Provides `WsUI` class. |
-| `sirius_ui.py` | PyQt6 desktop UI (legacy, 3100+ lines). Used when `SIRIUS_WS_UI` is not set. |
+| `main.py` | Entry point (~2700 lines). Selects UI via `SIRIUS_WS_UI`/`SIRIUS_WEBVIEW_UI` env vars. Wires everything together. |
+| `sirius_webview_ui.py` | **Default UI** — single-process WebView2 window (pywebview) loading the React frontend. Manages tray, single-instance, autostart. |
+| `ws_server.py` | WebSocket server on `ws://127.0.0.1:8765` for the React frontend. Provides `WsUI` class. |
+| `sirius_ui.py` | PyQt6 desktop UI (legacy, 3100+ lines). Used when no `SIRIUS_WS_UI`/`SIRIUS_WEBVIEW_UI` env var is set. |
 | `dashboard/server.py` | HTTP dashboard on **port 8000** for phone remote control (FastAPI + uvicorn). |
 
-**Flow:** `main.py` → creates `SiriusUI` (PyQt6 or WsUI) → runs `SiriusLive` or `SiriusLocal` assistant loop → optionally starts dashboard server.
+**Flow:** `main.py` → creates `SiriusUI` (WebViewUI / WsUI / PyQt6 SiriusUI) → runs `SiriusLive` or `SiriusLocal` assistant loop → optionally starts dashboard server.
 
 ## 3. UI Modes
 
 | Mode | Env Var | UI Framework | How to Run |
 |------|---------|-------------|------------|
+| **WebView (React)** | `SIRIUS_WEBVIEW_UI=1` (default in build) | `sirius_webview_ui.py` + pywebview (WebView2) | `$env:SIRIUS_WEBVIEW_UI='1'; python main.py` or `python build.py` |
+| **WS (Tauri/React)** | `SIRIUS_WS_UI=1` | `ws_server.py` + Tauri frontend (legacy, 2-process) | `$env:SIRIUS_WS_UI='1'; python main.py` |
 | **Desktop (PyQt6)** | unset / `0` / `false` | `sirius_ui.py` (PyQt6) | `python main.py` |
-| **WS (Tauri/React)** | `1` / `true` / `yes` | `ws_server.py` + Tauri frontend | `$env:SIRIUS_WS_UI='1'; python main.py` or `cd sirius-ui && npx tauri dev` |
 
-In WS mode, the backend is a PyInstaller-compiled `.exe` launched as a **Tauri sidecar**. The Rust code (`sirius-ui/src-tauri/src/main.rs`) always sets `SIRIUS_WS_UI=1` on the sidecar process. The launcher (`sirius_backend_launcher.py`) also sets it.
-
-**IMPORTANT:** When running through Tauri (`npx tauri dev`), the compiled `sirius-backend.exe` is used — editing `main.py` or `dashboard/server.py` requires **recompiling** with `python build_backend.py`.
+**WebView mode** é o padrão no build compilado. Tudo roda em **um único processo** `SIRIUS.exe` — o React frontend é carregado via WebView2, o backend Python roda na mesma thread. Não precisa mais de sidecar separado, nem Rust, nem Tauri.
 
 ## 4. Key Directories
 
@@ -37,15 +37,16 @@ In WS mode, the backend is a PyInstaller-compiled `.exe` launched as a **Tauri s
 | `persistence/` | SQLite + Fernet encryption: database, repository, models, embedding, retriever |
 | `config/` | JSON configs: `configs.json`, `api_keys.json`, `permissions.json`, etc. |
 | `memory/` | `memory_manager.py`, `config_manager.py`, `sirius.db` |
-| `sirius-ui/` | Tauri v2 + React 19 + TypeScript + Vite + Tailwind CSS frontend |
-| `sirius-ui/src-tauri/` | Rust backend for Tauri: sidecar launcher, tray, single-instance |
+| `sirius-ui/` | React 19 + TypeScript + Vite + Tailwind CSS frontend |
+| `sirius-ui/src-tauri-stubs/` | Polyfills de `@tauri-apps/api` para WebView mode |
+| `_obsolete/` | Arquivos do Tauri removidos (src-tauri, build_backend, etc.) |
 
 ## 5. Dashboard Server (Port 8000)
 
 - **File:** `dashboard/server.py` — `DashboardServer` class
 - **Tech:** FastAPI + uvicorn (falls back to `http.server`)
 - **Auth:** 6-char one-time keys (no O/I/L/0/1), AES-256-CBC encryption
-- **Started in:** WS mode only (daemon thread in `main()`, lines ~2463-2480; or inside `SiriusLive.run()`)
+- **Started in:** WS/WebView mode only (daemon thread in `main()`, lines ~2463-2480; or inside `SiriusLive.run()`)
 - **Key endpoints:** `/` (app.html), `/login` (PIN entry), `/auto-login?key=XXX` (QR code target), `/api/command`, `/ws` (WebSocket), `/ws/phone-audio`
 - **Known issue:** PyInstaller onefile mode can give `PermissionError` reading `login.html`/`app.html` from temp. The `_read()` function has retry logic + `sys._MEIPASS` fallback.
 
@@ -53,13 +54,14 @@ In WS mode, the backend is a PyInstaller-compiled `.exe` launched as a **Tauri s
 
 | Command | Output | When to Use |
 |---------|--------|-------------|
-| `python build.py` | `dist/SIRIUS/SIRIUS.exe` | Full desktop build (PyQt6 + all features) |
-| `python build_backend.py` | `dist/sirius-backend.exe` + copies to `sirius-ui/src-tauri/binaries/` | Headless backend for Tauri sidecar |
-| `cd sirius-ui && npx tauri dev` | Vite + Tauri dev mode | Frontend development (auto-launches sidecar) |
-| `cd sirius-ui && npx tauri build` | Tauri installer | Production Tauri bundle |
-| `python build_backend.py --cached` | Skips rebuild if source hasn't changed | Faster Tauri builds |
+| `python build.py` | `dist/SIRIUS/SIRIUS.exe` | **Build principal** — produz um único .exe com WebView2 + React + backend Python. |
 
-**Spec files:** `sirius.spec` (full), `sirius-backend.spec` (headless). Both use PyInstaller.
+**Spec file:** `sirius.spec`. O build:
+1. Compila o frontend React (`sirius-ui/`) com `SIRIUS_WEBVIEW_BUILD=1` (ativa stubs Tauri)
+2. Executa PyInstaller com `sirius.spec`
+3. Copia o frontend compilado e dados de config/memory para dentro do bundle
+
+Não precisa mais de `build_backend.py`, `sirius-backend.spec`, ou Tauri/Rust.
 
 ## 7. Configuration
 
@@ -79,7 +81,8 @@ Loaded via `core/config_loader.py`. `SIRIUS_DATA_DIR` overrides the base path.
 | Variable | Required | Purpose |
 |----------|----------|---------|
 | `GEMINI_API_KEY` | Yes | Gemini AI API key |
-| `SIRIUS_WS_UI` | No | `1` to enable Tauri/React UI instead of PyQt6 |
+| `SIRIUS_WEBVIEW_UI` | No | `1` para WebView mode (single-process, default no build) |
+| `SIRIUS_WS_UI` | No | `1` para Tauri/WS mode (2 processos, legado) |
 | `SIRIUS_DATA_DIR` | No | Override data/config directory |
 | `OPENROUTER_API_KEY` | For OpenRouter | Alternative LLM |
 | `TAVILY_API_KEY` | For web search | Tavily search API |
@@ -88,17 +91,17 @@ Loaded via `core/config_loader.py`. `SIRIUS_DATA_DIR` overrides the base path.
 ## 9. Quick Commands
 
 ```bash
-# Dev — run directly (PyQt6 mode)
-python main.py
+# Dev — run with WebView UI (new default)
+$env:SIRIUS_WEBVIEW_UI='1'; python main.py
 
-# Dev — run with Tauri UI
+# Dev — run with legacy Tauri UI
 $env:SIRIUS_WS_UI='1'; python main.py
 
-# Dev — full Tauri stack
-cd sirius-ui && npm install && npx tauri dev
+# Dev — run PyQt6 desktop (no env var)
+python main.py
 
-# Build backend (needed after editing main.py or dashboard/*.py)
-python build_backend.py
+# Build single .exe (builds frontend + backend together)
+python build.py
 
 # Install dependencies
 python setup.py
@@ -108,6 +111,8 @@ python setup.py
 
 - Dashboard not starting? Check for `[DEBUG DashboardServer.serve]` or `[Dashboard] SERVE FAILED:` in the terminal logs.
 - `PermissionError` reading static files in the compiled .exe? The `_read()` function in `dashboard/server.py` has retry + `sys._MEIPASS` fallback.
-- WS server fails? Check port 8765 is free (killed automatically by Tauri launcher).
-- Backend crashes silently? The `asyncio.ensure_future` pattern may swallow exceptions — look for `[Dashboard] SERVER TASK CRASHED:` logs.
+- WS server fails? Check port 8765 is free.
+- WebView window shows white screen? Run frontend build manually: `cd sirius-ui && npm run build`
+- Tauri API errors (`invoke` not found)? Ensure `SIRIUS_WEBVIEW_BUILD=1` is set when building the frontend (automatic via `build.py`).
 - Configs not loading? Check `SIRIUS_DATA_DIR` env var or `%LOCALAPPDATA%\SIRIUS\config\`.
+- Obsolete Tauri files moved to `_obsolete/`. If Tauri dev is still needed, restore from there.

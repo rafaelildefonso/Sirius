@@ -290,10 +290,11 @@ def main():
         standalone = BASE_DIR / "dist" / "SIRIUS.exe"
         if standalone.exists():
             standalone.unlink()
-        _copy_data_to_bundle_root(BASE_DIR / "dist" / "SIRIUS", keep_credentials)
+        dist_dir = BASE_DIR / "dist" / "SIRIUS"
+        _copy_data_to_bundle_root(dist_dir, keep_credentials)
         print("=" * 60)
         print("  BUILD SUCCESSFUL")
-        print(f"  Output: {BASE_DIR / 'dist' / 'SIRIUS' / 'SIRIUS.exe'}")
+        print(f"  Output: {dist_dir / 'SIRIUS.exe'}")
         print("=" * 60)
     else:
         print("[ERRO] Build failed. Check the output above for details.")

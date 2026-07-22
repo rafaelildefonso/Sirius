@@ -1,4 +1,4 @@
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#![windows_subsystem = "windows"]
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -15,6 +15,72 @@ use winreg::RegKey;
 #[allow(dead_code)]
 struct PythonProcess(Mutex<Option<Child>>);
 
+// ── Windows Job Object — ensures backend dies when Tauri exits ─────────────
+#[cfg(windows)]
+mod job_object {
+    use std::os::windows::io::AsRawHandle;
+
+    const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: u32 = 0x00002000;
+
+    #[repr(C)]
+    struct BasicLimit {
+        per_process_time: i64,
+        per_job_time: i64,
+        limit_flags: u32,
+        min_ws: usize,
+        max_ws: usize,
+        active_process: u32,
+        affinity: usize,
+        child_rate: u32,
+        extended_flags: u16,
+    }
+
+    #[repr(C)]
+    struct ExtendedLimit {
+        basic: BasicLimit,
+        io_info: [u8; 24],
+        process_memory: usize,
+        job_memory: usize,
+        peak_process: usize,
+        peak_job: usize,
+    }
+
+    extern "system" {
+        fn CreateJobObjectW(
+            attr: *const std::ffi::c_void,
+            name: *const u16,
+        ) -> *mut std::ffi::c_void;
+        fn AssignProcessToJobObject(
+            job: *mut std::ffi::c_void,
+            process: *mut std::ffi::c_void,
+        ) -> i32;
+        fn SetInformationJobObject(
+            job: *mut std::ffi::c_void,
+            info_class: u32,
+            info: *const std::ffi::c_void,
+            info_len: u32,
+        ) -> i32;
+    }
+
+    pub fn attach(child: &std::process::Child) {
+        unsafe {
+            let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            if job.is_null() {
+                return;
+            }
+            let mut ext: ExtendedLimit = std::mem::zeroed();
+            ext.basic.limit_flags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            SetInformationJobObject(
+                job,
+                9, // JobObjectExtendedLimitInformation
+                &ext as *const _ as *const std::ffi::c_void,
+                std::mem::size_of::<ExtendedLimit>() as u32,
+            );
+            AssignProcessToJobObject(job, child.as_raw_handle() as *mut std::ffi::c_void);
+        }
+    }
+}
+
 fn log_msg(msg: &str) {
     eprintln!("{}", msg);
     if let Ok(exe) = std::env::current_exe() {
@@ -29,6 +95,10 @@ fn log_msg(msg: &str) {
             }
         }
     }
+}
+
+fn log_startup() {
+    log_msg("[Tauri] Application starting");
 }
 
 fn find_sidecar(app: &tauri::AppHandle) -> Option<PathBuf> {
@@ -107,25 +177,28 @@ fn start_python_backend(app: &tauri::AppHandle) -> Option<Child> {
         }
     }
 
-    // 2. Fallback: python sirius_backend_launcher.py (dev without build)
-    let cwd = std::env::current_dir().ok()?;
-    let launcher = cwd.join("sirius_backend_launcher.py");
-    if launcher.exists() {
-        log_msg(&format!("[Tauri] Starting python directly: {}", launcher.display()));
-        let mut cmd = Command::new("python");
-        cmd.arg(&launcher)
-            .current_dir(&cwd)
-            .env("SIRIUS_WS_UI", "1")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        #[cfg(windows)]
-        cmd.creation_flags(0x08000000);
-        if let Some(child) = spawn_and_forward(&mut cmd) {
-            return Some(child);
+    // 2. Fallback: python sirius_backend_launcher.py (dev only — no sidecar compiled)
+    #[cfg(debug_assertions)]
+    {
+        let cwd = std::env::current_dir().ok()?;
+        let launcher = cwd.join("sirius_backend_launcher.py");
+        if launcher.exists() {
+            log_msg(&format!("[Tauri] Starting python directly: {}", launcher.display()));
+            let mut cmd = Command::new("python");
+            cmd.arg(&launcher)
+                .current_dir(&cwd)
+                .env("SIRIUS_WS_UI", "1")
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            #[cfg(windows)]
+            cmd.creation_flags(0x08000000);
+            if let Some(child) = spawn_and_forward(&mut cmd) {
+                return Some(child);
+            }
         }
     }
 
-    log_msg("[Tauri] No backend found! Tried sidecar and python.");
+    log_msg("[Tauri] No backend found.");
     None
 }
 
@@ -135,9 +208,13 @@ fn kill_process_on_port(port: u16) {
         "Get-NetTCPConnection -LocalPort {} -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -First 1 | ForEach-Object {{ taskkill /F /PID $_ }}",
         port
     );
-    let _ = Command::new("powershell")
-        .args(["-NoProfile", "-Command", &script])
-        .output();
+    let mut cmd = Command::new("powershell");
+    cmd.args(["-NoProfile", "-Command", &script])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    let _ = cmd.output();
     std::thread::sleep(std::time::Duration::from_millis(300));
     log_msg(&format!("[Tauri] Port {} released.", port));
 }
@@ -190,6 +267,25 @@ fn create_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                     let _ = app.emit("toggle-mute", ());
                 }
                 "quit" => {
+                    // ------------------------------------------------
+                    // 8️⃣ Quit selected – log and kill backend explicitly
+                    // ------------------------------------------------
+                    log_msg("[Tauri] Quit menu selected – terminating backend.");
+                    let state = app.state::<PythonProcess>();
+                    if let Ok(mut guard) = state.0.lock() {
+                        if let Some(mut child) = guard.take() {
+                            let pid = child.id();
+                            let _ = child.kill();
+                            let _ = child.wait();
+                            log_msg(&format!("[Tauri] Backend process (PID: {}) terminated via kill().", pid));
+                            // Fallback: ensure full tree termination
+                            let _ = std::process::Command::new("taskkill")
+                                .args(&["/F", "/T", "/PID", &pid.to_string()])
+                                .output();
+                        }
+                    }
+                    // Release the WS port in case the backend held it
+                    kill_process_on_port(8765);
                     std::process::exit(0);
                 }
                 _ => {}
@@ -205,10 +301,27 @@ fn create_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-#[tauri::command]
-fn exit_app() {
-    std::process::exit(0);
-}
+    #[tauri::command]
+    fn exit_app(app: tauri::AppHandle) {
+        // ------------------------------------------------
+        // 9️⃣ Explicit exit command (called from UI) – same logic as quit menu
+        // ------------------------------------------------
+        log_msg("[Tauri] exit_app called — terminating backend...");
+        let state = app.state::<PythonProcess>();
+        if let Ok(mut guard) = state.0.lock() {
+            if let Some(mut child) = guard.take() {
+                let pid = child.id();
+                let _ = child.kill();
+                let _ = child.wait();
+                log_msg(&format!("[Tauri] Backend process (PID: {}) terminated via exit_app.", pid));
+                let _ = std::process::Command::new("taskkill")
+                    .args(&["/F", "/T", "/PID", &pid.to_string()])
+                    .output();
+            }
+        }
+        kill_process_on_port(8765);
+        std::process::exit(0);
+    }
 
 #[tauri::command]
 fn update_tray_tooltip(app: tauri::AppHandle, text: String) {
@@ -253,7 +366,21 @@ fn is_autostart_enabled() -> Result<bool, String> {
     }
 }
 
+#[cfg(windows)]
+fn set_app_user_model_id() {
+    extern "system" {
+        fn SetCurrentProcessExplicitAppUserModelID(app_id: *const u16) -> i32;
+    }
+    let wide: Vec<u16> = "com.rafaelildefonso.sirius\0".encode_utf16().collect();
+    unsafe {
+        SetCurrentProcessExplicitAppUserModelID(wide.as_ptr());
+    }
+}
+
 fn main() {
+    #[cfg(windows)]
+    set_app_user_model_id();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -261,14 +388,36 @@ fn main() {
         }))
         .invoke_handler(tauri::generate_handler![exit_app, update_tray_tooltip, set_autostart, is_autostart_enabled])
         .setup(|app| {
-            // Kill any process holding port 8765 (ghost from previous crash)
+            // ------------------------------------------------
+            // 1️⃣ Log start of the Tauri process
+            // ------------------------------------------------
+            log_startup();
+
+            // ------------------------------------------------
+            // 2️⃣ Kill any stray process on the WS port (8765)
+            // ------------------------------------------------
             kill_process_on_port(8765);
             let child = start_python_backend(app.handle());
+
+            // ------------------------------------------------
+            // 3️⃣ Attach to Windows Job Object (ensures backend dies with UI)
+            // ------------------------------------------------
+            #[cfg(windows)]
+            if let Some(ref c) = child {
+                job_object::attach(c);
+                log_msg("[Tauri] Backend attached to Job Object (KILL_ON_JOB_CLOSE).");
+            }
+
+            // ------------------------------------------------
+            // 4️⃣ Store the child in shared state for later cleanup
+            // ------------------------------------------------
             app.manage(PythonProcess(Mutex::new(child)));
 
+            // ------------------------------------------------
+            // 5️⃣ UI window config (autostart flag handling)
+            // ------------------------------------------------
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.set_title("SIRIUS");
-                // If launched via autostart (--autostart flag), start minimized to tray
                 if is_autostart_launch() {
                     log_msg("[Tauri] Autostart launch — starting minimized to tray.");
                     let _ = window.hide();
@@ -276,13 +425,18 @@ fn main() {
                 }
             }
 
+            // ------------------------------------------------
+            // 6️⃣ Tray creation (log success / failure)
+            // ------------------------------------------------
             if app.tray_by_id("sirius-tray").is_none() {
                 if let Err(e) = create_tray(app) {
                     log_msg(&format!("[Tauri] Failed to create tray: {}", e));
                 }
             }
 
-            // Update tray tooltip immediately to show loading state
+            // ------------------------------------------------
+            // 7️⃣ Immediate tooltip update (loading state)
+            // ------------------------------------------------
             if let Some(tray) = app.tray_by_id("sirius-tray") {
                 let _ = tray.set_tooltip(Some("SIRIUS — Iniciando..."));
             }
@@ -291,9 +445,13 @@ fn main() {
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                // ------------------------------------------------
+                // 10️⃣ Quando o usuário fecha a janela (X) – manter em tray
+                // ------------------------------------------------
                 api.prevent_close();
                 let _ = window.hide();
                 let _ = window.emit("window-hidden", ());
+                log_msg("[Tauri] Window close requested – hiding to tray.");
             }
         })
         .run(tauri::generate_context!())

@@ -1,1 +1,1 @@
-{"default":{"identifier":"default","description":"Default capabilities for SIRIUS","local":true,"windows":["main"],"permissions":["core:default",{"identifier":"shell:allow-spawn","allow":[{"name":"sirius-backend","sidecar":true}]},"shell:default"]}}
+{"default":{"identifier":"default","description":"Default capabilities for SIRIUS","local":true,"windows":["main"],"permissions":["core:default","core:window:allow-hide",{"identifier":"shell:allow-spawn","allow":[{"name":"sirius-backend","sidecar":true}]},"shell:default"]}}

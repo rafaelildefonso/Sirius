@@ -32,10 +32,8 @@ It's not just an assistant — it's an extension of your digital life.
 
 ## 🆕 What's New
 
-- 🎨 **Modern UI (Tauri + React)** — GPU-accelerated interface with Tailwind CSS, perfect Unicode/Portuguese text rendering, animated HUD via Canvas API. Drop-in replacement for the legacy PyQt6 UI.
+- 🎨 **Modern UI (React + Tauri v2)** — GPU-accelerated interface with Tailwind CSS, perfect Unicode/Portuguese text rendering, animated HUD via Canvas API. Dual-process architecture: Rust frontend + Python sidecar.
 - 🔌 **WebSocket Server** — UI backend decoupled from PyQt6. Enables any frontend technology (React, Svelte, mobile) to connect to the Python core.
-- 📦 **PyInstaller Bundle** — Backend Python empacotado em `sirius-backend.exe` standalone (~300 MB). Zero dependência de Python instalado para usuários finais.
-- 🔗 **Tauri Sidecar** — Tauri gerencia o backend como sidecar: spawn automático na inicialização e kill ao fechar a janela.
 - 🧭 **Onboarding Wizard** — Assistente de primeira execução com 5 passos: modo (gemini/ollama), nome do usuário, API keys, permissões e resumo.
 - 📂 **Advanced File Handling** — Drop PDFs, source code, or images for instant analysis.
 - ⚡ **Optimized Core Engine** — 40% faster interaction speed.
@@ -45,34 +43,33 @@ It's not just an assistant — it's an extension of your digital life.
 ## 🏗️ Architecture
 
 ```
-┌─────────────────────────────────────────────────────┐
-│  UI Layer                                            │
-│  ├── Modern: Tauri v2 + React + Tailwind (GPU)       │
-│  └── Legacy:  PyQt6 + QPainter                       │
-├─────────────────────┬───────────────────────────────┤
-│  Dashboard (port 8000) │  WebSocket (port 8765)      │
-│  REST API + WS        │  (Tauri sidecar comm)       │
-├─────────────────────┴───────────────────────────────┤
-│  PyInstaller Bundle (sirius-backend.exe)             │
-│  ┌──────────────────────────────────────────────────┐│
-│  │  Python Core                                     ││
-│  │  ├── STT (Whisper / Vosk)                        ││
-│  │  ├── TTS (Edge TTS / Kokoro / ElevenLabs)        ││
-│  │  ├── LLM (Gemini / Ollama / OpenRouter)          ││
-│  │  ├── Actions (25+ tools — system, browser)       ││
-│  │  ├── Agent (autonomous task planner)             ││
-│  │  └── Persistence Layer (SQLite + FTS5 + RAG)    ││
-│  │       ├── database.py    — Engine + migrations   ││
-│  │       ├── repository.py  — CRUD for all entities ││
-│  │       ├── classifier.py  — C0–C11 classification  ││
-│  │       ├── extractor.py   — Structured extraction ││
-│  │       ├── retriever.py   — Hybrid search (FTS+vec)││
-│  │       ├── context_builder.py — LLM prompt builder││
-│  │       ├── embedding.py   — Vector embeddings     ││
-│  │       ├── scheduler.py   — Maintenance + backup  ││
-│  │       └── backup.py      — Automated DB backups  ││
-│  └──────────────────────────────────────────────────┘│
-└─────────────────────────────────────────────────────┘
+┌─────────────────────────────────────┐
+│  sirius-ui.exe (Tauri v2 + React)   │
+│  ┌─────────────────────────────────┐│
+│  │  Rust shell — window, tray, IPC ││
+│  ├─────────────────────────────────┤│
+│  │  React + Tailwind + Vite        ││
+│  │  ├── HudCanvas (animated HUD)   ││
+│  │  ├── SettingsModal               ││
+│  │  └── OnboardingWizard           ││
+│  │  WebSocket ←→ ws_server.py:8765 ││
+│  └─────────────────────────────────┘│
+├─────────────────────────────────────┤
+│  sirius-backend.exe (Python sidecar) │
+│  ┌─────────────────────────────────┐│
+│  │  ws_server.py  (port 8765)      ││
+│  │  ┌───────────────────────────┐  ││
+│  │  │  Python Core               │  ││
+│  │  │  ├── STT / TTS            │  ││
+│  │  │  ├── LLM (Gemini, etc.)   │  ││
+│  │  │  ├── Actions (25+ tools)  │  ││
+│  │  │  ├── Agent (planner)      │  ││
+│  │  │  └── Persistence Layer    │  ││
+│  │  └───────────────────────────┘  ││
+│  ├─────────────────────────────────┤│
+│  │  Dashboard (port 8000)          ││
+│  └─────────────────────────────────┘│
+└─────────────────────────────────────┘
 ```
 
 ---
@@ -208,7 +205,7 @@ otion_calendar |
 | “Find freelance work …” | reela_arsenal 
 ## ⚡ Quick Start
 
-### Legacy UI (PyQt6 — padrão)
+### Legacy UI (PyQt6 — fallback)
 
 ```bash
 pip install -r requirements.txt
@@ -216,35 +213,34 @@ playwright install
 python main.py
 ```
 
-### Modern UI (Tauri + React)
+### Modern UI (Tauri + React — recommended)
 
 ```bash
 # Terminal 1: Python backend
-set SIRIUS_WS_UI=1    # Linux/macOS: export SIRIUS_WS_UI=1
+$env:SIRIUS_WS_UI='1'    # Linux/macOS: export SIRIUS_WS_UI=1
 python main.py
 
-# Terminal 2: Tauri frontend
+# Terminal 2: Tauri frontend (dev mode)
 cd sirius-ui
-npx tauri dev          # Dev mode (hot-reload)
+npm install
+npm run dev
 ```
 
-> 💡 The Tauri window spawns `python main.py` automatically.
-> For development, run Python manually in one terminal and Tauri in another.
-
-### Single-Click Bundle (Produção)
+### Building for Production
 
 ```bash
-# 1. Build backend standalone
+# 1. Build the Python sidecar (PyInstaller)
 pip install pyinstaller
 python build_backend.py
 
-# 2. Build Tauri + backend sidecar
+# 2. Build the Tauri frontend (optional — for distribution)
 cd sirius-ui
+npm install
 npx tauri build
 ```
 
-> Gera instalador único (MSI/NSIS) com `sirius-backend.exe` embutido como sidecar.
-> Usuário final não precisa de Python — apenas instalar e executar.
+> The backend and frontend are **two separate processes**. The Tauri shell spawns `sirius-backend-x86_64-pc-windows-msvc.exe` as a sidecar and communicates via WebSocket on port 8765.
+> Both processes share the same **AppUserModelID** (`com.rafaelildefonso.sirius`), so Windows Task Manager groups them under "SIRIUS".
 
 ---
 
@@ -255,39 +251,27 @@ npx tauri build
 ├── main.py                       # Entry point (runtime principal)
 ├── ws_server.py                  # WebSocket server (localhost:8765) + onboarding
 ├── sirius_ui.py                  # UI PyQt6 legada
-├── sirius_backend_launcher.py    # Wrapper PyInstaller (seta SIRIUS_WS_UI=1)
-├── sirius-backend.spec           # PyInstaller spec (exclui PyQt6, torch...)
-├── build_backend.py              # Script que builda e copia o sidecar
-├── sirius-ui/                    # Frontend Tauri + React
+├── sirius_backend_launcher.py    # Sidecar entry point (PyInstaller onefile)
+├── build.py                      # Build script for PyQt6 bundle
+├── build_backend.py              # Build script for Tauri sidecar (backend .exe)
+├── sirius.spec                   # PyInstaller spec (PyQt6 bundle)
+├── sirius-backend.spec           # PyInstaller spec (headless sidecar)
+├── sirius-ui/                    # Frontend React + Vite + Tailwind + Tauri
 │   ├── src/
 │   │   ├── App.tsx, main.tsx
 │   │   ├── components/
 │   │   │   ├── HudCanvas, LogPanel, SettingsModal...
-│   │   │   └── OnboardingWizard.tsx  # Wizard 5 passos
+│   │   │   └── OnboardingWizard.tsx
 │   │   └── hooks/
-│   │       └── useWebSocket.ts      # Auto-reconnect + onboarding flow
+│   │       └── useWebSocket.ts
 │   └── src-tauri/               # Rust + Tauri v2 + sidecar config
 ├── core/                      # STT, TTS, LLM, config loader
 ├── actions/                   # 25+ ferramentas do sistema
 ├── agent/                     # Planejador e executor autonomo
 ├── memory/                    # Memoria persistente (JSON legado + integracao DB)
-│   └── memory_manager.py      # process_user_input(), load/save/format
-├── persistence/               # Nova camada de persistencia (SQLite + RAG)
-│   ├── database.py            # Engine SQLite, FTS5, migracoes, criptografia
-│   ├── models.py              # Dataclasses: Event, Message, Fact, etc.
-│   ├── repository.py          # CRUD unificado para todas as entidades
-│   ├── classifier.py          # Classificador C0-C11 (regras + LLM fallback)
-│   ├── extractor.py           # Extracao estruturada de eventos
-│   ├── retriever.py           # Busca hibrida (FTS5 + similaridade de vetores)
-│   ├── context_builder.py     # Montagem de contexto para o prompt LLM
-│   ├── embedding.py           # Provider de embeddings (sentence-transformers)
-│   ├── scheduler.py           # Tarefas de manutencao: purge, vacuum
-│   └── backup.py              # Backups automaticos com retencao (max 7)
+├── persistence/               # SQLite + RAG (database, repository, classifier, etc.)
 ├── dashboard/                 # Remote control via FastAPI (port 8000)
-│   ├── server.py              # REST + WebSocket, mensagens persistentes
-│   └── static/                # app.html, login.html, CryptoJS
 ├── tests/                     # Testes unitarios (pytest)
-│   └── test_persistence.py    # 40 testes: DB, CRUD, classificacao, embedding
 └── config/                    # Configuracoes, API keys, permissoes
 ```
 

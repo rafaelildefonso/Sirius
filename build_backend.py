@@ -195,7 +195,7 @@ def main():
     use_cache = "--cached" in sys.argv
     triple = _get_target_triple()
     dst_exe = TAURI_BINARIES / f"sirius-backend-{triple}.exe"
-    
+
     hash_file = BASE_DIR / ".backend_build_hash"
     current_hash = _compute_backend_hash()
     

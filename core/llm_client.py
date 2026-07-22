@@ -222,6 +222,40 @@ def get_llm_settings() -> tuple[str, str]:
     return url, model
 
 
+def check_model_available(log=None) -> bool:
+    """
+    Returns True if the configured model is already pulled in Ollama.
+    Logs an actionable warning (to console + optional UI callback) if not.
+    Always returns True for non-Ollama providers (cannot inspect their model list).
+    """
+    if get_llm_provider() != "ollama":
+        return True
+
+    url, model = get_llm_settings()
+    try:
+        resp = requests.get(f"{url}/api/tags", timeout=5)
+        resp.raise_for_status()
+        pulled = [m.get("name", "") for m in resp.json().get("models", [])]
+        model_base = model.split(":")[0]
+        found = any(
+            m == model or m == model_base or m.startswith(model_base + ":")
+            for m in pulled
+        )
+        if not found:
+            available = ", ".join(pulled) if pulled else "none"
+            warn = (
+                f"[LLM] WRN: Model '{model}' is not pulled in Ollama.\n"
+                f"     Available: {available}\n"
+                f"     Fix: ollama pull {model}"
+            )
+            print(warn)
+            if log:
+                log(f"[LLM] WRN: '{model}' not found — run: ollama pull {model}")
+        return found
+    except Exception:
+        return True
+
+
 def _convert_to_gemini_contents(messages: list) -> list:
     """Convert OpenAI-style messages to Gemini content parts list."""
     contents = []
