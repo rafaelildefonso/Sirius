@@ -5,6 +5,8 @@ interface StartupPanelProps {
   current?: number;
   total?: number;
   onComplete: () => void;
+  briefing?: { greeting: string; headlines: string[] } | null;
+  onDismissBriefing?: () => void;
 }
 
 const COMPONENT_LABELS: Record<string, string> = {
@@ -21,8 +23,10 @@ function StartupPanel({
   current,
   total,
   onComplete,
+  briefing,
+  onDismissBriefing,
 }: StartupPanelProps) {
-  if (action === "hide") {
+  if (action === "hide" && !briefing) {
     return null;
   }
 
@@ -33,7 +37,46 @@ function StartupPanel({
   const hasProgress = typeof current === "number" && typeof total === "number" && total > 0;
   const pct = hasProgress ? Math.round((current / total) * 100) : 0;
   const isError = action === "error";
-  const pulseAnim = isError ? "" : "animate-spin";
+
+  // If we have a briefing, show that instead of loading
+  if (briefing) {
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 animate-fade-in">
+        <div className="w-[420px] bg-sirius-panel border border-sirius-border rounded-lg p-6">
+          {briefing.headlines.length > 0 ? (
+            <>
+              <p className="text-sirius-text font-inter font-bold text-sm mb-4 text-center">
+                Principais Notícias
+              </p>
+              <div className="space-y-1.5 mb-4">
+                {briefing.headlines.map((h, i) => (
+                  <p
+                    key={i}
+                    className="text-sirius-text-dim text-[10px] font-mono leading-relaxed pl-2 border-l-2 border-sirius-pri/40"
+                  >
+                    {h}
+                  </p>
+                ))}
+              </div>
+            </>
+          ) : (
+            <p className="text-sirius-text font-inter font-bold text-sm mb-4 text-center">
+              Nenhuma notícia disponível no momento.
+            </p>
+          )}
+
+          <div className="flex justify-center">
+            <button
+              onClick={onDismissBriefing}
+              className="text-[10px] font-mono font-bold px-4 py-1.5 rounded bg-sirius-pri/20 text-sirius-pri hover:bg-sirius-pri/40 transition-colors"
+            >
+              Dispensar
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 animate-fade-in">

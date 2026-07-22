@@ -34,13 +34,6 @@ function Header() {
         </p>
       </div>
 
-      {/* Center logo */}
-      <div className="flex items-center gap-1.5">
-        <span className="text-sirius-pri text-sm font-black tracking-[0.2em]">
-          SIRIUS
-        </span>
-      </div>
-
       {/* Right spacer */}
       <div className="w-20" />
     </header>

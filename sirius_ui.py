@@ -2229,6 +2229,7 @@ class MainWindow(QMainWindow):
         )
 
         self.on_text_command  = None
+        self.on_interrupt     = None
         self._muted           = False
         self._muted_by_user   = False
         self._current_file: str | None = None
@@ -3023,6 +3024,14 @@ class SiriusUI:
     @on_remote_clicked.setter
     def on_remote_clicked(self, cb):
         self._win.on_remote_clicked = cb
+
+    @property
+    def on_interrupt(self):
+        return self._win.on_interrupt
+
+    @on_interrupt.setter
+    def on_interrupt(self, cb):
+        self._win.on_interrupt = cb
 
     def notify_phone_connected(self) -> None:
         self._win.notify_phone_connected()

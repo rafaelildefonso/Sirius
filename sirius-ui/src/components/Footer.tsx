@@ -36,18 +36,21 @@ function Footer({ view, onViewChange, onSettingsClick, muted }: FooterProps) {
         </button>
       </div>
 
-      {/* Center: Mute status */}
-      <div className="flex items-center gap-1">
-        <span
-          className={`w-1.5 h-1.5 rounded-full ${
-            muted
-              ? "bg-sirius-muted"
-              : "bg-sirius-green"
-          }`}
-        />
-        <span className="text-[10px] font-mono text-sirius-text-dim">
-          {muted ? "MUTED" : "LIVE"}
-        </span>
+      {/* Center: Mute status + shortcuts */}
+      <div className="flex items-center gap-3">
+        <span className="text-[9px] font-mono text-sirius-text-dim/60">[ESC] STOP</span>
+        <div className="flex items-center gap-1">
+          <span
+            className={`w-1.5 h-1.5 rounded-full ${
+              muted
+                ? "bg-sirius-muted"
+                : "bg-sirius-green"
+            }`}
+          />
+          <span className="text-[10px] font-mono text-sirius-text-dim">
+            {muted ? "MUTED" : "LIVE"}
+          </span>
+        </div>
       </div>
 
       {/* Settings gear */}

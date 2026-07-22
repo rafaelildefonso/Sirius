@@ -1,4 +1,6 @@
 from __future__ import annotations
+import platform as _platform
+import subprocess as _subprocess
 from datetime import datetime
 import asyncio
 import os
@@ -8,6 +10,7 @@ import json
 import sys
 import traceback
 import random
+import time as _time
 from pathlib import Path
 
 # -- Set AppUserModelID early so Windows taskbar can associate the pinned shortcut --
@@ -19,6 +22,16 @@ if getattr(sys, "frozen", False) and sys.platform == "win32":
         )
     except Exception:
         pass
+
+# -- Nuclear: force CREATE_NO_WINDOW on EVERY subprocess call on Windows --
+if _platform.system() == "Windows":
+    _OrigPopen = _subprocess.Popen
+    class _Popen(_OrigPopen):
+        def __init__(self, args, **kw):
+            kw["creationflags"] = kw.get("creationflags", 0) | _subprocess.CREATE_NO_WINDOW
+            kw.pop("startupinfo", None)
+            super().__init__(args, **kw)
+    _subprocess.Popen = _Popen
 
 import sounddevice as sd
 import numpy as np
@@ -59,6 +72,8 @@ from actions.file_controller   import file_controller
 from actions.code_helper       import code_helper
 from actions.dev_agent         import dev_agent
 from actions.web_search        import web_search as web_search_action
+from actions.web_search        import _news as _fetch_news_sync, _gemini_headlines
+from actions.proactive         import ProactiveEngine
 from actions.computer_control  import computer_control
 from actions.game_updater      import game_updater
 from actions.google_calendar  import google_calendar as calendar_action
@@ -72,6 +87,7 @@ from actions.freela_arsenal import freela_arsenal
 from config.permissions import (
     is_granted, get_category, grant_permission, PERMISSION_META,
 )
+from memory.config_manager import get_speak_briefing_enabled as get_brief_enabled, get_assistant_name, save_assistant_config
 
 
 from core.config_loader import get_base_dir
@@ -83,6 +99,33 @@ CHANNELS            = 1
 SEND_SAMPLE_RATE    = 16000
 RECEIVE_SAMPLE_RATE = 24000
 CHUNK_SIZE          = 1024
+FFT_NUM_BINS        = 32
+_SEND_FFT_INTERVAL  = 4  # Send FFT bins every N chunks (~60ms at 16kHz/1024)
+
+def compute_fft_bins(audio_data: np.ndarray, num_bins: int = FFT_NUM_BINS) -> list[float]:
+    samples = audio_data.astype(np.float32).flatten()
+    if len(samples) == 0:
+        return [0.0] * num_bins
+    rms = float(np.sqrt(np.mean(samples ** 2)))
+    energy = min(1.0, rms / 0.05)
+    if energy < 0.005:
+        return [0.0] * num_bins
+    window = np.hanning(len(samples))
+    fft = np.abs(np.fft.rfft(samples * window))
+    n = len(fft)
+    result = []
+    for i in range(num_bins):
+        lo = int((i / num_bins) ** 2 * n) if i > 0 else 0
+        hi = int(((i + 1) / num_bins) ** 2 * n) if i < num_bins - 1 else n
+        lo = min(lo, n - 1)
+        hi = max(hi, lo + 1)
+        hi = min(hi, n)
+        avg = float(np.mean(fft[lo:hi]))
+        result.append(avg)
+    max_val = max(result)
+    if max_val < 1e-6:
+        return [0.0] * num_bins
+    return [min(1.0, (v / max_val) * energy) for v in result]
 
 def _get_api_key() -> str:
     from core.config_loader import get_secret
@@ -243,6 +286,7 @@ TOOL_DECLARATIONS = [
         "name": "web_search",
         "description": (
             "Searches the web for information. "
+            "Modes: search (default), news, research, price, compare, shopping. "
             "WHEN THE USER WANTS TO BUY SOMETHING: search for specific products "
             "with prices, brands, and buying options — NOT just a description of "
             "what the product is. After searching, use browser_control to navigate "
@@ -252,7 +296,7 @@ TOOL_DECLARATIONS = [
             "type": "OBJECT",
             "properties": {
                 "query":  {"type": "STRING", "description": "Search query"},
-                "mode":   {"type": "STRING", "description": "search (default), compare, or shopping"},
+                "mode":   {"type": "STRING", "description": "search (default), news, research, price, compare, or shopping"},
                 "items":  {"type": "ARRAY", "items": {"type": "STRING"}, "description": "Items to compare"},
                 "aspect": {"type": "STRING", "description": "price | specs | reviews"}
             },
@@ -268,6 +312,14 @@ TOOL_DECLARATIONS = [
                 "city": {"type": "STRING", "description": "City name"}
             },
             "required": ["city"]
+        }
+    },
+    {
+        "name": "system_status",
+        "description": "Reports system health: CPU, RAM, disk usage, uptime, and GPU load. Call this when user asks about system performance or resources.",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {},
         }
     },
     {
@@ -330,6 +382,14 @@ TOOL_DECLARATIONS = [
                 "text":  {"type": "STRING", "description": "The question or instruction about the captured image"}
             },
             "required": ["text"]
+        }
+    },
+    {
+        "name": "close_camera",
+        "description": "Closes the live camera feed / webcam view. Call when user says close camera, stop camera, turn off camera.",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {}
         }
     },
     {
@@ -865,6 +925,9 @@ class SiriusLive:
             self._dashboard_ready.set()
         self.ui.on_text_command   = self._on_text_command
         self.ui.on_remote_clicked = self._make_remote_key
+        self.ui.on_interrupt      = self.interrupt
+        self.ui.on_briefing_dismiss = self._on_briefing_dismiss
+        self._briefing_dismissed_event: asyncio.Event | None = None
         self._turn_done_event: asyncio.Event | None = None
         self._allow_mic: asyncio.Event | None = None
         self._tts           = None
@@ -874,6 +937,20 @@ class SiriusLive:
         self._gemini_turn    = threading.Event()   # set while Gemini is producing audio for a turn
         self._conv_id        = None                # DB conversation id for current session
         self._restart_event  = threading.Event()   # set to force session restart
+        self._briefing_sent     = False              # morning briefing fires once per process
+        self._interrupted       = False              # True while draining audio after user interrupt
+        self._pending_vision    = None               # (img_bytes, mime_type, question, angle) to inject after tool response
+        self._vision_cam_active = False              # True if camera was opened for vision → auto-close after response
+        self._vision_close_pending = False           # True after vision injected; next turn_complete closes camera
+        self._vision_last_time  = 0.0                # monotonic time of last screen_process call (cooldown guard)
+        self._vision_busy       = False              # True while a vision capture/inject cycle is in flight
+        self._ui_visible = False                    # track if UI window is visible
+        self._greeting_sent = False                 # ensure greeting runs only once per UI session
+        # Register callback for UI visibility changes
+        self.ui.on_visibility = self._on_visibility_from_ws
+        self._fft_mic_counter = 0
+        self._fft_tts_counter = 0
+
         threading.Thread(target=self._lazy_init_tts, daemon=True).start()
         threading.Thread(target=self._tts_worker, daemon=True).start()
 
@@ -948,16 +1025,27 @@ class SiriusLive:
             self._loop
         )
 
+    def _on_visibility_from_ws(self, visible: bool) -> None:
+        self._ui_visible = visible
+
     def _lazy_init_tts(self):
         from core.config_loader import get_all_config
-        from core.tts import create_tts_player
+        from core.tts import create_tts_player, set_audio_chunk_callback
         try:
             config = get_all_config()
             self._tts = create_tts_player(config)
+            set_audio_chunk_callback(self._on_tts_audio_chunk)
         except Exception as e:
             print(f"[SiriusLive] TTS init error: {e}")
         finally:
             self._tts_ready.set()
+
+    def _on_tts_audio_chunk(self, audio: np.ndarray) -> None:
+        self._fft_tts_counter += 1
+        if self._fft_tts_counter >= _SEND_FFT_INTERVAL:
+            self._fft_tts_counter = 0
+            bins = compute_fft_bins(audio)
+            self.ui.send_audio_bins(bins, "tts")
 
     def _tts_worker(self):
         self._tts_ready.wait(timeout=120)
@@ -994,6 +1082,20 @@ class SiriusLive:
             return
         self._tts_queue.put(text)
 
+    def interrupt(self) -> None:
+        """Stop the assistant mid-speech. Drains audio queue and resets state."""
+        self._interrupted = True
+        # Drain the audio output queue
+        while not self.audio_in_queue.empty():
+            try:
+                self.audio_in_queue.get_nowait()
+            except (asyncio.QueueEmpty, AttributeError):
+                break
+        self.set_speaking(False)
+        if self._turn_done_event and not self._turn_done_event.is_set():
+            self._turn_done_event.set()
+        self.ui.write_log("SYS: Interrompido — ouvindo.")
+
     def request_restart(self) -> None:
         """Signal the run loop to disconnect and reconnect (picks up new config)."""
         self._restart_event.set()
@@ -1027,6 +1129,7 @@ class SiriusLive:
 
     def _build_config(self) -> types.LiveConnectConfig:
         from datetime import datetime
+        from memory.config_manager import get_assistant_name, get_user_name
 
         memory     = load_memory()
         mem_str    = format_memory_for_prompt(memory)
@@ -1040,7 +1143,20 @@ class SiriusLive:
             f"Use this to calculate exact times for reminders.\n\n"
         )
 
-        parts = [time_ctx]
+        # Identity injection
+        _asst_name = get_assistant_name()
+        _user_name = get_user_name()
+        _addr = (f"ADDRESS: Always call the user '{_user_name}'."
+                 if _user_name
+                 else "ADDRESS: Say 'sir' or 'ma'am' when addressing the user. Never mix languages.")
+        identity_ctx = (
+            f"[IDENTITY]\n"
+            f"Your name is {_asst_name}. "
+            f"Always refer to yourself as {_asst_name}.\n"
+            f"{_addr}\n\n"
+        )
+
+        parts = [time_ctx, identity_ctx]
         if mem_str:
             parts.append(mem_str)
         parts.append(sys_prompt)
@@ -1059,6 +1175,100 @@ class SiriusLive:
                 )
             ),
         )
+
+    def _on_briefing_dismiss(self) -> None:
+        """Called when the frontend user dismisses the briefing news modal."""
+        if self._briefing_dismissed_event:
+            self._briefing_dismissed_event.set()
+
+    async def _send_startup_briefing(self) -> None:
+        """
+        News-first briefing:
+          1. Fetch news in background thread
+          2. Show news as modal on frontend
+          3. Wait for user to dismiss the modal
+          4. Send greeting via Gemini Live
+        """
+        if not self.session:
+            return
+        memory = load_memory()
+        identity = memory.get("identity", {})
+        def _val(k: str) -> str:
+            e = identity.get(k, {})
+            return (e.get("value", "") if isinstance(e, dict) else str(e)).strip()
+        lang = _val("language")
+        name = _val("name")
+        time_str = datetime.now().strftime("%H:%M")
+
+        # Fetch news in background
+        loop = asyncio.get_event_loop()
+        news_future = loop.run_in_executor(None, _fetch_news_sync, "top world news today")
+
+        # Wait for news
+        news_text = ""
+        headlines: list[str] = []
+        try:
+            news_text = await asyncio.wait_for(asyncio.wrap_future(news_future), timeout=10.0)
+        except Exception:
+            pass
+
+        # Show news modal on frontend
+        if news_text and len(news_text) > 60:
+            headlines = [line.strip() for line in news_text.split('\n') if line.strip()][:5]
+        if hasattr(self.ui, 'show_briefing'):
+            self.ui.show_briefing("", headlines)
+
+        # Wait for user to dismiss
+        self._briefing_dismissed_event = asyncio.Event()
+        try:
+            await asyncio.wait_for(self._briefing_dismissed_event.wait(), timeout=120.0)
+        except asyncio.TimeoutError:
+            pass
+        self._briefing_dismissed_event = None
+
+        if not self.session:
+            return
+
+        # Send greeting via Gemini Live
+        lang_clause = f" Responda em {lang}." if lang else ""
+        name_clause = f" Chame o usuário de {name}." if name else ""
+        greeting_text = (
+            f"Cumprimente o usuário, são {time_str}. "
+            f"Se houver notícias, resuma UMA manchete em uma frase e diga que a lista completa está na tela. "
+            f"Não chame nenhuma ferramenta.{lang_clause}{name_clause}"
+        )
+        if self._turn_done_event:
+            self._turn_done_event.clear()
+        await self.session.send_client_content(
+            turns={"parts": [{"text": greeting_text}]},
+            turn_complete=True,
+        )
+        self.ui.write_log("SYS: Briefing greeting enviado após dismiss.")
+
+    async def _run_proactive_mode(self) -> None:
+        while True:
+            await asyncio.sleep(15)
+            try:
+                from memory.config_manager import load_api_keys
+                cfg = load_api_keys()
+                if cfg.get("proactive_mode_enabled", "true") == "false":
+                    continue
+                memory = load_memory()
+                if not self._proactive.should_trigger(self._last_user_speech):
+                    continue
+                self._proactive.mark_triggered()
+                prompt = self._proactive.build_prompt(memory)
+                import google.generativeai as genai
+                genai.configure(api_key=_get_api_key())
+                m = genai.GenerativeModel("gemini-2.5-flash")
+                result = m.generate_content(prompt).text.strip()
+                if result:
+                    print(f"[Proactive] Gemini: {result[:80]}...")
+                    self.ui.write_log(f"SYS: {result[:80]}...")
+                    if hasattr(self.ui, 'show_suggestion'):
+                        self.ui.show_suggestion(result[:200])
+            except Exception as e:
+                print(f"[Proactive] Check failed: {e}")
 
     async def _execute_tool(self, fc) -> types.FunctionResponse:
         name = fc.name
@@ -1136,6 +1346,21 @@ class SiriusLive:
                 r = await loop.run_in_executor(None, lambda: weather_action(parameters=args, player=self.ui))
                 result = r or "Weather delivered."
 
+            elif name == "system_status":
+                import psutil
+                cpu  = psutil.cpu_percent(interval=0.5)
+                ram  = psutil.virtual_memory()
+                boot = psutil.boot_time()
+                uptime_secs = _time.time() - boot
+                uptime_h    = int(uptime_secs // 3600)
+                uptime_m    = int((uptime_secs % 3600) // 60)
+                result = (
+                    f"CPU: {cpu}% | "
+                    f"RAM: {ram.percent}% ({ram.used // 1024**3}GB/{ram.total // 1024**3}GB) | "
+                    f"Uptime: {uptime_h}h {uptime_m}m | "
+                    f"Processes: {len(psutil.pids())}"
+                )
+
             elif name == "browser_control":
                 r = await loop.run_in_executor(None, lambda: browser_control(parameters=args, player=self.ui))
                 result = r or "Done."
@@ -1157,13 +1382,45 @@ class SiriusLive:
                 result = r or "Done."
 
             elif name == "screen_process":
-                threading.Thread(
-                    target=screen_process,
-                    kwargs={"parameters": args, "response": None,
-                            "player": self.ui, "session_memory": None},
-                    daemon=True
-                ).start()
-                result = "Vision module activated. Stay completely silent — vision module will speak directly."
+                import time as _t_mod
+                from actions.screen_processor import _capture_camera, _capture_screen
+                _now = _t_mod.monotonic()
+                _cooldown = 4.0
+                if self._vision_busy or (_now - self._vision_last_time) < _cooldown:
+                    _wait = max(0, _cooldown - (_now - self._vision_last_time))
+                    print(f"[Vision] Cooldown active ({_wait:.1f}s remaining) — ignoring duplicate call")
+                    result = "Vision is still processing the previous request. I will not call this again."
+                else:
+                    self._vision_busy      = True
+                    self._vision_last_time = _now
+                    angle     = args.get("angle", "screen").lower()
+                    user_text = args.get("text", "What do you see?")
+                    if angle == "camera":
+                        img_b, mime_t = await loop.run_in_executor(None, _capture_camera)
+                        if hasattr(self.ui, 'start_camera_stream'):
+                            self.ui.start_camera_stream()
+                        self._vision_cam_active = True
+                        print(f"[Vision] Camera: {len(img_b):,} bytes")
+                        _stall = "camera"
+                    else:
+                        img_b, mime_t = await loop.run_in_executor(None, _capture_screen)
+                        print(f"[Vision] Screen: {len(img_b):,} bytes")
+                        _stall = "screen"
+                    self._pending_vision = (img_b, mime_t, user_text, angle)
+                    result = (
+                        f"[VISION_ACTIVE] {_stall.capitalize()} captured. "
+                        f"Immediately say ONE short natural sentence in the user's own language, "
+                        f"telling them you are looking at their {_stall} right now. "
+                        f"Do NOT describe or guess content — the actual image arrives in the NEXT message."
+                    )
+
+            elif name == "close_camera":
+                if hasattr(self.ui, 'stop_camera_stream'):
+                    self.ui.stop_camera_stream()
+                self._vision_busy = False
+                self._vision_cam_active = False
+                self._vision_close_pending = False
+                result = "Camera closed."
 
             elif name == "computer_settings":
                 r = await loop.run_in_executor(None, lambda: computer_settings(parameters=args, response=None, player=self.ui))
@@ -1285,6 +1542,11 @@ class SiriusLive:
                 rms = np.sqrt(np.mean(indata**2))
                 level = min(1.0, rms * 15)
                 self.ui.set_voice_level(level)
+                self._fft_mic_counter += 1
+                if self._fft_mic_counter >= _SEND_FFT_INTERVAL:
+                    self._fft_mic_counter = 0
+                    bins = compute_fft_bins(indata)
+                    self.ui.send_audio_bins(bins, "mic")
                 loop.call_soon_threadsafe(
                     self.out_queue.put_nowait,
                     {"data": data, "mime_type": "audio/pcm"}
@@ -1359,6 +1621,8 @@ class SiriusLive:
                 async for response in self.session.receive():
 
                     if response.data:
+                        if self._interrupted:
+                            continue  # discard: interrupted
                         if not self._gemini_turn.is_set():
                             self._gemini_turn.set()
                         if self._turn_done_event and self._turn_done_event.is_set():
@@ -1400,9 +1664,13 @@ class SiriusLive:
                             if self._turn_done_event:
                                 self._turn_done_event.set()
                             self._gemini_turn.clear()
+                            if self._interrupted:
+                                self._interrupted = False
+                                self.set_speaking(False)
 
                             full_in = self._merge_segments(in_buf)
                             if full_in:
+                                self._last_user_speech = _time.monotonic()
                                 self.ui.write_log(f"You: {full_in}")
                                 if self._dashboard:
                                     asyncio.create_task(self._dashboard.broadcast({
@@ -1432,6 +1700,34 @@ class SiriusLive:
                                     daemon=True
                                 ).start()
                             out_buf = []
+
+                            # Vision injection: model finished tool-response turn -> now send the image
+                            if self._pending_vision and self.session:
+                                import base64 as _b64
+                                img_b, mime_t, question, angle = self._pending_vision
+                                self._pending_vision = None
+                                b64 = _b64.b64encode(img_b).decode("ascii")
+                                print(f"[Vision] {len(img_b):,} bytes (angle={angle}) -> main session")
+                                await self.session.send_client_content(
+                                    turns={"parts": [
+                                        {"inline_data": {"mime_type": mime_t, "data": b64}},
+                                        {"text": question},
+                                    ]},
+                                    turn_complete=True,
+                                )
+                                if self._vision_cam_active:
+                                    self._vision_cam_active = False
+                                    self._vision_close_pending = True
+                                else:
+                                    self._vision_busy = False
+                            elif self._vision_close_pending:
+                                self._vision_close_pending = False
+                                self._vision_busy = False
+                                async def _cam_close():
+                                    await asyncio.sleep(2.0)
+                                    if hasattr(self.ui, 'stop_camera_stream'):
+                                        self.ui.stop_camera_stream()
+                                asyncio.create_task(_cam_close())
 
                     if response.tool_call:
                         fn_responses = []
@@ -1466,6 +1762,15 @@ class SiriusLive:
                         timeout=0.1
                     )
                 except asyncio.TimeoutError:
+                    if self._interrupted:
+                        self._interrupted = False
+                        self.set_speaking(False)
+                        # Drain any remaining chunks
+                        while not self.audio_in_queue.empty():
+                            try:
+                                self.audio_in_queue.get_nowait()
+                            except asyncio.QueueEmpty:
+                                break
                     if (
                         self._turn_done_event
                         and self._turn_done_event.is_set()
@@ -1480,6 +1785,12 @@ class SiriusLive:
                     await asyncio.sleep(0.1)
 
                 self.set_speaking(True)
+                self._fft_tts_counter += 1
+                if self._fft_tts_counter >= _SEND_FFT_INTERVAL:
+                    self._fft_tts_counter = 0
+                    arr = np.frombuffer(chunk, dtype=np.int16).reshape(-1, 1)
+                    bins = compute_fft_bins(arr)
+                    self.ui.send_audio_bins(bins, "tts")
                 await asyncio.to_thread(stream.write, chunk)
         except Exception as e:
             print(f"[SIRIUS] Play error: {e}")
@@ -1573,7 +1884,6 @@ class SiriusLive:
                     try:
                         fut.result()
                     except Exception as e:
-                        import traceback
                         print(f"[Dashboard] SERVER TASK CRASHED: {e}")
                         traceback.print_exc()
                         self._dashboard = None
@@ -1583,7 +1893,6 @@ class SiriusLive:
             asyncio.ensure_future(self._process_dashboard_commands())
             self.ui.write_log("SYS: Remote dashboard started.")
         except Exception as e:
-            import traceback
             print(f"[Dashboard] Disabled: {e}")
             traceback.print_exc()
             self._dashboard = None
@@ -1619,7 +1928,7 @@ class SiriusLive:
                     tg.create_task(self._listen_audio())
                     tg.create_task(self._receive_audio())
                     tg.create_task(self._play_audio())
-
+                    tg.create_task(self._run_proactive_mode())
                     if self._dashboard:
                         tg.create_task(self._relay_phone_audio())
 
@@ -1631,6 +1940,13 @@ class SiriusLive:
                             self.ui.set_startup_status("* SIRIUS online")
                         if hasattr(self.ui, 'hide_startup_panel'):
                             self.ui.hide_startup_panel()
+
+                        # Morning briefing — fires once per process
+                        if not self._briefing_sent:
+                            from memory.config_manager import get_speak_briefing_enabled
+                            if get_speak_briefing_enabled():
+                                self._briefing_sent = True
+                                tg.create_task(self._send_startup_briefing())
 
                         if self.ui.has_client:
                             self.ui.write_log("SYS: SIRIUS online. Pronto para ouvir.")
@@ -1779,6 +2095,8 @@ class SiriusLocal:
         self._conversation:   list[dict]  = []
 
         self.ui.on_text_command = self._on_text_command
+        self._fft_mic_counter = 0
+        self._fft_tts_counter = 0
 
     def _build_system_prompt(self) -> str:
         sys_p   = _load_system_prompt()
@@ -1824,6 +2142,13 @@ class SiriusLocal:
             self.ui.set_state("SPEAKING")
         elif not self.ui.muted:
             self.ui.set_state("LISTENING")
+
+    def _on_tts_audio_chunk(self, audio: np.ndarray) -> None:
+        self._fft_tts_counter += 1
+        if self._fft_tts_counter >= _SEND_FFT_INTERVAL:
+            self._fft_tts_counter = 0
+            bins = compute_fft_bins(audio)
+            self.ui.send_audio_bins(bins, "tts")
 
     def speak(self, text: str) -> None:
         if not text or not self._tts:
@@ -2165,6 +2490,16 @@ class SiriusLocal:
                     q.put_nowait(indata.copy())
                 except _queue.Full:
                     pass
+                rms = float(np.sqrt(np.mean(indata ** 2)))
+                level = min(1.0, rms * 15)
+                self.ui.set_voice_level(level)
+                self._fft_mic_counter += 1
+                if self._fft_mic_counter >= _SEND_FFT_INTERVAL:
+                    self._fft_mic_counter = 0
+                    bins = compute_fft_bins(indata)
+                    self.ui.send_audio_bins(bins, "mic")
+            else:
+                self.ui.set_voice_level(0.0)
 
         try:
             # Wait for frontend before opening mic
@@ -2224,6 +2559,16 @@ class SiriusLocal:
                     q.put_nowait(indata.copy())
                 except _queue.Full:
                     pass
+                rms = float(np.sqrt(np.mean(indata.astype(np.float32) ** 2)))
+                level = min(1.0, rms * 15 / 32768.0)
+                self.ui.set_voice_level(level)
+                self._fft_mic_counter += 1
+                if self._fft_mic_counter >= _SEND_FFT_INTERVAL:
+                    self._fft_mic_counter = 0
+                    bins = compute_fft_bins(indata)
+                    self.ui.send_audio_bins(bins, "mic")
+            else:
+                self.ui.set_voice_level(0.0)
 
         try:
             # Wait for frontend before opening mic
@@ -2358,8 +2703,9 @@ class SiriusLocal:
                 try:
                     self.ui.set_startup_progress(4, 5, "Carregando voz...")
                     self.ui.write_log(f"SYS: Loading {tts_engine.upper()} TTS…")
-                    from core.tts import create_tts_player
+                    from core.tts import create_tts_player, set_audio_chunk_callback
                     self._tts = create_tts_player(self._config)
+                    set_audio_chunk_callback(self._on_tts_audio_chunk)
                     self._tts_ready.set()
                     self.ui.write_log("SYS: TTS ready.")
                     self.ui.mark_startup_ready("tts")
@@ -2501,7 +2847,6 @@ def main():
                 print(f"[DEBUG main] Early dashboard thread started. IP={ds._ip}")
                 asyncio.run(ds.serve())
             except Exception as e:
-                import traceback
                 print(f"[MAIN] Dashboard disabled: {e}")
                 traceback.print_exc()
                 _DASHBOARD = None

@@ -10,10 +10,14 @@ import PermissionDialog from "./components/PermissionDialog";
 import FileDropZone from "./components/FileDropZone";
 import RemoteKeyOverlay from "./components/RemoteKeyOverlay";
 import RadarPanel from "./components/RadarPanel";
+import CameraPreview from "./components/CameraPreview";
+import SuggestionCard from "./components/SuggestionCard";
 import Header from "./components/Header";
 import Footer from "./components/Footer";
 import OnboardingWizard from "./components/OnboardingWizard";
-import { Send, Mic, MicOff, Monitor, Maximize } from "./components/Icons";
+import { Send, Mic, MicOff, Monitor, Maximize, Square } from "./components/Icons";
+import ContentPanel from "./components/ContentPanel";
+import ClipboardPanel from "./components/ClipboardPanel";
 
 function App() {
   const {
@@ -35,7 +39,6 @@ function App() {
     clearRemoteKeyError,
     sendCommand,
     config,
-    fetchConfig,
     saveConfig,
     onboardingNeeded,
     onboardingStep,
@@ -51,6 +54,15 @@ function App() {
     googleAuthLoading,
     checkGoogleStatus,
     runGoogleAuth,
+    cameraFrame,
+    audioBins,
+    suggestion,
+    briefing,
+    contentPanel,
+    clearContentPanel,
+    clearSuggestion,
+    clearBriefing,
+    clearCameraFrame,
   } = useWebSocket();
 
   const [view, setView] = useState<"hud" | "radar">("hud");
@@ -88,6 +100,10 @@ function App() {
     setMuted(!muted);
   }, [muted, setMuted]);
 
+  const handleInterrupt = useCallback(() => {
+    send({ type: "interrupt" });
+  }, [send]);
+
   const toggleFullscreen = useCallback(() => {
     setFullscreen((v) => !v);
     if (!document.fullscreenElement) {
@@ -110,6 +126,16 @@ function App() {
       .then(setAutoStart)
       .catch(() => {});
   }, []);
+
+  // Apply UI color from config
+  useEffect(() => {
+    const color = config?.["ui_color"];
+    if (color) {
+      document.documentElement.style.setProperty("--sirius-pri", color);
+      // Derive a dimmed version
+      document.documentElement.style.setProperty("--sirius-pri-dim", color + "44");
+    }
+  }, [config]);
 
   const handleSetAutoStart = useCallback((enabled: boolean) => {
     invoke("set_autostart", { enabled }).catch(() => {});
@@ -136,12 +162,15 @@ function App() {
     }
   }, [startupInfo]);
 
-  // F4 to toggle mute, F11 for fullscreen
+  // F4 to toggle mute, Escape to interrupt, F11 for fullscreen
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "F4") {
         e.preventDefault();
         handleToggleMute();
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        handleInterrupt();
       } else if (e.key === "F11") {
         e.preventDefault();
         toggleFullscreen();
@@ -149,7 +178,7 @@ function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [handleToggleMute, toggleFullscreen]);
+  }, [handleToggleMute, toggleFullscreen, handleInterrupt]);
 
   // Listen for Tauri tray events and forward to backend
   useEffect(() => {
@@ -176,6 +205,19 @@ function App() {
       return () => clearTimeout(t);
     }
   }, [notification, clearNotification]);
+
+  // Auto-dismiss suggestion after 15s
+  useEffect(() => {
+    if (suggestion) {
+      const t = setTimeout(clearSuggestion, 15000);
+      return () => clearTimeout(t);
+    }
+  }, [suggestion, clearSuggestion]);
+
+  const handleDismissBriefing = useCallback(() => {
+    send({ type: "briefing_dismissed" });
+    clearBriefing();
+  }, [send, clearBriefing]);
 
   if (connectionError) {
     return (
@@ -230,6 +272,7 @@ function App() {
               state={muted ? "MUTED" : state}
               voiceLevel={voiceLevel}
               muted={muted}
+              audioBins={audioBins}
             />
           ) : (
             <RadarPanel
@@ -238,6 +281,18 @@ function App() {
               radarResults={radarResults}
             />
           )}
+
+          {/* Content panel for news, search results, etc. */}
+          {contentPanel && (
+            <ContentPanel
+              title={contentPanel.title}
+              text={contentPanel.text}
+              onDismiss={clearContentPanel}
+            />
+          )}
+
+          {/* Camera preview overlay */}
+          <CameraPreview frame={cameraFrame} onClose={clearCameraFrame} />
 
           {/* Connection indicator */}
           {!connected && (
@@ -295,6 +350,16 @@ function App() {
               <span>{muted ? "MUTED" : "LIVE"}</span>
             </button>
 
+            {/* Interrupt / Stop */}
+            <button
+              onClick={handleInterrupt}
+              className="text-xs font-mono font-bold px-2 py-1 rounded text-sirius-red hover:text-sirius-white hover:bg-sirius-red/20 transition-colors flex items-center gap-1"
+              title="Interromper [ESC]"
+            >
+              <Square size="sm" />
+              <span>STOP</span>
+            </button>
+
             <div className="flex-1" />
 
             {/* Remote Control */}
@@ -320,6 +385,12 @@ function App() {
         </div>
       </div>
 
+      {/* Suggestion card */}
+      <SuggestionCard text={suggestion} onDismiss={clearSuggestion} />
+
+      {/* Clipboard intelligence */}
+      <ClipboardPanel sendCommand={sendCommand} />
+
       {/* Footer */}
       <Footer
         view={view}
@@ -332,8 +403,7 @@ function App() {
       {showSettings && (
         <SettingsModal
           onClose={() => setShowSettings(false)}
-          initialConfig={config}
-          fetchConfig={fetchConfig}
+          config={config}
           onSaveConfig={saveConfig}
           permissions={permissionsList}
           autoStart={autoStart}
@@ -343,6 +413,7 @@ function App() {
           googleAuthLoading={googleAuthLoading}
           onCheckGoogleStatus={checkGoogleStatus}
           onRunGoogleAuth={runGoogleAuth}
+          send={send}
         />
       )}
 
@@ -366,7 +437,7 @@ function App() {
         />
       )}
 
-      {startupInfo.action !== "hide" && (
+      {(startupInfo.action !== "hide" || briefing) && (
         <StartupPanel
           action={startupInfo.action}
           componentKey={startupInfo.key}
@@ -374,6 +445,8 @@ function App() {
           current={startupInfo.current}
           total={startupInfo.total}
           onComplete={() => {}}
+          briefing={briefing}
+          onDismissBriefing={handleDismissBriefing}
         />
       )}
     </div>

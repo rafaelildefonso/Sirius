@@ -76,6 +76,12 @@ export function useWebSocket() {
   const [googleAuthMsg, setGoogleAuthMsg] = useState<string | null>(null);
   const [googleAuthLoading, setGoogleAuthLoading] = useState(false);
 
+  const [cameraFrame, setCameraFrame] = useState<string | null>(null);
+  const [audioBins, setAudioBins] = useState<{ bins: number[]; source: string } | null>(null);
+  const [suggestion, setSuggestion] = useState<string | null>(null);
+  const [briefing, setBriefing] = useState<{ greeting: string; headlines: string[] } | null>(null);
+  const [contentPanel, setContentPanel] = useState<{ title: string; text: string } | null>(null);
+
   const onCommandRef = useRef<((text: string) => void) | null>(null);
   const configResolveRef = useRef<((cfg: Record<string, string>) => void) | null>(null);
 
@@ -195,6 +201,8 @@ export function useWebSocket() {
         ws.send(JSON.stringify({ type: "get_onboarding_status" }));
         // Request permissions list
         ws.send(JSON.stringify({ type: "get_permissions_list" }));
+        // Request config
+        ws.send(JSON.stringify({ type: "get_config" }));
         // Send current window visibility (important for autostart background)
         try { getCurrentWindow().isVisible().then(v => ws.send(JSON.stringify({ type: "set_visibility", visible: v }))); } catch {}
         clearTimeout(onboardingCheckTimer.current);
@@ -245,6 +253,10 @@ export function useWebSocket() {
         }
         case "voice_level": {
           setVoiceLevel(Number(data.level ?? 0));
+          break;
+        }
+        case "audio_bins": {
+          setAudioBins({ bins: data.bins as number[], source: data.source as string });
           break;
         }
         case "muted": {
@@ -355,6 +367,24 @@ export function useWebSocket() {
         case "onboarding_done_ack":
         case "pong":
           break;
+        case "camera_frame":
+          setCameraFrame(String(data.image ?? null));
+          break;
+        case "camera_stop":
+          setCameraFrame(null);
+          break;
+        case "proactive_suggestion":
+          setSuggestion(String(data.text ?? null));
+          break;
+        case "briefing":
+          setBriefing({
+            greeting: String(data.greeting ?? ""),
+            headlines: Array.isArray(data.headlines) ? data.headlines.map(String) : [],
+          });
+          break;
+        case "content_panel":
+          setContentPanel({ title: String(data.title ?? ""), text: String(data.text ?? "") });
+          break;
         case "google_status":
           setGoogleConnected(Boolean(data.connected));
           break;
@@ -432,5 +462,14 @@ export function useWebSocket() {
     googleAuthLoading,
     checkGoogleStatus,
     runGoogleAuth,
+    cameraFrame,
+    audioBins,
+    suggestion,
+    briefing,
+    contentPanel,
+    clearContentPanel: () => setContentPanel(null),
+    clearSuggestion: () => setSuggestion(null),
+    clearBriefing: () => setBriefing(null),
+    clearCameraFrame: () => setCameraFrame(null),
   };
 }

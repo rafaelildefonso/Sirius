@@ -34,6 +34,44 @@ def show_windows_notification(title: str, message: str) -> None:
         pass
 
 
+def _create_desktop_shortcut() -> None:
+    """Create a desktop shortcut for SIRIUS (platform-aware)."""
+    import os, sys
+    shortcut_name = "SIRIUS"
+    desktop = Path(os.path.expanduser("~/Desktop"))
+    exe = Path(sys.executable).resolve()
+    try:
+        if sys.platform == "win32":
+            import pythoncom
+            pythoncom.CoInitialize()
+            from win32com.client import Dispatch
+            ws = Dispatch("WScript.Shell")
+            scut = ws.CreateShortcut(str(desktop / f"{shortcut_name}.lnk"))
+            scut.TargetPath = str(exe)
+            scut.WorkingDirectory = str(exe.parent)
+            scut.Description = "SIRIUS AI Assistant"
+            scut.Save()
+        elif sys.platform == "darwin":
+            app_path = desktop / f"{shortcut_name}.app"
+            app_path.mkdir(parents=True)
+            (app_path / "Contents").mkdir()
+            (app_path / "Contents/MacOS").mkdir()
+            launcher = app_path / "Contents/MacOS" / shortcut_name
+            launcher.write_text(f'#!/bin/bash\n"{exe}" &\n')
+            os.chmod(launcher, 0o755)
+        else:  # linux
+            desktop_file = desktop / f"{shortcut_name}.desktop"
+            desktop_file.write_text(
+                f"[Desktop Entry]\nName={shortcut_name}\nExec={exe}\n"
+                f"Terminal=false\nType=Application\n"
+            )
+            os.chmod(desktop_file, 0o755)
+            os.system(f"gio set {desktop_file} metadata::trusted true 2>/dev/null")
+        print(f"[Shortcut] Created on desktop: {desktop / shortcut_name}")
+    except Exception as e:
+        print(f"[Shortcut] Failed: {e}")
+
+
 # ── Message types ──────────────────────────────────────────────────────────────
 
 @dataclass
@@ -73,6 +111,8 @@ class ConnectionManager:
         self.on_visibility: Callable[[bool], None] | None = None
         self.on_toggle_mute: Callable[[], None] | None = None
         self.on_remote_key_request: Callable | None = None
+        self.on_interrupt: Callable[[], None] | None = None
+        self.on_briefing_dismiss: Callable[[], None] | None = None
 
     def set_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         self._loop = loop
@@ -205,6 +245,17 @@ async def _handler(ws: websockets.asyncio.server.ServerConnection) -> None:
             elif msg_type == "toggle_mute":
                 if manager.on_toggle_mute:
                     manager.on_toggle_mute()
+
+            elif msg_type == "interrupt":
+                if manager.on_interrupt:
+                    manager.on_interrupt()
+
+            elif msg_type == "briefing_dismissed":
+                if manager.on_briefing_dismiss:
+                    manager.on_briefing_dismiss()
+
+            elif msg_type == "create_desktop_shortcut":
+                threading.Thread(target=_create_desktop_shortcut, daemon=True).start()
 
             elif msg_type == "set_visibility":
                 visible = data.get("visible", True)
@@ -522,9 +573,12 @@ _server_started = False
 def _release_port(port: int) -> None:
     """Kill any process holding the given port (Windows)."""
     import subprocess
+    import sys
+    _cnw = 0x08000000 if sys.platform == "win32" else 0
     try:
         output = subprocess.check_output(
-            ["netstat", "-ano"], shell=True, text=True, stderr=subprocess.DEVNULL
+            ["netstat", "-ano"], shell=False, text=True, stderr=subprocess.DEVNULL,
+            creationflags=_cnw,
         )
         for line in output.splitlines():
             if f":{port}" in line and "LISTENING" in line:
@@ -534,7 +588,8 @@ def _release_port(port: int) -> None:
                     try:
                         subprocess.run(
                             ["taskkill", "/F", "/PID", pid],
-                            capture_output=True, text=True, timeout=5
+                            capture_output=True, text=True, timeout=5,
+                            creationflags=_cnw,
                         )
                         print(f"[WS] Killed previous process holding port {port} (PID: {pid})")
                     except Exception:
@@ -627,6 +682,8 @@ class WsUI:
         self._current_file_path: str | None = None
         self._on_text_command: Callable | None = None
         self._on_remote_clicked: Callable | None = None
+        self._on_interrupt: Callable | None = None
+        self._on_briefing_dismiss: Callable | None = None
         self._ready = True  # No API key waiting needed
         self._last_startup_msg: dict | None = None
 
@@ -638,6 +695,8 @@ class WsUI:
         manager.on_mute_toggle = self._on_mute_from_ws
         manager.on_visibility = self._on_visibility_from_ws
         manager.on_toggle_mute = self._on_toggle_mute_from_ws
+        manager.on_interrupt = self._on_interrupt_from_ws
+        manager.on_briefing_dismiss = self._on_briefing_dismiss_from_ws
         manager._on_client_connect = self._on_reconnect
 
         global _current_ui
@@ -714,7 +773,35 @@ class WsUI:
         # Wire the WebSocket handler too
         manager.on_remote_key_request = cb
 
+    @property
+    def on_interrupt(self):
+        return self._on_interrupt
+
+    @on_interrupt.setter
+    def on_interrupt(self, cb):
+        self._on_interrupt = cb
+        manager.on_interrupt = self._on_interrupt_from_ws
+
+    @property
+    def on_briefing_dismiss(self):
+        return self._on_briefing_dismiss
+
+    @on_briefing_dismiss.setter
+    def on_briefing_dismiss(self, cb):
+        self._on_briefing_dismiss = cb
+        manager.on_briefing_dismiss = self._on_briefing_dismiss_from_ws
+
     # ── internal ─────────────────────────────────────────────────────────
+
+    def _on_interrupt_from_ws(self) -> None:
+        cb = getattr(self, "on_interrupt", None)
+        if cb:
+            cb()
+
+    def _on_briefing_dismiss_from_ws(self) -> None:
+        cb = getattr(self, "on_briefing_dismiss", None)
+        if cb:
+            cb()
 
     def _on_command_from_ws(self, text: str) -> None:
         if self._on_text_command:
@@ -734,6 +821,9 @@ class WsUI:
             self._muted_by_user = self._muted
             self._muted = True
         manager.broadcast_sync(WsMessage("muted", {"muted": self.muted}))
+        cb = getattr(self, "on_visibility", None)
+        if cb:
+            cb(visible)
 
     def _on_toggle_mute_from_ws(self) -> None:
         self._muted_by_user = not self._muted_by_user
@@ -768,6 +858,12 @@ class WsUI:
 
     def set_voice_level(self, level: float) -> None:
         manager.broadcast_sync(WsMessage("voice_level", {"level": level}))
+
+    def send_audio_bins(self, bins: list[float], source: str) -> None:
+        manager.broadcast_sync(WsMessage("audio_bins", {"bins": bins, "source": source}))
+
+    def show_content(self, title: str, text: str) -> None:
+        manager.broadcast_sync(WsMessage("content_panel", {"title": title, "text": text}))
 
     def start_speaking(self) -> None:
         self.set_state("SPEAKING")
@@ -880,6 +976,51 @@ class WsUI:
                 url, key, login_url, manual = result
                 return {"url": url, "key": key, "login_url": login_url, "manual": manual}
         return None
+
+    # ── camera preview ───────────────────────────────────────────────
+
+    def start_camera_stream(self):
+        """Return a callable so the caller can send frames later.
+
+        The returned function accepts a single argument (bytes or str —
+        base64-encoded JPEG) and broadcasts it as 'camera_frame'.
+        """
+        def _send_frame(img_bytes_or_b64):
+            if isinstance(img_bytes_or_b64, bytes):
+                import base64
+                b64 = base64.b64encode(img_bytes_or_b64).decode("ascii")
+            else:
+                b64 = img_bytes_or_b64
+            manager.broadcast_sync(WsMessage("camera_frame", {"image": b64}))
+        return _send_frame
+
+    def stop_camera_stream(self) -> None:
+        """Tell the frontend to hide the camera preview overlay."""
+        manager.broadcast_sync(WsMessage("camera_stop"))
+
+    def show_camera_frame(self, img_bytes_or_b64) -> None:
+        """Send a single camera frame (bytes or base64 str)."""
+        if isinstance(img_bytes_or_b64, bytes):
+            import base64
+            b64 = base64.b64encode(img_bytes_or_b64).decode("ascii")
+        else:
+            b64 = img_bytes_or_b64
+        manager.broadcast_sync(WsMessage("camera_frame", {"image": b64}))
+
+    # ── proactive suggestion ─────────────────────────────────────────
+
+    def show_suggestion(self, text: str) -> None:
+        """Send a proactive suggestion to the frontend."""
+        manager.broadcast_sync(WsMessage("proactive_suggestion", {"text": text}))
+
+    # ── morning briefing ──────────────────────────────────────────────
+
+    def show_briefing(self, greeting: str, headlines: list[str] | None = None) -> None:
+        """Send a morning/startup briefing to the frontend."""
+        manager.broadcast_sync(WsMessage("briefing", {
+            "greeting": greeting,
+            "headlines": headlines or [],
+        }))
 
     def shutdown(self) -> None:
         """Signal the mainloop to exit."""
