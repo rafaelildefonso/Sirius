@@ -5,10 +5,9 @@ ContextBuilder — builds structured context for LLM prompts from retrieved memo
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta
-from typing import Any, Optional
+from typing import Optional
 
-from persistence.models import MemoryType, RetrievedMemory, SearchResult
+from persistence.models import MemoryType, RetrievedMemory
 from persistence.retriever import Retriever
 
 

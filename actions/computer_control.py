@@ -1,12 +1,11 @@
 #computer_control.py
 import io
 import json
+import random
 import re
 import string
 import subprocess
-import sys
 import time
-import random
 from pathlib import Path
 
 from core.llm_utils import call_vision_for_action
@@ -25,7 +24,7 @@ try:
 except ImportError:
     _PYPERCLIP = False
 
-from core.config_loader import get_base_dir, get_secret, get_config
+from core.config_loader import get_base_dir, get_config, get_secret
 
 _MEMORY_PATH  = get_base_dir() / "memory" / "long_term.json"
 

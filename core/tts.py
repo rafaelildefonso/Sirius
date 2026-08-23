@@ -16,8 +16,6 @@ from typing import Callable, Optional
 import numpy as np
 import sounddevice as sd
 
-
-
 # -- Global audio chunk callback for FFT visualization --
 _audio_chunk_callback: Optional[Callable[[np.ndarray], None]] = None
 
@@ -267,7 +265,7 @@ class KokoroTTSEngine:
                 except RuntimeError:
                     pass
                 print(
-                    f"[TTS] Kokoro on CPU — for faster speech install CUDA PyTorch:\n"
+                    "[TTS] Kokoro on CPU — for faster speech install CUDA PyTorch:\n"
                     "      pip install torch --index-url https://download.pytorch.org/whl/cu118"
                 )
         except Exception:

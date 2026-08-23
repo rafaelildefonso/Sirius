@@ -1,14 +1,9 @@
-import os
 import json
-import sys
-from pathlib import Path
-
-import requests
-
-from core.config_loader import get_notion_creds as _get_notion_creds, set_notion_creds as _set_notion_creds
-
+import os
 
 from core.config_loader import get_base_dir
+from core.config_loader import get_notion_creds as _get_notion_creds
+from core.config_loader import set_notion_creds as _set_notion_creds
 
 
 def get_notion_headers(token: str) -> dict:

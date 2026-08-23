@@ -1,6 +1,6 @@
+import platform
 import subprocess
 import sys
-import platform
 from pathlib import Path
 
 print("Installing requirements...")
@@ -11,7 +11,7 @@ subprocess.run([sys.executable, "-m", "playwright", "install"], check=True)
 
 if platform.system() == "Windows":
     try:
-        import win32com.client
+        import win32com.client  # noqa: F401
     except ImportError:
         postinstall = Path(sys.executable).parent / "Scripts" / "pywin32_postinstall.py"
         print(

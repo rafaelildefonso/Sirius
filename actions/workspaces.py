@@ -4,7 +4,6 @@ import platform
 import subprocess
 import time
 from pathlib import Path
-import sys
 
 try:
     import psutil
@@ -40,7 +39,7 @@ def _save_workspaces(data: dict):
 def _get_running_apps_windows():
     if not _WIN32 or not _PSUTIL:
         return []
-    
+
     running_exes = set()
     def enum_windows_proc(hwnd, lParam):
         if win32gui.IsWindowVisible(hwnd):
@@ -52,7 +51,7 @@ def _get_running_apps_windows():
                     proc = psutil.Process(pid)
                     exe_path = proc.exe()
                     name = proc.name().lower()
-                    
+
                     # Skip common system/assistant processes
                     if name not in ["explorer.exe", "taskmgr.exe", "python.exe", "py.exe", "conhost.exe"]:
                         # Avoid adding the same app multiple times (e.g. multiple windows of same app)
@@ -76,15 +75,15 @@ def workspaces(
     """
     action = parameters.get("action", "open").lower().strip()
     name = parameters.get("name", "default").lower().strip()
-    
+
     if action == "save":
         if _SYSTEM != "Windows":
             return "Save workspace is currently only supported on Windows."
-        
+
         apps = _get_running_apps_windows()
         if not apps:
             return "No open applications found to save. Make sure your apps are not minimized or background processes."
-            
+
         data = _load_workspaces()
         data[name] = apps
         _save_workspaces(data)
@@ -94,11 +93,11 @@ def workspaces(
         data = _load_workspaces()
         if name not in data:
             return f"O espaço de trabalho '{name}' não foi encontrado. Você pode salvá-lo dizendo 'salve este espaço de trabalho como {name}'."
-            
+
         apps = data[name]
         opened = []
         already_running = []
-        
+
         # Get currently running exes for smart "only open if not running" logic
         current_exes = set()
         if _PSUTIL:
@@ -114,7 +113,7 @@ def workspaces(
             if app_path.lower() in current_exes:
                 already_running.append(app_name)
                 continue
-                
+
             try:
                 if _SYSTEM == "Windows":
                     _console_apps = {"cmd.exe", "powershell.exe", "pwsh.exe", "git-bash.exe", "wsl.exe"}
@@ -130,16 +129,16 @@ def workspaces(
                 time.sleep(0.5) # Brief pause between launches
             except Exception as e:
                 print(f"[Workspaces] Failed to open {app_path}: {e}")
-                
+
         res = f"Espaço de trabalho '{name}' processado."
         if opened:
             res += f"\nAbrindo: {', '.join(opened)}"
         if already_running:
             res += f"\nJá estavam abertos: {', '.join(already_running)}"
-        
+
         if player:
             player.write_log(f"[Workspaces] Opened {name}")
-            
+
         return res
 
     elif action == "list":

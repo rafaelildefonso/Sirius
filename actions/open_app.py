@@ -1,12 +1,13 @@
 import os
-import time
-import subprocess
 import platform
 import shutil
+import subprocess
+import time
+
 from actions.file_controller import resolve_path
 
 try:
-    import psutil
+    import psutil  # noqa: F401
     _PSUTIL = True
 except ImportError:
     _PSUTIL = False
@@ -77,11 +78,11 @@ def _normalize(raw: str) -> str:
         if alias_key in key or key in alias_key:
             return os_map.get(_SYSTEM, raw)
 
-    return raw  
+    return raw
 
 def _launch_windows(app_name: str, args: str = "") -> bool:
     executable = shutil.which(app_name) or shutil.which(app_name.split(".")[0])
-    
+
     if executable:
         try:
             if "explorer.exe" in app_name.lower() and args:
@@ -121,12 +122,12 @@ def _launch_windows(app_name: str, args: str = "") -> bool:
         time.sleep(0.9)
         pyautogui.press("enter")
         time.sleep(2.5)
-        
+
         if args:
             # If we used the Start Menu, we can't easily pass args unless we type them
             # This is a fallback and might not work for all apps
             pass
-            
+
         return True
     except Exception as e:
         print(f"[open_app] Start Menu search failed: {e}")
@@ -282,15 +283,15 @@ def open_app(
             # Special case for Notepad with content
             if ("notepad" in app_name.lower() or "notepad" in normalized.lower()) and content:
                 try:
-                    import pyperclip
                     import pyautogui
+                    import pyperclip
                     pyperclip.copy(content)
                     time.sleep(1.0) # Wait for notepad to open
                     pyautogui.hotkey("ctrl", "v")
                     return f"Opened {app_name} and pasted content."
                 except Exception as paste_err:
                     return f"Opened {app_name}, but failed to paste content: {paste_err}"
-            
+
             return f"Opened {app_name}."
 
         if normalized.lower() != app_name.lower():

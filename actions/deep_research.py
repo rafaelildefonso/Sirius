@@ -1,20 +1,14 @@
 # actions/deep_research.py
-import json
-import traceback
 import concurrent.futures
 import re
-import sys
-from pathlib import Path
 from urllib.parse import urlparse
 
 import requests
 from bs4 import BeautifulSoup
 
-from core.cache import search_cache, api_cache
-from or_client import client as or_client
-
-
+from core.cache import api_cache, search_cache
 from core.config_loader import get_all_config
+from or_client import client as or_client
 
 
 def _load_api_keys() -> dict:
@@ -113,9 +107,6 @@ def _extract_location_info(text: str, region: str) -> dict:
 def _build_search_queries(target: str, region: str) -> list[str]:
     """Generate multiple search query variations."""
     queries = []
-
-    # Extract key terms from target
-    target_lower = target.lower()
 
     # Basic query
     queries.append(f"{target} em {region}")
@@ -267,7 +258,7 @@ def _search_gemini(query: str) -> list[dict]:
                 print(f"[DeepResearch] [OK] Gemini: {len(results)} results")
                 search_cache.set(cache_key, results, ttl=3600)
                 return results
-        except:
+        except Exception:
             pass
 
         # Fallback: extract URLs from text
@@ -473,7 +464,7 @@ def deep_research(parameters: dict, player=None) -> str:
     ) / 2, reverse=True)
 
     # Filter out leads with very low location confidence
-    leads = [l for l in leads if int(l.get("location_confidence", 0)) > 30]
+    leads = [lead for lead in leads if int(lead.get("location_confidence", 0)) > 30]
 
     if not leads:
         return "Found potential businesses, but none appear to be in the specified region."
@@ -505,7 +496,7 @@ def deep_research(parameters: dict, player=None) -> str:
             with open(desktop, "w", encoding="utf-8") as f:
                 f.write(final_report)
             final_report += "\n\n(A report has also been saved to your Desktop)."
-        except:
+        except Exception:
             pass
 
     return final_report

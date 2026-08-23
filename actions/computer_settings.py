@@ -1,11 +1,9 @@
 #computer_settings.py
 import json
-import re
-import sys
-import time
-import subprocess
 import platform
-from pathlib import Path
+import re
+import subprocess
+import time
 
 from core.llm_utils import call_llm_for_action
 
@@ -53,7 +51,7 @@ def _get_macos_wifi_interface() -> str:
                         return lines[j].split(":", 1)[1].strip()
     except Exception:
         pass
-    return "en0" 
+    return "en0"
 
 def volume_up():
     if _OS == "Windows":
@@ -92,7 +90,8 @@ def volume_set(value: int):
     if _OS == "Windows":
         try:
             import math
-            from ctypes import cast, POINTER
+            from ctypes import POINTER, cast
+
             from comtypes import CLSCTX_ALL
             from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
             devices   = AudioUtilities.GetSpeakers()
@@ -177,7 +176,7 @@ def _find_window(target: str):
     # 1. Try exact/partial title match (case-sensitive as per pygetwindow)
     wins = gw.getWindowsWithTitle(target)
     if wins: return wins[0]
-    
+
     # 2. Try case-insensitive fuzzy match among all windows
     target_low = target.lower().replace(" ", "")
     for w in gw.getAllWindows():

@@ -2,6 +2,7 @@ import asyncio
 import json
 import random
 from pathlib import Path
+
 from playwright.async_api import async_playwright
 
 BASE_DIR = Path(__file__).resolve().parent.parent

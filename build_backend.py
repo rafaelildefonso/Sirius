@@ -13,8 +13,8 @@ Output:
 
 import json
 import os
-import subprocess
 import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -159,7 +159,7 @@ def _clean_build_artifacts():
 def _compute_backend_hash() -> str:
     import hashlib
     hasher = hashlib.sha256()
-    
+
     # Watch files
     watch_paths = [
         BASE_DIR / "main.py",
@@ -168,7 +168,7 @@ def _compute_backend_hash() -> str:
         BASE_DIR / "sirius-backend.spec",
         BASE_DIR / "requirements.txt",
     ]
-    
+
     # Watch directories recursively
     for folder in ["core", "actions", "agent"]:
         folder_path = BASE_DIR / folder
@@ -177,7 +177,7 @@ def _compute_backend_hash() -> str:
                 for file in sorted(files):
                     if file.endswith((".py", ".txt")):
                         watch_paths.append(Path(root) / file)
-                        
+
     for path in sorted(watch_paths):
         if path.exists():
             hasher.update(str(path.relative_to(BASE_DIR)).encode("utf-8"))
@@ -187,18 +187,41 @@ def _compute_backend_hash() -> str:
                         hasher.update(chunk)
             except Exception:
                 pass
-                
+
     return hasher.hexdigest()
+
+
+def _run_lint():
+    print("[*] Running Ruff linter...")
+    try:
+        import ruff  # noqa: F401
+    except ImportError:
+        print("[*] Ruff not found — installing...")
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "ruff"],
+            check=True,
+            capture_output=True,
+        )
+        print("[OK] Ruff installed\n")
+    result = subprocess.run(
+        [sys.executable, "-m", "ruff", "check", ".", "--exclude", "Mark-LI"],
+        cwd=BASE_DIR,
+    )
+    if result.returncode != 0:
+        print("\n[ERRO] Lint failed. Fix the issues above or skip with --no-lint.")
+        sys.exit(1)
+    print("[OK] Lint passed\n")
 
 
 def main():
     use_cache = "--cached" in sys.argv
+    skip_lint = "--no-lint" in sys.argv
     triple = _get_target_triple()
     dst_exe = TAURI_BINARIES / f"sirius-backend-{triple}.exe"
 
     hash_file = BASE_DIR / ".backend_build_hash"
     current_hash = _compute_backend_hash()
-    
+
     if use_cache and hash_file.exists() and dst_exe.exists():
         try:
             saved_hash = hash_file.read_text(encoding="utf-8").strip()
@@ -221,6 +244,9 @@ def main():
         _install_pyinstaller()
     else:
         print("[OK] PyInstaller already installed\n")
+
+    if not skip_lint:
+        _run_lint()
 
     _ensure_config_files()
     _clean_build_artifacts()
@@ -246,7 +272,7 @@ def main():
 
     src_exe = BASE_DIR / "dist" / "sirius-backend.exe"
     if not src_exe.exists():
-        print(f"[ERRO] dist/sirius-backend.exe not found after build!")
+        print("[ERRO] dist/sirius-backend.exe not found after build!")
         sys.exit(1)
 
     # Copy single binary to Tauri sidecar location
@@ -276,7 +302,7 @@ def main():
                 time.sleep(1.5)
     else:
         print(f"[ERRO] Could not copy to {dst_exe} after 10 attempts.")
-        print(f"       Close any running SIRIUS/Tauri processes and try again.")
+        print("       Close any running SIRIUS/Tauri processes and try again.")
         print(f"       You can manually copy: {src_exe} -> {dst_exe}")
         sys.exit(1)
 
@@ -287,7 +313,7 @@ def main():
 
     size_mb = src_exe.stat().st_size / (1024 * 1024)
     print("=" * 60)
-    print(f"  BUILD SUCCESSFUL")
+    print("  BUILD SUCCESSFUL")
     print(f"  Binary:     {src_exe}")
     print(f"  Size:       {size_mb:.1f} MB")
     print(f"  Sidecar:    {dst_exe}")

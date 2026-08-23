@@ -12,7 +12,7 @@ MEMORY_DIR = BASE_DIR / "memory"
 PROSPECTS_FILE = MEMORY_DIR / "business_prospects.json"
 BUSINESS_PROFILE_FILE = CONFIG_DIR / "user_profile_business.json"
 from core.config_loader import get_secret
-from core.scoring_engine import calculate_purchase_potential, _is_large_company, _estimate_business_size
+from core.scoring_engine import _is_large_company, calculate_purchase_potential
 
 
 def _get_api_key() -> str:

@@ -33,7 +33,7 @@ It's not just an assistant — it's an extension of your digital life.
 ## 🆕 What's New
 
 - 🎨 **Modern UI (React + Tauri v2)** — GPU-accelerated interface with Tailwind CSS, perfect Unicode/Portuguese text rendering, animated HUD via Canvas API. Dual-process architecture: Rust frontend + Python sidecar.
-- 🔌 **WebSocket Server** — UI backend decoupled from PyQt6. Enables any frontend technology (React, Svelte, mobile) to connect to the Python core.
+- 🔌 **WebSocket Server** — UI backend with a WebSocket interface on `ws://localhost:8765`. Enables any frontend technology (React, Svelte, mobile) to connect to the Python core.
 - 🧭 **Onboarding Wizard** — Assistente de primeira execução com 5 passos: modo (gemini/ollama), nome do usuário, API keys, permissões e resumo.
 - 📂 **Advanced File Handling** — Drop PDFs, source code, or images for instant analysis.
 - ⚡ **Optimized Core Engine** — 40% faster interaction speed.
@@ -177,22 +177,23 @@ Simply speak naturally – the AI identifies intent and calls the correct tool.
 | “Search the internet for …” | web_search |
 | “What’s the weather like today?” | weather_report |
 | “Send a WhatsApp to …” | send_message |
-| “Remind me to … at 14h” | eminder |
+| “Remind me to … at 14h” | 
+eminder |
 | “Play … on YouTube” | youtube_video |
 | “What’s on my screen?” | screen_process |
 | “Change volume / Wi‑Fi / brightness” | computer_settings |
-| “Open site … / go back / reload” | rowser_control |
-| “Create / move / delete file …” | ile_controller |
+| “Open site … / go back / reload” | Browser_control |
+| “Create / move / delete file …” | File_controller |
 | “Minimize all / arrange windows” | desktop_control |
 | “Write a code that …” | code_helper |
 | “Create a React project with …” | dev_agent |
-| “Run this background task” | gent_task |
+| “Run this background task” | Agent_task |
 | “Shut down / hibernate / sleep” | computer_control |
 | “Update Steam games” | game_updater |
-| “Search for flights to SP on 15th” | light_finder |
+| “Search for flights to SP on 15th” | Flight_finder |
 | “Hide interface” | hide_interface |
 | “Shut down completely” | shutdown_sirius |
-| Process uploaded file (drag‑and‑drop) | ile_processor |
+| Process uploaded file (drag‑and‑drop) | File_processor |
 | “Remember this info” | save_memory |
 | “Schedule a meeting…” | google_calendar |
 | “Add to Notion calendar” | 
@@ -201,29 +202,21 @@ otion_calendar |
 | “Activate work workspace” | workspaces |
 | “Do deep research on …” | deep_research |
 | “Look for … jobs” | linkedin_jobs_radar |
-| “Help me apply for job …” | pply_assist |
-| “Find freelance work …” | reela_arsenal 
+| “Help me apply for job …” | Apply_assist |
+| “Find freelance work …” | Freela_arsenal 
 ## ⚡ Quick Start
-
-### Legacy UI (PyQt6 — fallback)
-
-```bash
-pip install -r requirements.txt
-playwright install
-python main.py
-```
 
 ### Modern UI (Tauri + React — recommended)
 
-```bash
+```powershell
 # Terminal 1: Python backend
 $env:SIRIUS_WS_UI='1'    # Linux/macOS: export SIRIUS_WS_UI=1
 python main.py
 
-# Terminal 2: Tauri frontend (dev mode)
+# Terminal 2: Tauri frontend (modo dev)
 cd sirius-ui
 npm install
-npm run dev
+npx tauri dev
 ```
 
 ### Building for Production
@@ -233,7 +226,7 @@ npm run dev
 pip install pyinstaller
 python build_backend.py
 
-# 2. Build the Tauri frontend (optional — for distribution)
+# 2. Build the Tauri installer
 cd sirius-ui
 npm install
 npx tauri build
@@ -250,11 +243,8 @@ npx tauri build
 📁 sirius/
 ├── main.py                       # Entry point (runtime principal)
 ├── ws_server.py                  # WebSocket server (localhost:8765) + onboarding
-├── sirius_ui.py                  # UI PyQt6 legada
 ├── sirius_backend_launcher.py    # Sidecar entry point (PyInstaller onefile)
-├── build.py                      # Build script for PyQt6 bundle
 ├── build_backend.py              # Build script for Tauri sidecar (backend .exe)
-├── sirius.spec                   # PyInstaller spec (PyQt6 bundle)
 ├── sirius-backend.spec           # PyInstaller spec (headless sidecar)
 ├── sirius-ui/                    # Frontend React + Vite + Tailwind + Tauri
 │   ├── src/

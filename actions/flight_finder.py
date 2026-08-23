@@ -2,17 +2,13 @@
 import json
 import re
 import subprocess
-import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from config import is_windows, is_mac, is_linux
-from core.cache import api_cache, search_cache
-from core.llm_utils import call_llm_for_action
-
-
+from config import is_mac, is_windows
+from core.cache import api_cache
 from core.config_loader import get_base_dir
-
+from core.llm_utils import call_llm_for_action
 
 BASE_DIR = get_base_dir()
 
@@ -106,7 +102,7 @@ def _build_google_flights_url(
     return (
         f"{base}"
         f"?q={trip}"
-        f"&tfs=CBwQAhoeEgoyMDI1LTAzLTE1agcIARIDSVNUcgcIARIDTEhS"   
+        f"&tfs=CBwQAhoeEgoyMDI1LTAzLTE1agcIARIDSVNUcgcIARIDTEhS"
         f"&curr=USD"
         f"&cabin={cabin_code}"
         f"&adults={passengers}"
@@ -123,6 +119,7 @@ def _search_flights_browser(
     cabin:       str,
 ) -> tuple[str, str]:
     import time
+
     from actions.browser_control import browser_control
 
     url = _build_google_flights_url(

@@ -174,7 +174,7 @@ def save_configs(data: dict) -> None:
         from core.cache import config_cache
         config_cache.invalidate("app_config")
         config_cache.invalidate("llm_utils_config")
-        print(f"[CONFIG] Invalidated config caches (app_config, llm_utils_config)")
+        print("[CONFIG] Invalidated config caches (app_config, llm_utils_config)")
     except Exception:
         pass
 

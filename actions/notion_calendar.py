@@ -1,7 +1,9 @@
 from datetime import datetime, timedelta
-from core.notion_auth import get_notion_client
-from core.cache import api_cache
+
 import requests
+
+from core.cache import api_cache
+from core.notion_auth import get_notion_client
 
 
 def notion_calendar(
@@ -349,7 +351,7 @@ def _complete_notion_event(parameters: dict, notion_client: dict) -> str:
     try:
         resp = requests.patch(url, headers=notion_client, json={"properties": update_props})
         resp.raise_for_status()
-        return f"Evento marcado como concluído no Notion."
+        return "Evento marcado como concluído no Notion."
     except requests.exceptions.RequestException as e:
         status = e.response.status_code if e.response is not None else "N/A"
         body = e.response.text if e.response is not None else "N/A"

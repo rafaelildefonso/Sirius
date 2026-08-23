@@ -116,6 +116,11 @@ a = Analysis(
         # ── Dashboard / Remote ────────────────────────────────────
         'qrcode',
         'dashboard.server',
+        # ── Plugin modules (bundled in PYZ for frozen mode) ────────
+        'plugins',
+        'plugins.calorie_counter',
+        'plugins.pushup_counter',
+        'plugins.upload_video',
     ]
     + collect_submodules('google.genai')
     + collect_submodules('google.generativeai')

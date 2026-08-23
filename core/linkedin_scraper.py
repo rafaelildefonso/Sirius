@@ -5,6 +5,7 @@ import os
 import random
 import sys
 from pathlib import Path
+
 from playwright.async_api import async_playwright
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -228,7 +229,7 @@ async def scrape_linkedin_jobs(keywords: str, location: str = "Brasil", max_jobs
             try:
                 context = await browser_type.launch_persistent_context(**kwargs)
             except Exception:
-                print(f"[Linkedin Scraper] Perfil dedicado falhou. Tentando perfil real...")
+                print("[Linkedin Scraper] Perfil dedicado falhou. Tentando perfil real...")
                 kwargs["user_data_dir"] = get_browser_profile_dir(browser_name)
                 context = await browser_type.launch_persistent_context(**kwargs)
 
@@ -277,7 +278,7 @@ async def scrape_linkedin_jobs(keywords: str, location: str = "Brasil", max_jobs
                     break
 
             if count == 0:
-                print(f"[Linkedin Scraper] Nenhum card encontrado. Logando HTML parcial para debug...")
+                print("[Linkedin Scraper] Nenhum card encontrado. Logando HTML parcial para debug...")
                 html_snippet = await page.content()
                 print(f"[Linkedin Scraper] HTML snippet (500 chars): {html_snippet[:500]}")
                 await context.close()

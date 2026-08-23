@@ -1,6 +1,7 @@
 from core.cache import api_cache
 from core.google_auth import get_google_service
 
+
 def gmail_action(
     parameters: dict,
     response=None,
@@ -35,7 +36,7 @@ def gmail_action(
             cached = api_cache.get(cache_key)
             if cached is not None:
                 return cached
-            
+
             results = service.users().messages().list(userId='me', q=query, maxResults=count).execute()
             messages = results.get('messages', [])
 
@@ -47,7 +48,7 @@ def gmail_action(
             for msg in messages:
                 msg_data = service.users().messages().get(userId='me', id=msg['id'], format='metadata', metadataHeaders=['Subject', 'From']).execute()
                 headers = msg_data.get('payload', {}).get('headers', [])
-                
+
                 subject = "Sem Assunto"
                 sender = "Desconhecido"
                 for h in headers:
@@ -55,19 +56,19 @@ def gmail_action(
                         subject = h['value']
                     if h['name'] == 'From':
                         sender = h['value']
-                
+
                 res += f"- De: {sender}\n  Assunto: {subject}\n"
-            
+
             api_cache.set(cache_key, res, ttl=120)
             return res
 
         elif action == "read_email":
             results = service.users().messages().list(userId='me', q=query, maxResults=1).execute()
             messages = results.get('messages', [])
-            
+
             if not messages:
                 return "Não encontrei nenhum e-mail para ler."
-            
+
             msg_id = messages[0]['id']
             cache_key = f"gmail:read:{msg_id}"
             cached = api_cache.get(cache_key)

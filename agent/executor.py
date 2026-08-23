@@ -1,20 +1,16 @@
-import json
-import re
-import sys
-import threading
-import subprocess
-import tempfile
 import os
+import re
+import subprocess
+import sys
+import tempfile
+import threading
 from pathlib import Path
 from typing import Callable
 
-from agent.planner       import create_plan, replan
-from agent.error_handler import analyze_error, generate_fix, ErrorDecision
-from core.llm_utils      import call_llm_for_action
-
-
+from agent.error_handler import ErrorDecision, analyze_error, generate_fix
+from agent.planner import create_plan, replan
 from core.config_loader import get_base_dir
-
+from core.llm_utils import call_llm_for_action
 
 BASE_DIR = get_base_dir()
 
@@ -110,7 +106,7 @@ def _inject_context(params: dict, tool: str, step_results: dict, goal: str = "")
                 combined = "\n\n---\n\n".join(all_results)
                 translated = _translate_to_goal_language(combined, goal)
                 params["content"] = translated
-                print(f"[Executor] [INJECT] Injected + translated content")
+                print("[Executor] [INJECT] Injected + translated content")
 
     return params
 def _detect_language(text: str) -> str:
@@ -227,6 +223,14 @@ def _call_tool(tool: str, parameters: dict, speak: Callable | None) -> str:
         from actions.gmail import gmail_action
         return gmail_action(parameters=parameters, player=None) or "Done."
 
+    elif tool == "obsidian_notes_search":
+        from actions.obsidian_search import search_notes
+        return search_notes(parameters.get("query", ""), parameters.get("limit", 5))
+
+    elif tool == "obsidian_tasks_list":
+        from actions.obsidian_search import list_tasks
+        return list_tasks()
+
     elif tool == "workspaces":
         from actions.workspaces import workspaces
         return workspaces(parameters=parameters, player=None) or "Done."
@@ -249,7 +253,7 @@ class AgentExecutor:
 
         replan_attempts = 0
         completed_steps = []
-        step_results    = {} 
+        step_results    = {}
         plan            = create_plan(goal)
 
         while True:
@@ -286,7 +290,7 @@ class AgentExecutor:
                         break
                     try:
                         result = _call_tool(tool, params, speak)
-                        step_results[step_num] = result 
+                        step_results[step_num] = result
                         completed_steps.append(step)
                         print(f"[Executor] [OK] Step {step_num} done: {str(result)[:100]}")
                         step_ok = True
@@ -305,7 +309,8 @@ class AgentExecutor:
 
                         if decision == ErrorDecision.RETRY:
                             attempt += 1
-                            import time; time.sleep(2)
+                            import time
+                            time.sleep(2)
                             continue
 
                         elif decision == ErrorDecision.SKIP:
@@ -319,7 +324,7 @@ class AgentExecutor:
                             if speak: speak(msg)
                             return msg
 
-                        else: 
+                        else:
                             fix_suggestion = recovery.get("fix_suggestion", "")
                             if fix_suggestion and tool != "generated_code":
                                 try:

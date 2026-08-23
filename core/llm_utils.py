@@ -3,12 +3,9 @@ core/llm_utils.py — Unified LLM helper for dual-mode operations.
 Routes to Gemini (mode=gemini) or Local Ollama (mode=local) based on config.
 """
 import base64
-import json
-import re
-from pathlib import Path
 
-from core.cache import config_cache, search_cache, llm_cache
-from core.config_loader import get_all_config, get_secret
+from core.cache import config_cache, llm_cache, search_cache
+from core.config_loader import get_all_config
 
 
 def _get_config() -> dict:

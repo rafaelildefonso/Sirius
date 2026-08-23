@@ -17,15 +17,12 @@ Supported types:
 """
 
 import io
-import os
-import re
 import json
+import re
 import shutil
 import subprocess
-import sys
 import tempfile
 from pathlib import Path
-from datetime import datetime
 
 from core.llm_utils import call_llm_for_action, call_vision_for_action
 
@@ -507,12 +504,6 @@ def _process_audio(path: Path, action: str, params: dict, speak=None) -> str:
 
     if action == "transcribe":
         try:
-            content = path.read_bytes()
-            mime    = {
-                "mp3": "audio/mp3", "wav": "audio/wav",
-                "ogg": "audio/ogg", "m4a": "audio/mp4",
-                "aac": "audio/aac", "flac": "audio/flac",
-            }.get(path.suffix.lstrip(".").lower(), "audio/mpeg")
             result = call_llm_for_action("Transcribe all speech in this audio file accurately.")
             if params.get("save", True):
                 out = _output_path(path, "transcript", ".txt")
@@ -603,7 +594,7 @@ def _process_video(path: Path, action: str, params: dict, speak=None) -> str:
         end   = params.get("end",   "")
         if not _ffmpeg_available():
             return "ffmpeg not found."
-        out = _output_path(path, f"trim", path.suffix)
+        out = _output_path(path, "trim", path.suffix)
         try:
             cmd = ["ffmpeg", "-i", str(path), "-ss", str(start)]
             if end:
@@ -630,7 +621,7 @@ def _process_video(path: Path, action: str, params: dict, speak=None) -> str:
             return f"Extract frame failed: {e}"
 
     if action == "compress":
-        crf = int(params.get("quality", 28))  
+        crf = int(params.get("quality", 28))
         if not _ffmpeg_available():
             return "ffmpeg not found."
         out = _output_path(path, f"compressed_crf{crf}", ".mp4")
@@ -687,7 +678,8 @@ def _process_archive(path: Path, action: str, params: dict, speak=None) -> str:
 
     if action == "list":
         try:
-            import zipfile, tarfile
+            import tarfile
+            import zipfile
             ext = path.suffix.lower()
             if ext == ".zip":
                 with zipfile.ZipFile(path) as z:
@@ -783,7 +775,7 @@ def file_processor(parameters: dict, player=None, speak=None) -> str:
         "csv":     lambda p, a, pm, s: _process_data(p, "csv",   a, pm, s),
         "excel":   lambda p, a, pm, s: _process_data(p, "excel", a, pm, s),
         "json":    _process_json,
-        "xml":     lambda p, a, pm, s: _process_json(p, a, pm, s),  
+        "xml":     lambda p, a, pm, s: _process_json(p, a, pm, s),
         "code":    _process_code,
         "audio":   _process_audio,
         "video":   _process_video,

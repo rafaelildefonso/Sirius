@@ -1,14 +1,14 @@
+import json
 import os
 import re
-import sys
-import json
-import time
 import subprocess
+import sys
 import threading
-from pathlib import Path
+import time
 from datetime import datetime
+from pathlib import Path
 
-from config import get_os, is_windows, is_mac, is_linux
+from config import is_linux, is_mac, is_windows
 
 _KNOWN_APPIDS: dict[str, tuple[str, str]] = {
     "pubg":                ("578080",  "PUBG: Battlegrounds"),
@@ -190,8 +190,8 @@ def _get_steam_window_rect() -> tuple[int, int, int, int] | None:
 def _click_first_profile_by_screenshot() -> bool:
 
     try:
-        import pyautogui
         import numpy as np
+        import pyautogui
 
         time.sleep(1.5)
         win = _get_steam_window_rect()
@@ -249,7 +249,8 @@ def _handle_steam_profile_selection() -> bool:
 
     wx, wy, ww, wh = win
     try:
-        import pyautogui, numpy as np
+        import numpy as np
+        import pyautogui
         screenshot   = pyautogui.screenshot(region=(wx, wy, ww, wh))
         img          = np.array(screenshot)
         is_small     = ww < 900 and wh < 700
@@ -271,7 +272,8 @@ def _handle_steam_profile_selection() -> bool:
     return _click_first_profile_by_screenshot()
 
 def _find_best_drive() -> dict | None:
-    import shutil, string
+    import shutil
+    import string
     drives = []
     for letter in string.ascii_uppercase:
         drive_path = f"{letter}:\\"
@@ -486,7 +488,8 @@ def _search_steam_appid(game_name: str) -> tuple[str | None, str | None]:
             return app_id, canonical
 
     try:
-        import urllib.request, urllib.parse
+        import urllib.parse
+        import urllib.request
         query = urllib.parse.quote(game_name)
         url   = f"https://store.steampowered.com/api/storesearch/?term={query}&l=english&cc=US"
         req   = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
@@ -642,7 +645,7 @@ def _watch_and_shutdown(steam_path: Path, speak=None,
                 speak(f"Download started for {names}. I'll shut down when done.")
             break
     else:
-        return  
+        return
 
     while time.time() < deadline:
         time.sleep(check_interval)
@@ -713,7 +716,7 @@ def _epic_manifests_path() -> Path | None:
         p = Path.home() / "Library" / "Application Support" \
             / "Epic" / "EpicGamesLauncher" / "Data" / "Manifests"
         return p if p.exists() else None
-    return None  
+    return None
 
 
 def _get_epic_games() -> list[dict]:
@@ -853,8 +856,8 @@ def _schedule_linux(hour: int, minute: int) -> str:
     cron_entry  = f"{minute} {hour} * * * {sys.executable} {script_path} --scheduled  {marker}"
     try:
         existing = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
-        lines    = [l for l in existing.stdout.splitlines()
-                    if marker not in l and str(script_path) not in l]
+        lines    = [line for line in existing.stdout.splitlines()
+                    if marker not in line and str(script_path) not in line]
         lines.append(cron_entry)
         proc = subprocess.run(["crontab", "-"],
                               input="\n".join(lines) + "\n",
@@ -884,8 +887,8 @@ def _cancel_scheduled_update() -> str:
 
     try:
         existing = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
-        lines    = [l for l in existing.stdout.splitlines()
-                    if "SIRIUS_GameUpdater" not in l]
+        lines    = [line for line in existing.stdout.splitlines()
+                    if "SIRIUS_GameUpdater" not in line]
         subprocess.run(["crontab", "-"],
                        input="\n".join(lines) + "\n", text=True)
         return "Scheduled update cancelled."

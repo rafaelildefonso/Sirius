@@ -3,12 +3,9 @@ from __future__ import annotations
 import asyncio
 import base64
 import io
-import json
 import re
-import sys
 import threading
 import time
-from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -37,7 +34,7 @@ from google import genai
 from google.genai import types as gtypes
 
 from core.cache import config_cache, vision_cache
-from core.config_loader import get_secret, get_config, get_all_config
+from core.config_loader import get_all_config, get_config, get_secret, set_config
 from core.llm_utils import _get_mode, call_vision_for_action
 
 
@@ -114,9 +111,9 @@ def _cv2_backend() -> int:
         return 0
     os_name = _get_os()
     if os_name == "windows":
-        return cv2.CAP_DSHOW    
+        return cv2.CAP_DSHOW
     if os_name == "mac":
-        return cv2.CAP_AVFOUNDATION  
+        return cv2.CAP_AVFOUNDATION
     return cv2.CAP_ANY
 
 
@@ -144,12 +141,12 @@ def _detect_camera_index() -> int:
     for idx in range(6):
         if _probe_camera(idx, backend):
             print(f"[Vision] [OK] Camera found at index {idx}")
-            _save_config_key("camera_index", idx)
+            set_config("camera_index", idx)
             return idx
         print(f"[Vision] [WARN]  Camera index {idx}: no usable frame")
 
     print("[Vision] [WARN]  No camera found — defaulting to index 0")
-    _save_config_key("camera_index", 0)
+    set_config("camera_index", 0)
     return 0
 
 
@@ -267,7 +264,7 @@ class _VisionSession:
                 ) as session:
                     self._session = session
                     self._ready_evt.set()
-                    backoff = 2.0  
+                    backoff = 2.0
                     print("[Vision] [OK] Connected")
 
                     async with asyncio.TaskGroup() as tg:
@@ -285,7 +282,7 @@ class _VisionSession:
             print(f"[Vision] [RETRY] Reconnecting in {backoff:.0f}s...")
             await asyncio.sleep(backoff)
             backoff = min(backoff * 1.5, 30.0)
-            self._ready_evt.set()  
+            self._ready_evt.set()
 
     async def _send_loop(self) -> None:
         while True:
@@ -342,7 +339,7 @@ class _VisionSession:
 
         except Exception as e:
             print(f"[Vision] [WARN]  Recv error: {e}")
-            raise  
+            raise
 
     async def _play_loop(self) -> None:
         stream = sd.RawOutputStream(

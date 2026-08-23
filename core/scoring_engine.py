@@ -4,7 +4,6 @@ import re
 def _is_large_company(biz: dict) -> bool:
     _, review_count = _parse_rating_and_reviews(biz.get("rating", ""))
     name = (biz.get("name", "") or "").lower()
-    category = (biz.get("category", "") or "").lower()
 
     large_keywords = ["grupo", "s/a", "s.a", "matriz", "indústria e comércio"]
 
@@ -19,7 +18,6 @@ def _is_large_company(biz: dict) -> bool:
 
 def _estimate_business_size(biz: dict) -> str:
     _, review_count = _parse_rating_and_reviews(biz.get("rating", ""))
-    name = (biz.get("name", "") or "")
 
     if _is_large_company(biz):
         return "grande"

@@ -1,27 +1,27 @@
 from __future__ import annotations
 
-import json
 import os
 import sys
 import tempfile
-from pathlib import Path
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Iterator
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from persistence.database import Database
-from persistence.repository import Repository
-from persistence.models import (
-    MemoryType, Event, Fact, Preference, FileReference,
-    Conversation, Message, Tag, RetrievedMemory, SearchResult,
-)
-from persistence.classifier import Classifier
-from persistence.extractor import Extractor
 from persistence.backup import BackupManager
-
+from persistence.classifier import Classifier
+from persistence.database import Database
+from persistence.extractor import Extractor
+from persistence.models import (
+    Event,
+    Fact,
+    FileReference,
+    MemoryType,
+)
+from persistence.repository import Repository
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -153,7 +153,7 @@ class TestEvent:
 
     def test_fts_search(self, repo: Repository):
         ev = Event(type=MemoryType.KNOWLEDGE, payload={"text": "python programming tips"})
-        eid = repo.save_event(ev)
+        repo.save_event(ev)
         results = repo.search_events("python")
         assert len(results) >= 1
 
@@ -181,7 +181,7 @@ class TestEvent:
 class TestFact:
     def test_save_and_search(self, repo: Repository):
         f = Fact(subject="Joao", predicate="gosta_de", object="Python", importance=0.8)
-        fid = repo.save_fact(f)
+        repo.save_fact(f)
         results = repo.search_facts("Python")
         assert len(results) >= 1
         assert results[0].subject == "Joao"
@@ -211,7 +211,7 @@ class TestPreference:
 class TestFileReference:
     def test_save_and_search(self, repo: Repository):
         ref = FileReference(path="/tmp/test.txt", type="file", size=100)
-        fid = repo.save_file_reference(ref)
+        repo.save_file_reference(ref)
         results = repo.search_files("test.txt")
         assert len(results) >= 1
 
@@ -258,7 +258,6 @@ class TestMaintenance:
         assert "conversation" in stats
 
     def test_purge_expired(self, repo: Repository):
-        past = datetime.now() - timedelta(days=10)
         ev = Event(
             type=MemoryType.TEMPORARY,
             payload={"text": "old"},
@@ -371,8 +370,9 @@ class TestEmbedding:
         assert abs(norm - 1.0) < 0.01, f"norm={norm}"
 
     def test_different_texts_different_vectors(self):
-        from persistence.embedding import EmbeddingProvider
         import numpy as np
+
+        from persistence.embedding import EmbeddingProvider
         p = EmbeddingProvider()
         v1 = p.encode("cat")
         v2 = p.encode("dog")
@@ -380,15 +380,16 @@ class TestEmbedding:
         assert sim < 0.99
 
     def test_empty_text_zero_vector(self):
-        from persistence.embedding import EmbeddingProvider
         import numpy as np
+
+        from persistence.embedding import EmbeddingProvider
         p = EmbeddingProvider()
         vec = p.encode("")
         assert np.linalg.norm(vec) == 0.0
 
     def test_batch_encoding(self):
+
         from persistence.embedding import EmbeddingProvider
-        import numpy as np
         p = EmbeddingProvider()
         vecs = p.encode_batch(["a", "b", "c"])
         assert vecs.shape == (3, 384)

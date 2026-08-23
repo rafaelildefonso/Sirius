@@ -1,13 +1,11 @@
 #desktop.py
 import os
-import sys
-import json
+import platform
 import shutil
 import subprocess
 import tempfile
-import platform
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
 
 from core.llm_utils import call_llm_for_action
 
@@ -26,7 +24,7 @@ def _get_api_key() -> str:
     if not key:
         raise RuntimeError("gemini_api_key not found.")
     return key
-    
+
 def _get_desktop() -> Path:
     if _OS == "Linux":
         xdg = os.environ.get("XDG_DESKTOP_DIR", "")
@@ -56,7 +54,7 @@ def _build_sandbox() -> dict:
             "copytree":   shutil.copytree,
             "disk_usage": shutil.disk_usage,
         })(),
-        "os_path": os.path,  
+        "os_path": os.path,
     }
 
     if _PYAUTOGUI:
@@ -147,7 +145,7 @@ def set_wallpaper(image_path: str) -> str:
                     Image.open(path).convert("RGB").save(bmp_path, "BMP")
                     path = bmp_path
                 except ImportError:
-                    pass 
+                    pass
             ctypes.windll.user32.SystemParametersInfoW(20, 0, str(path), 3)
             return f"Wallpaper set: {path.name}"
 

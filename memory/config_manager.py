@@ -1,7 +1,8 @@
 import json
 from pathlib import Path
 
-from core.config_loader import get_secret, get_all_config, save_configs as _save_configs
+from core.config_loader import get_all_config, get_secret
+from core.config_loader import save_configs as _save_configs
 
 
 def get_base_dir() -> Path:
@@ -102,4 +103,33 @@ def save_speak_proactive_enabled(enabled: bool) -> None:
     ensure_config_dir()
     cfg = get_all_config()
     cfg["speak_proactive_enabled"] = enabled
+    _save_configs(cfg)
+
+
+def get_brief_enabled() -> bool:
+    cfg = get_all_config()
+    return cfg.get("morning_brief_enabled", True)
+
+def save_brief_enabled(enabled: bool) -> None:
+    ensure_config_dir()
+    cfg = get_all_config()
+    cfg["morning_brief_enabled"] = enabled
+    _save_configs(cfg)
+
+
+def get_plugin_enabled(plugin_name: str) -> bool:
+    """Plugins are enabled by default the moment they're discovered (opt-out model)."""
+    plugins_cfg = get_all_config().get("plugins_enabled")
+    if isinstance(plugins_cfg, dict):
+        return bool(plugins_cfg.get(plugin_name, True))
+    return True
+
+def save_plugin_enabled(plugin_name: str, enabled: bool) -> None:
+    ensure_config_dir()
+    cfg = get_all_config()
+    plugins_cfg = cfg.get("plugins_enabled")
+    if not isinstance(plugins_cfg, dict):
+        plugins_cfg = {}
+    plugins_cfg[plugin_name] = enabled
+    cfg["plugins_enabled"] = plugins_cfg
     _save_configs(cfg)

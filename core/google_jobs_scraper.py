@@ -1,7 +1,6 @@
 import asyncio
 import json
 import random
-import sys
 import re
 from pathlib import Path
 
@@ -83,7 +82,7 @@ async def scrape_google_jobs_via_serpapi(keywords: str, max_jobs: int = 10) -> l
 
         jobs_results = results.get("jobs_results", [])
         if not jobs_results:
-            print(f"[Google Jobs Scraper] SerpAPI 0 jobs. Trying without hl/gl...")
+            print("[Google Jobs Scraper] SerpAPI 0 jobs. Trying without hl/gl...")
             # Fallback: try without hl/gl
             params2 = {k: v for k, v in params.items() if k not in ("hl", "gl")}
             resp2 = await client.get("https://serpapi.com/search", params=params2)
@@ -319,7 +318,7 @@ async def scrape_google_jobs_via_playwright(keywords: str, max_jobs: int = 10) -
                         title = (await t_el.inner_text()).strip()
 
                     if not title:
-                        lines = [l.strip() for l in card_text.split('\n') if l.strip()]
+                        lines = [line.strip() for line in card_text.split('\n') if line.strip()]
                         if lines:
                             title = lines[0]
 
@@ -329,7 +328,7 @@ async def scrape_google_jobs_via_playwright(keywords: str, max_jobs: int = 10) -
 
                     # Company from card text: usually 2nd line in card
                     company = "Não informada"
-                    lines = [l.strip() for l in card_text.split('\n') if l.strip()]
+                    lines = [line.strip() for line in card_text.split('\n') if line.strip()]
                     for line in lines:
                         if line != title and line != lines[0]:
                             # Remove common non-company prefixes
@@ -385,9 +384,9 @@ async def scrape_google_jobs_via_playwright(keywords: str, max_jobs: int = 10) -
                                 "[data-location]", "span[class*='location']"]:
                         el = page.locator(sel).first
                         if await el.count() > 0:
-                            l = (await el.inner_text()).strip()
-                            if l:
-                                location = l
+                            loc = (await el.inner_text()).strip()
+                            if loc:
+                                location = loc
                                 break
 
                     # Description

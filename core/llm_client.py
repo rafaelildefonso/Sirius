@@ -25,7 +25,6 @@ import re
 import subprocess
 import sys
 import time
-from pathlib import Path
 from typing import Generator
 
 import requests
@@ -105,7 +104,7 @@ def ensure_ollama_running(timeout: int = 15) -> bool:
             else:
                 print(f"[LLM] Server at {url} returned non-200.  Is it running?")
             return ok
-        except Exception as e:
+        except Exception:
             print(
                 f"[LLM] Cannot reach OpenAI-compatible server at {url}.\n"
                 "      Make sure LM Studio / LocalAI / Jan is running and the server is started."

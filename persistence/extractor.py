@@ -7,9 +7,9 @@ from __future__ import annotations
 import json
 import re
 from datetime import datetime
-from typing import Any, Optional
+from typing import Optional
 
-from persistence.models import Event, MemoryType, RelevanceMetadata
+from persistence.models import Event, MemoryType
 
 _SYSTEM_PROMPT = """You are a structured memory extractor. Given a conversation turn, extract a JSON object with:
 

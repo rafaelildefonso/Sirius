@@ -1,7 +1,5 @@
 # actions/freela_arsenal.py
 import json
-import os
-import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -51,7 +49,7 @@ def _format_maps_result(resultado, detalhado=False):
     """Formata resultado do Maps scraper para texto."""
     r = resultado["resumo"]
     lines = [
-        f"[MAPS]  PROSPECÇÃO GOOGLE MAPS",
+        "[MAPS]  PROSPECÇÃO GOOGLE MAPS",
         f"   Total de empresas encontradas: {r['total_encontrado']}",
         f"   Com telefone: {r['com_telefone']}",
         f"   Com site: {r['com_site']}",
@@ -151,7 +149,7 @@ def freela_arsenal(parameters: dict, player=None, speak=None) -> str:
                 roles = profile.get("target_roles", [])
                 if roles:
                     target = ", ".join(roles)
-        except:
+        except Exception:
             pass
 
     if not competencias:

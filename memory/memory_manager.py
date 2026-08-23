@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 import sys
 import threading
 from datetime import datetime
-from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 from core.cache import memory_cache
 
@@ -38,7 +36,6 @@ def _init_db():
         # Scheduler e Backup são opcionais — se falharem, DB ainda funciona
         try:
             from persistence.scheduler import Scheduler
-            from persistence.backup import BackupManager
             schedule = Scheduler()
             schedule.start()
             _globals()["_scheduler"] = schedule
@@ -49,7 +46,6 @@ def _init_db():
 
 
 def _globals() -> dict:
-    import __main__
     mod = sys.modules[__name__]
     return vars(mod)
 
@@ -510,7 +506,6 @@ def process_user_input(
     try:
         from persistence.classifier import Classifier
         from persistence.extractor import Extractor
-        from persistence.repository import Repository
 
         classifier = Classifier()
         extractor = Extractor()

@@ -1,23 +1,18 @@
 import json
 import re
-import sys
-from pathlib import Path
 from enum import Enum
 
-from core.llm_utils import call_llm_for_action
-
-
 from core.config_loader import get_base_dir
-
+from core.llm_utils import call_llm_for_action
 
 BASE_DIR = get_base_dir()
 
 
 class ErrorDecision(Enum):
-    RETRY       = "retry"      
-    SKIP        = "skip"       
-    REPLAN      = "replan"     
-    ABORT       = "abort"    
+    RETRY       = "retry"
+    SKIP        = "skip"
+    REPLAN      = "replan"
+    ABORT       = "abort"
 
 
 ERROR_ANALYST_PROMPT = """You are the error recovery module of SIRIUS XXXIX AI assistant.

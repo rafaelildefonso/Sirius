@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import concurrent.futures
 import json
-import sys
 import threading
 from datetime import datetime, timezone
 from pathlib import Path

@@ -4,15 +4,13 @@ Scheduler — background tasks for TTL expiry, reminders, cleanup, and periodic 
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import threading
 import time
-from datetime import datetime, timedelta
-from typing import Any, Optional
+from typing import Optional
 
-from persistence.repository import Repository
 from persistence.backup import BackupManager
+from persistence.repository import Repository
 
 logger = logging.getLogger("persistence.scheduler")
 

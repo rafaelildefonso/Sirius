@@ -1,6 +1,8 @@
 # config/__init__.py
-from core.config_loader import get_config as _get_config, get_os as _get_os
-from core.config_loader import is_windows as _is_windows, is_mac as _is_mac, is_linux as _is_linux
+from core.config_loader import get_os as _get_os
+from core.config_loader import is_linux as _is_linux
+from core.config_loader import is_mac as _is_mac
+from core.config_loader import is_windows as _is_windows
 
 
 def get_config() -> dict:

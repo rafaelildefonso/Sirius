@@ -7,8 +7,8 @@ from __future__ import annotations
 import json
 import math
 import time
-from datetime import datetime, timedelta
-from typing import Any, Optional
+from datetime import datetime
+from typing import Optional
 
 import numpy as np
 

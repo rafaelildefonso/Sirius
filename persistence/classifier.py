@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 from typing import Optional
 
-from persistence.models import MemoryType, MEMORY_TYPE_LABELS
+from persistence.models import MemoryType
 
 _SYSTEM_PROMPT = """You are a memory classifier for a personal AI assistant.
 Your task is to classify the user's message into ONE of the following categories.

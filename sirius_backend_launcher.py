@@ -6,9 +6,8 @@ with default config files on first run, then sets SIRIUS_DATA_DIR.
 Also initializes the persistence database on startup.
 """
 import os
-import sys
 import shutil
-import threading
+import sys
 from pathlib import Path
 
 # ── Nuclear: force CREATE_NO_WINDOW on EVERY subprocess call on Windows ───────
@@ -43,7 +42,7 @@ def _migrate_from_roaming(data_dir: Path):
     print(f"[LAUNCHER] Migrating existing data from {old_dir} to {data_dir}")
     try:
         shutil.copytree(old_dir, data_dir, dirs_exist_ok=True)
-        print(f"[LAUNCHER] Migration complete")
+        print("[LAUNCHER] Migration complete")
     except Exception as e:
         print(f"[LAUNCHER] Warning: migration failed - {e}")
 
@@ -95,7 +94,7 @@ def _init_data_dir():
     if env_src.exists() and not env_dst.exists():
         try:
             shutil.copy2(env_src, env_dst)
-            print(f"[LAUNCHER] Created default .env")
+            print("[LAUNCHER] Created default .env")
         except PermissionError as e:
             print(f"[LAUNCHER] Warning: could not copy .env - {e}. Creating empty .env instead.")
             env_dst.write_text("", encoding="utf-8")
@@ -113,7 +112,7 @@ def _init_database():
         print(f"[LAUNCHER] Database initialized at {db_path} (exists={db_exists})")
     except ImportError as e:
         print(f"[LAUNCHER] Database init FAILED — missing import: {e}")
-        print(f"[LAUNCHER] Check that 'persistence' package and 'cryptography' are bundled in the build.")
+        print("[LAUNCHER] Check that 'persistence' package and 'cryptography' are bundled in the build.")
     except Exception as e:
         print(f"[LAUNCHER] Warning: database initialization deferred - {e}")
 

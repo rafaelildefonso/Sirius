@@ -1,12 +1,9 @@
-import json
 import re
-import sys
 import threading
-from pathlib import Path
 
 from core.cache import search_cache
-from core.llm_utils import _get_mode, call_search_for_action
 from core.config_loader import get_secret
+from core.llm_utils import _get_mode, call_search_for_action
 
 
 def _get_api_key() -> str:

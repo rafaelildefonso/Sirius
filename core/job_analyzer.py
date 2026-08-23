@@ -1,8 +1,7 @@
 # core/job_analyzer.py
 import json
-import os
-import sys
 from pathlib import Path
+
 from google import genai
 from google.genai import types
 
@@ -33,35 +32,35 @@ def analyze_all_jobs():
     if not api_key:
         print("[Job Analyzer] Erro: Gemini API Key não encontrada.")
         return 0
-        
+
     profile = load_user_profile()
     if not profile:
         print("[Job Analyzer] Erro: Perfil do usuário não encontrado ou vazio.")
         return 0
-        
+
     if not JOBS_FILE.exists():
         print("[Job Analyzer] Erro: Nenhuma vaga encontrada para análise.")
         return 0
-        
+
     try:
         with open(JOBS_FILE, "r", encoding="utf-8") as f:
             jobs = json.load(f)
     except Exception as e:
         print(f"[Job Analyzer] Erro ao carregar vagas: {e}")
         return 0
-        
+
     # Filter unanalyzed jobs
     unanalyzed = [job for job in jobs if "analysis" not in job]
     if not unanalyzed:
         print("[Job Analyzer] Todas as vagas já foram analisadas.")
         return 0
-        
+
     print(f"[Job Analyzer] Analisando {len(unanalyzed)} vagas usando Gemini API...")
-    
+
     # Initialize Gemini client
     client = genai.Client(api_key=api_key)
     analyzed_count = 0
-    
+
     for job in unanalyzed:
         try:
             # Construct analysis prompt
@@ -106,21 +105,21 @@ Importante: Responda estritamente o JSON sem tags markdown adicionais (como ```j
                     response_mime_type="application/json"
                 )
             )
-            
+
             raw_text = response.text.strip()
             # Parse JSON
             analysis_data = json.loads(raw_text)
-            
+
             # Apply analysis data to job
             job["analysis"] = analysis_data
             analyzed_count += 1
             print(f"[Job Analyzer] Analisada com sucesso: {job['title']} - Match: {analysis_data.get('match_score')}%")
-            
+
         except Exception as e:
             print(f"[Job Analyzer] Erro ao analisar vaga {job.get('title')}: {e}")
             # If JSON parsing fails or Gemini fails, we skip for now
             continue
-            
+
     # Save back to file
     if analyzed_count > 0:
         try:
@@ -129,7 +128,7 @@ Importante: Responda estritamente o JSON sem tags markdown adicionais (como ```j
             print(f"[Job Analyzer] Salvas {analyzed_count} análises com sucesso!")
         except Exception as e:
             print(f"[Job Analyzer] Erro ao salvar análises: {e}")
-            
+
     return analyzed_count
 
 if __name__ == "__main__":

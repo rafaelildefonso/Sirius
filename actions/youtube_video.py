@@ -1,16 +1,9 @@
 #youtube_video.py
-import json
 import re
-import sys
-import time
 import subprocess
-import shutil
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
 from urllib.parse import quote_plus
-
-import pyautogui
-import numpy as np
 
 try:
     import requests
@@ -24,13 +17,10 @@ try:
 except ImportError:
     _TRANSCRIPT_OK = False
 
-from config import get_os, is_windows, is_mac, is_linux
-from core.cache import search_cache, api_cache
-from core.llm_utils import call_llm_for_action
-
-
+from config import is_linux, is_mac, is_windows
+from core.cache import api_cache, search_cache
 from core.config_loader import get_base_dir
-
+from core.llm_utils import call_llm_for_action
 
 BASE_DIR        = get_base_dir()
 API_CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
@@ -295,7 +285,7 @@ def _handle_play(parameters: dict, player) -> str:
         _open_url(video_url)
         return f"Playing: {query}"
 
-    print(f"[YouTube] [WARN] Scrape failed, opening filtered search page")
+    print("[YouTube] [WARN] Scrape failed, opening filtered search page")
     fallback_url = (
         f"https://www.youtube.com/results"
         f"?search_query={quote_plus(query)}"

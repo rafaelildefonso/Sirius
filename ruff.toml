@@ -1,0 +1,29 @@
+target-version = "py311"
+line-length = 120
+
+[lint]
+select = ["E", "F", "I", "N", "W"]
+ignore = [
+    "E501",
+    # Project convention: camelCase variables/args in some modules
+    "N802",
+    "N803",
+    "N806",
+    # Deliberate style: multiple statements on one line
+    "E701",
+    "E702",
+    # Module-level imports after non-import code (common for circular import workaround)
+    "E402",
+]
+
+exclude = [
+    "dist",
+    "build",
+    "sirius-ui",
+    ".venv",
+    ".env",
+    "__pycache__",
+    "*.pyc",
+    # Vendored base repository (reference only, not part of the build)
+    "Mark-LI",
+]

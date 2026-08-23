@@ -1,15 +1,12 @@
-import subprocess
-import sys
 import json
 import re
+import subprocess
+import sys
 import time
 from pathlib import Path
 
-from core.llm_utils import call_llm_for_action
-
-
 from core.config_loader import get_base_dir
-
+from core.llm_utils import call_llm_for_action
 
 BASE_DIR         = get_base_dir()
 API_CONFIG_PATH  = BASE_DIR / "config" / "api_keys.json"
@@ -52,7 +49,7 @@ def _classify_error(output: str) -> str:
 
     if "syntaxerror" in low or "invalid syntax" in low:
         return "syntax_error"
-    
+
     if "cannot import" in low or "importerror" in low:
         return "import_error"
 
@@ -67,7 +64,7 @@ def _classify_error(output: str) -> str:
 
 
 def _has_error(output: str, run_command: str) -> bool:
-    
+
     low = output.lower()
 
     if "timed out" in low:
@@ -448,7 +445,7 @@ def _build_project(
     _open_vscode(project_dir)
 
     last_output   = ""
-    auto_installs = 0  
+    auto_installs = 0
 
     for attempt in range(1, MAX_FIX_ATTEMPTS + 1):
         log(f"Running project (attempt {attempt}/{MAX_FIX_ATTEMPTS})...")

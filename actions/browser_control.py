@@ -12,12 +12,15 @@ from pathlib import Path
 from typing import Optional
 
 from playwright.async_api import (
-    async_playwright,
     BrowserContext,
     Page,
     Playwright,
+    async_playwright,
+)
+from playwright.async_api import (
     TimeoutError as PlaywrightTimeout,
 )
+
 _OS = platform.system()   # "Windows" | "Darwin" | "Linux"
 
 def _is_running(name: str) -> bool:
@@ -257,7 +260,7 @@ def _find_exe_windows(prog_name: str) -> Optional[str]:
         local = os.environ.get("LOCALAPPDATA", "")
         prog  = os.environ.get("PROGRAMFILES", "")
         prog86 = os.environ.get("PROGRAMFILES(X86)", "")
-        
+
         common = {
             "brave": [
                 Path(local) / "BraveSoftware" / "Brave-Browser" / "Application" / "brave.exe",
@@ -340,7 +343,7 @@ def _resolve_browser(name: str) -> dict | None:
     if spec.get("special") == "opera_windows":
         exe = _find_opera_windows()
         if not exe:
-            print(f"[Browser] [WARN]  Opera executable not found on Windows.")
+            print("[Browser] [WARN]  Opera executable not found on Windows.")
         return {"engine": engine, "exe": exe, "channel": channel}
 
     for b in bins:
@@ -533,9 +536,9 @@ class _BrowserSession:
                 Path(sirius).mkdir(parents=True, exist_ok=True)
                 self._context = await engine_obj.launch_persistent_context(sirius, **kwargs)
 
-            await asyncio.sleep(0.5)  
+            await asyncio.sleep(0.5)
             self._page = await self._context.new_page()
-            print(f"[Browser] [OK] Firefox launched")
+            print("[Browser] [OK] Firefox launched")
             return
 
         if engine_name == "webkit":
@@ -550,7 +553,7 @@ class _BrowserSession:
             self._context = await engine_obj.launch_persistent_context(safari_profile, **kwargs)
             await asyncio.sleep(0.5)
             self._page = await self._context.new_page()
-            print(f"[Browser] [OK] Safari launched")
+            print("[Browser] [OK] Safari launched")
             return
 
         profile = _real_profile_dir(self.browser_name)
@@ -591,13 +594,13 @@ class _BrowserSession:
         except Exception as e:
             err_msg = str(e).lower()
             is_lock = any(k in err_msg for k in ["lock", "in use", "used by another", "is_open"])
-            
+
             if is_lock:
                 print(f"[Browser] [WARN]  Profile locked for {label}: {e}")
                 raise e
 
             print(f"[Browser] [WARN]  Launch failed for {label}: {e}")
-            
+
             sirius_profile = str(Path.home() / ".sirius_profiles" / self.browser_name)
             Path(sirius_profile).mkdir(parents=True, exist_ok=True)
             print(f"[Browser] Retrying with SIRIUS profile: {sirius_profile}")
@@ -612,24 +615,24 @@ class _BrowserSession:
                 # Cleanup if partially opened
                 if 'ctx' in locals():
                     try: await ctx.close()
-                    except: pass
+                    except Exception: pass
                 raise RuntimeError(f"Could not launch {self.browser_name}: {e2}") from e2
 
 
     async def _get_page(self) -> Page:
         if self._is_alive():
             return self._page
-            
+
         # If not alive, close and restart
         if self._context:
             await self._async_close()
-            
+
         await self._launch()
         return self._page
 
     async def go_to(self, url: str) -> str:
         url = _normalize_url(url)
-        
+
         try:
             page = await self._get_page()
         except Exception as e:
@@ -877,9 +880,9 @@ class _SessionRegistry:
                     if _is_running(exe_file):
                         running_browser = b
                         break
-            
+
             browser_name = running_browser or self._active_browser or _detect_default_browser()
-            
+
         browser_name = _ALIASES.get(browser_name.lower().strip(), browser_name.lower().strip())
         sess = self._get_or_create(browser_name)
         self._active_browser = browser_name

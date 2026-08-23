@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+
 from core.cache import api_cache
 from core.google_auth import get_google_service
 
@@ -85,7 +86,7 @@ def google_calendar(
 
         elif action == "create_event":
             api_cache.invalidate("calendar:events:")
-            
+
             summary = parameters.get("summary", "Novo Evento")
             start_raw = parameters.get("start_time") or parameters.get("start")
 

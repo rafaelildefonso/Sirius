@@ -1,13 +1,8 @@
 import json
 import re
-import sys
-from pathlib import Path
-
-from core.llm_utils import call_llm_for_action
-
 
 from core.config_loader import get_base_dir
-
+from core.llm_utils import call_llm_for_action
 
 BASE_DIR = get_base_dir()
 
@@ -122,6 +117,15 @@ gmail
   action: "list_emails" | "search_emails" | "read_email" (required)
   query: string (optional, e.g. "is:unread", "from:jose")
   count: int (optional, default: 5)
+
+obsidian_notes_search
+  query: string (required) — topic to search in the user's Obsidian notes
+  limit: int (optional, default: 5) — max results
+  Use when the user asks about content of their Obsidian vault/notes.
+
+obsidian_tasks_list
+  Lists the user's pending Obsidian tasks. No parameters.
+  Use when the user asks about tasks/afazeres written in their Obsidian vault.
 
 EXAMPLES:
 

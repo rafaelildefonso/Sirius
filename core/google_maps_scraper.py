@@ -8,6 +8,7 @@ import time
 import urllib.parse
 from datetime import datetime
 from pathlib import Path
+
 from playwright.async_api import async_playwright
 from playwright.sync_api import sync_playwright
 
@@ -297,7 +298,7 @@ def buscar_segmento(page, segmento, cidade, max_results=30, log_func=None):
         if btn.count() > 0:
             btn.first.click()
             _pausar(1, 2)
-    except:
+    except Exception:
         pass
 
     resultados = []
@@ -324,7 +325,7 @@ def buscar_segmento(page, segmento, cidade, max_results=30, log_func=None):
                 resultados.append({"href": href, "nome": nome, "segmento": segmento})
                 if len(resultados) >= max_results:
                     break
-            except:
+            except Exception:
                 continue
 
         if len(resultados) >= max_results:
@@ -348,7 +349,7 @@ def coletar_detalhes(page, empresa, cidade):
         nome = ""
         try:
             nome = page.locator('h1.DUwDvf, h1[class*="fontHeadlineLarge"]').first.inner_text(timeout=3000).strip()
-        except:
+        except Exception:
             nome = empresa["nome"]
 
         telefone = ""
@@ -364,7 +365,7 @@ def coletar_detalhes(page, empresa, cidade):
                     if txt.startswith("+55") or (txt.startswith("(") and len(txt) < 20):
                         telefone = txt.strip()
                         break
-        except:
+        except Exception:
             pass
 
         site = ""
@@ -374,7 +375,7 @@ def coletar_detalhes(page, empresa, cidade):
                 site = site_el.first.get_attribute("href") or ""
                 if "google.com/maps" in site:
                     site = ""
-        except:
+        except Exception:
             pass
 
         endereco = ""
@@ -383,7 +384,7 @@ def coletar_detalhes(page, empresa, cidade):
             if end_el.count() > 0:
                 endereco = end_el.first.get_attribute("aria-label") or ""
                 endereco = endereco.replace("Endere\u00e7o:", "").replace("Address:", "").strip()
-        except:
+        except Exception:
             pass
 
         return {
@@ -397,7 +398,7 @@ def coletar_detalhes(page, empresa, cidade):
             "cidade":   cidade,
         }
 
-    except Exception as ex:
+    except Exception:
         return {
             "nome":     empresa["nome"],
             "segmento": empresa["segmento"],
@@ -448,7 +449,6 @@ def gerar_whatsapp_links(linhas, mensagem_template=None):
 
 
 def salvar_whatsapp_messages(links, caminho):
-    total = len(links)
     with open(caminho, "w", encoding="utf-8") as f:
         f.write("LINKS WHATSAPP \u2014 PROSPEC\u00c7\u00c3O GOOGLE MAPS\n")
         f.write(f"Gerado em: {datetime.now().strftime('%d/%m/%Y %H:%M')}\n")
