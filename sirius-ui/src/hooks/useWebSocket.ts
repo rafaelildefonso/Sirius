@@ -54,6 +54,11 @@ export function useWebSocket() {
     total?: number;
   }>({ action: "show" });
   const [notification, setNotification] = useState<string | null>(null);
+  const [taskAlarm, setTaskAlarm] = useState<{
+    id: string;
+    text: string;
+    dueAt?: string;
+  } | null>(null);
   const [remoteKeyData, setRemoteKeyData] = useState<{
     url: string;
     key: string;
@@ -285,6 +290,14 @@ export function useWebSocket() {
           setNotification(String(data.text ?? ""));
           break;
         }
+        case "task_alarm": {
+          setTaskAlarm({
+            id: String(data.id ?? ""),
+            text: String(data.text ?? data.message ?? ""),
+            dueAt: data.due_at ? String(data.due_at) : undefined,
+          });
+          break;
+        }
         case "remote_key": {
           setRemoteKeyData({
             url: String(data.url ?? ""),
@@ -333,6 +346,22 @@ export function useWebSocket() {
           setPermissionsList(list);
           break;
         }
+        case "obsidian_list_dirs_ok":
+        case "obsidian_list_drives_ok":
+        case "obsidian_list_children_ok":
+        case "obsidian_set_path_ok":
+        case "obsidian_set_retention_ok":
+        case "activity_data":
+        case "activity_summary":
+        case "activity_monitor_ack":
+        case "activity_cleared":
+        case "plugins_list":
+        case "monitors_list":
+        case "plugin_toggled":
+        case "monitor_added":
+        case "monitor_removed":
+          window.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(data) }));
+          break;
         case "radar_log":
           setRadarLog((prev) => [...prev, String(data.text ?? "")]);
           break;
@@ -439,6 +468,17 @@ export function useWebSocket() {
     startupInfo,
     notification,
     clearNotification: () => setNotification(null),
+    taskAlarm,
+    clearTaskAlarm: () => setTaskAlarm(null),
+    sendTaskAction: useCallback(
+      (taskId: string, action: "done" | "dismiss" | "snooze", minutes = 5) => {
+        send({ type: "task_action", task_id: taskId, action, minutes });
+        setTaskAlarm((current) =>
+          current?.id === taskId ? null : current
+        );
+      },
+      [send]
+    ),
     remoteKeyData,
     remoteKeyError,
     clearRemoteKeyError: () => setRemoteKeyError(null),

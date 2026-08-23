@@ -1,0 +1,73 @@
+name: sirius_companion
+description: "Sirius Companion App - Android companion for SIRIUS AI Assistant"
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.11.1
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  cupertino_icons: ^1.0.8
+
+  # State Management
+  flutter_riverpod: ^2.6.1
+
+  # Local Database (Drift - SQL-based, stable code generation)
+  drift: ^2.18.0
+  sqlite3_flutter_libs: ^0.5.20
+  path: ^1.9.0
+  path_provider: ^2.1.3
+
+  # Network
+  dio: ^5.7.0
+  connectivity_plus: ^7.3.1
+
+  # Secure Storage (Android Keystore / iOS Keychain)
+  flutter_secure_storage: ^10.3.1
+
+  # Location & Geofencing
+  geolocator: ^14.0.3
+  permission_handler: ^12.0.3
+  flutter_map: ^7.0.2
+  latlong2: ^0.9.1
+
+  # Background Work
+  workmanager: ^0.9.0+3
+  flutter_background_service: ^5.1.0
+
+  # Notifications
+  flutter_local_notifications: ^22.2.0
+  timezone: ^0.11.1
+  flutter_timezone: ^4.1.1
+
+  # QR Code Scanning
+  mobile_scanner: ^7.4.0
+
+  # WebView for HuggingFace authentication
+  webview_flutter: ^4.10.0
+
+  # Utilities
+  uuid: ^4.6.0
+  package_info_plus: ^10.2.1
+  device_info_plus: ^13.2.0
+
+  # Logging
+  logger: ^2.7.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+  # Code Generation (drift only — freezed/json/riverpod generators unused)
+  build_runner: ^2.4.13
+  drift_dev: ^2.18.0
+  analyzer: ^9.0.0
+
+
+flutter:
+  uses-material-design: true

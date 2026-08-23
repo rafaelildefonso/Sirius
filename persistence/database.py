@@ -5,17 +5,12 @@ Uses standard sqlite3 with FTS5 + cryptography (Fernet) for at-rest field encryp
 
 from __future__ import annotations
 
-import json
-import os
 import sqlite3
 import threading
-import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 from cryptography.fernet import Fernet
-
-from core.cache import memory_cache
 
 DEFAULT_DB_FILENAME = "sirius.db"
 
@@ -167,6 +162,61 @@ CREATE VIRTUAL TABLE IF NOT EXISTS fact_fts USING fts5(
     content_rowid='rowid'
 );
 
+-- Obsidian integration tables
+CREATE TABLE IF NOT EXISTS obsidian_tasks (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_path     TEXT NOT NULL,
+    description   TEXT NOT NULL,
+    start_date    TEXT,
+    priority_emoji TEXT,
+    end_date      TEXT,
+    completed     INTEGER DEFAULT 0,
+    created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS obsidian_notes (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_path   TEXT NOT NULL UNIQUE,
+    content     TEXT,
+    embedding   BLOB,
+    created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Activity monitoring
+CREATE TABLE IF NOT EXISTS activity_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_type TEXT NOT NULL,          -- boot, shutdown, app_start, app_end
+    app_name TEXT,
+    window_title TEXT,
+    timestamp DATETIME NOT NULL,
+    duration INTEGER                  -- milliseconds
+);
+
+CREATE TABLE IF NOT EXISTS clarifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    app_name TEXT,
+    window_title TEXT,
+    timestamp DATETIME NOT NULL,
+    user_answer TEXT NOT NULL
+);
+
+-- Scheduled tasks / reminders (unified: phone quick-add, voice reminder, PC)
+CREATE TABLE IF NOT EXISTS scheduled_tasks (
+    id          TEXT PRIMARY KEY,
+    title       TEXT NOT NULL,
+    notes       TEXT,
+    due_at      DATETIME NOT NULL,
+    status      TEXT NOT NULL DEFAULT 'pending'
+                CHECK(status IN ('pending','notified','done','dismissed')),
+    source      TEXT NOT NULL DEFAULT 'pc',
+    device_id   TEXT,
+    created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    notified_at DATETIME
+);
+
 -- Indexes for performance
 CREATE INDEX IF NOT EXISTS idx_conversation_started ON conversation(started_at);
 CREATE INDEX IF NOT EXISTS idx_message_timestamp   ON message(timestamp);
@@ -181,9 +231,10 @@ CREATE INDEX IF NOT EXISTS idx_file_path           ON file_reference(path);
 CREATE INDEX IF NOT EXISTS idx_file_importance     ON file_reference(importance);
 CREATE INDEX IF NOT EXISTS idx_embedding_source    ON embedding(source_id, source_type);
 CREATE INDEX IF NOT EXISTS idx_credential_service  ON credential(service);
+CREATE INDEX IF NOT EXISTS idx_sched_tasks_due     ON scheduled_tasks(status, due_at);
 """
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 4
 
 
 class Database:
@@ -253,20 +304,16 @@ class Database:
         self._local.conn = None
 
     def _run_migrations(self) -> None:
-        cursor = self._conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'")
-        exists = cursor.fetchone() is not None
-        if not exists:
-            self._conn.executescript(_SQL_SCHEMA)
-            self._conn.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (?)", (_SCHEMA_VERSION,))
-            self._conn.commit()
-            return
+        # _SQL_SCHEMA is fully idempotent (CREATE ... IF NOT EXISTS), so it is
+        # safe to re-apply on every boot. This repairs databases created with
+        # older schemas that are missing newer tables (e.g. obsidian_tasks).
+        self._conn.executescript(_SQL_SCHEMA)
         current = self._conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
         if current is None or current < _SCHEMA_VERSION:
             self._migrate(current or 0)
 
     def _migrate(self, from_version: int) -> None:
-        if from_version < 1:
-            self._conn.executescript(_SQL_SCHEMA)
+        self._conn.executescript(_SQL_SCHEMA)
         self._conn.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (?)", (_SCHEMA_VERSION,))
         self._conn.commit()
 

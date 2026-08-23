@@ -5,24 +5,17 @@ Repository — high-level CRUD API for all memory entities.
 from __future__ import annotations
 
 import json
-import time
+import sqlite3
 from datetime import datetime, timedelta
 from typing import Any, Optional
-from uuid import UUID
 
 from persistence.database import Database
 from persistence.models import (
-    Conversation,
     Event,
     Fact,
     FileReference,
     MemoryType,
-    Message,
     Preference,
-    RelevanceMetadata,
-    RetrievedMemory,
-    SearchResult,
-    Tag,
 )
 
 
@@ -457,11 +450,271 @@ class Repository:
         self.db.commit()
         return total
 
+    def add_task(self, file_path: str, description: str, start_date: Optional[str], priority_emoji: Optional[str], end_date: Optional[str]) -> int:
+        now = datetime.now().isoformat()
+        cur = self.db.execute(
+            """INSERT INTO obsidian_tasks (file_path, description, start_date, priority_emoji, end_date, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (file_path, description, start_date, priority_emoji, end_date, now, now),
+        )
+        self.db.commit()
+        return cur.lastrowid
+
+    def update_task(self, task_id: int, start_date: Optional[str], priority_emoji: Optional[str], end_date: Optional[str], completed: bool) -> None:
+        now = datetime.now().isoformat()
+        self.db.execute(
+            """UPDATE obsidian_tasks
+               SET start_date = ?, priority_emoji = ?, end_date = ?, completed = ?, updated_at = ?
+               WHERE id = ?""",
+            (start_date, priority_emoji, end_date, 1 if completed else 0, now, task_id),
+        )
+        self.db.commit()
+
+    def get_pending_tasks(self) -> list[dict]:
+        rows = self.db.fetchall(
+            "SELECT id, file_path, description, start_date, priority_emoji, end_date, completed FROM obsidian_tasks WHERE completed = 0 ORDER BY "
+            "CASE priority_emoji "
+            "WHEN '🔴' THEN 1 WHEN '🟠' THEN 2 WHEN '🟢' THEN 3 ELSE 4 END, start_date ASC",
+        )
+        return [dict(r) for r in rows]
+
+    def mark_task_done(self, task_id: int, end_date: str) -> None:
+        now = datetime.now().isoformat()
+        self.db.execute(
+            "UPDATE obsidian_tasks SET completed = 1, end_date = ?, updated_at = ? WHERE id = ?",
+            (end_date, now, task_id),
+        )
+        self.db.commit()
+
+    def cleanup_completed_tasks(self) -> int:
+        """Remove completed tasks whose end_date is older than the configured retention period.
+
+        Returns the number of rows deleted.
+        """
+        from core.config_loader import get_config
+        retention_str = str(get_config("obsidian_task_retention_days", "30"))
+        try:
+            retention_days = int(retention_str)
+        except ValueError:
+            retention_days = 30
+        # SQLite date arithmetic: end_date < date('now', '-' || ? || ' days')
+        cut_off = f"date('now', '-' || {retention_days} || ' days')"
+        cur = self.db.execute(
+            f"DELETE FROM obsidian_tasks WHERE completed = 1 AND end_date < {cut_off}",
+        )
+        deleted = cur.rowcount
+        self.db.commit()
+        return deleted
+
+    # ------------------------------------------------------------------
+    # Scheduled tasks (unified reminders: phone / PC / voice)
+    # ------------------------------------------------------------------
+
+    def add_scheduled_task(
+        self,
+        title: str,
+        due_at: str,
+        notes: Optional[str] = None,
+        source: str = "pc",
+        device_id: Optional[str] = None,
+        task_id: Optional[str] = None,
+    ) -> dict:
+        """Create a scheduled task. `due_at` is an ISO datetime string."""
+        import uuid
+
+        now = datetime.now().isoformat()
+        tid = task_id or uuid.uuid4().hex[:12]
+        self.db.execute(
+            """INSERT INTO scheduled_tasks (id, title, notes, due_at, status, source, device_id, created_at, updated_at)
+               VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?)""",
+            (tid, title, notes, due_at, source, device_id, now, now),
+        )
+        self.db.commit()
+        return self.get_scheduled_task(tid)  # type: ignore[return-value]
+
+    def get_scheduled_task(self, task_id: str) -> Optional[dict]:
+        row = self.db.fetchone("SELECT * FROM scheduled_tasks WHERE id = ?", (task_id,))
+        return dict(row) if row else None
+
+    def list_scheduled_tasks(self, status: Optional[str] = None, limit: int = 100) -> list[dict]:
+        if status:
+            rows = self.db.fetchall(
+                "SELECT * FROM scheduled_tasks WHERE status = ? ORDER BY due_at ASC LIMIT ?",
+                (status, limit),
+            )
+        else:
+            rows = self.db.fetchall(
+                "SELECT * FROM scheduled_tasks ORDER BY due_at ASC LIMIT ?", (limit,)
+            )
+        return [dict(r) for r in rows]
+
+    def get_due_scheduled_tasks(self, now_iso: Optional[str] = None) -> list[dict]:
+        now = now_iso or datetime.now().isoformat()
+        rows = self.db.fetchall(
+            "SELECT * FROM scheduled_tasks WHERE status = 'pending' AND due_at <= ? ORDER BY due_at ASC",
+            (now,),
+        )
+        return [dict(r) for r in rows]
+
+    def get_active_scheduled_tasks(self, recently_closed_hours: int = 24) -> list[dict]:
+        """All pending/notified tasks plus recently closed ones (for device pull sync)."""
+        cutoff = (datetime.now() - timedelta(hours=recently_closed_hours)).isoformat()
+        rows = self.db.fetchall(
+            "SELECT * FROM scheduled_tasks WHERE status IN ('pending','notified') "
+            "OR (status IN ('done','dismissed') AND updated_at >= ?) "
+            "ORDER BY due_at ASC LIMIT 500",
+            (cutoff,),
+        )
+        return [dict(r) for r in rows]
+
+    def mark_scheduled_task_notified(self, task_id: str) -> None:
+        now = datetime.now().isoformat()
+        self.db.execute(
+            "UPDATE scheduled_tasks SET status = 'notified', notified_at = ?, updated_at = ? WHERE id = ?",
+            (now, now, task_id),
+        )
+        self.db.commit()
+
+    def complete_scheduled_task(self, task_id: str) -> bool:
+        return self._update_scheduled_status(task_id, "done")
+
+    def dismiss_scheduled_task(self, task_id: str) -> bool:
+        return self._update_scheduled_status(task_id, "dismissed")
+
+    def snooze_scheduled_task(self, task_id: str, minutes: int = 5) -> bool:
+        task = self.get_scheduled_task(task_id)
+        if not task:
+            return False
+        base = datetime.fromisoformat(task["due_at"])
+        floor = datetime.now()
+        new_due = max(base, floor) + timedelta(minutes=minutes)
+        self.db.execute(
+            "UPDATE scheduled_tasks SET status = 'pending', due_at = ?, notified_at = NULL, updated_at = ? WHERE id = ?",
+            (new_due.isoformat(), datetime.now().isoformat(), task_id),
+        )
+        self.db.commit()
+        return True
+
+    def _update_scheduled_status(self, task_id: str, status: str) -> bool:
+        cur = self.db.execute(
+            "UPDATE scheduled_tasks SET status = ?, updated_at = ? WHERE id = ? AND status != 'done'",
+            (status, datetime.now().isoformat(), task_id),
+        )
+        self.db.commit()
+        return cur.rowcount > 0
+
+    def cleanup_finished_scheduled_tasks(self, days: int = 7) -> int:
+        cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+        cur = self.db.execute(
+            "DELETE FROM scheduled_tasks WHERE status IN ('done','dismissed') AND updated_at < ?",
+            (cutoff,),
+        )
+        self.db.commit()
+        return cur.rowcount
+
+    def add_note(self, file_path: str, content: str, embedding: Optional[bytes] = None) -> int:
+        now = datetime.now().isoformat()
+        cur = self.db.execute(
+            """INSERT INTO obsidian_notes (file_path, content, embedding, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (file_path, content, embedding, now, now),
+        )
+        self.db.commit()
+        return cur.lastrowid
+
+    def search_notes(self, query_embedding: bytes, limit: int = 5) -> list[dict]:
+        # Simple similarity using rowid order; in production would use vector extension.
+        rows = self.db.fetchall(
+            "SELECT id, file_path, content, embedding FROM obsidian_notes WHERE embedding IS NOT NULL LIMIT ?",
+            (limit,),
+        )
+        # Return raw rows; frontend/agent can compute similarity if needed.
+        return [dict(r) for r in rows]
+
     def run_maintenance(self) -> dict:
         result = {}
         result["purged_expired"] = self.purge_expired()
         result["purged_messages"] = self.delete_old_messages(days=90)
         result["purged_facts"] = self.delete_old_facts(days=365)
+        result["obsidian_tasks_cleaned"] = self.cleanup_completed_tasks()
         self.db.vacuum()
         result["stats"] = self.get_stats()
         return result
+
+    def add_activity(
+        self,
+        event_type: str,
+        app_name: Optional[str] = None,
+        window_title: Optional[str] = None,
+        timestamp: Optional[float] = None,
+        duration: Optional[int] = None,
+    ) -> int:
+        now = timestamp or datetime.now().timestamp() * 1000  # ms
+        cur = self.db.execute(
+            """INSERT INTO activity_log
+               (event_type, app_name, window_title, timestamp, duration)
+               VALUES (?, ?, ?, ?, ?)""",
+            (event_type, app_name, window_title, now, duration),
+        )
+        self.db.commit()
+        return cur.lastrowid
+
+    def get_weekly_stats(
+        self, start_ts: Optional[float] = None, end_ts: Optional[float] = None
+    ) -> dict:
+        """Return weekly usage stats: daily minutes, avg daily, top apps."""
+        if start_ts is None:
+            # approximate start of week (Monday 00:00)
+            from datetime import datetime, timedelta
+            today = datetime.now()
+            monday = today - timedelta(days=today.weekday())
+            start_ts = monday.timestamp() * 1000
+        if end_ts is None:
+            end_ts = datetime.now().timestamp() * 1000
+
+        # daily minutes for last 7 days
+        days = []
+        for i in range(6, -1, -1):
+            day_start = start_ts + i * 24 * 3600 * 1000
+            day_end = day_start + 24 * 3600 * 1000
+            rows = self.db.fetchall(
+                "SELECT SUM(duration) FROM activity_log "
+                "WHERE event_type = 'app_end' AND timestamp >= ? AND timestamp < ?",
+                (day_start, day_end),
+            )
+            total_ms = rows[0][0] if rows and rows[0][0] else 0
+            days.append({"day": (datetime.fromtimestamp(day_start / 1000.0)).strftime("%a"), "minutes": total_ms // 60000})
+
+        # average daily minutes
+        avg_daily = sum(d["minutes"] for d in days) / 7
+
+        # top apps by total duration
+        top_rows = self.db.fetchall(
+            "SELECT app_name, SUM(duration) as total_ms "
+            "FROM activity_log WHERE event_type = 'app_end' "
+            "GROUP BY app_name ORDER BY total_ms DESC LIMIT 5"
+        )
+        top_apps = [{"name": r[0] or "Desconhecido", "minutes": r[1] // 60000} for r in top_rows]
+
+        return {
+            "days": days,
+            "avg_daily_minutes": avg_daily,
+            "top_apps": top_apps,
+        }
+
+    def save_clarification(
+        self, app_name: str, window_title: str, user_answer: str
+    ) -> int:
+        now = datetime.now().timestamp() * 1000
+        cur = self.db.execute(
+            """INSERT INTO clarifications (app_name, window_title, timestamp, user_answer)
+               VALUES (?, ?, ?, ?)""",
+            (app_name, window_title, now, user_answer),
+        )
+        self.db.commit()
+        return cur.lastrowid
+
+    def clear_activity_data(self) -> None:
+        self.db.execute("DELETE FROM activity_log")
+        self.db.execute("DELETE FROM clarifications")
+        self.db.commit()

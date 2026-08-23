@@ -1,15 +1,16 @@
 """
 ws_server.py — Local WebSocket server for the Tauri/React frontend.
 
-Replaces sirius_ui.py (PyQt6) entirely. Runs on ws://localhost:8765.
+Runs on ws://localhost:8765. Provides the WsUI interface used by main.py.
 Message protocol: JSON {type, payload}. No encryption (localhost only).
 """
+
+# ruff: noqa: F823
 
 from __future__ import annotations
 
 import asyncio
 import json
-import logging
 import threading
 import time
 import traceback
@@ -20,9 +21,38 @@ from typing import Any, Callable
 import websockets
 from websockets.asyncio.server import serve as ws_serve
 
+from persistence.repository import Repository
+
 _PORT = 8765
 _HERE = Path(__file__).resolve().parent
 _server_ready = threading.Event()
+
+
+def reload_obsidian_data() -> None:
+    """Re-scan the configured Obsidian vault and index notes/tasks in the DB.
+
+    Runs in a background thread (safe to call from the WS loop).
+    """
+    def _run() -> None:
+        try:
+            from core.config_loader import get_config
+            vault = get_config("obsidian_vault_path", "")
+            if not vault:
+                print("[Obsidian] No vault path configured; skipping reload.")
+                return
+            vp = Path(vault)
+            if not vp.is_dir():
+                print(f"[Obsidian] Vault path not found, skipping reload: {vp}")
+                return
+            from actions.obsidian_notes import load_notes_from_vault
+            from actions.obsidian_tasks import load_tasks_from_vault
+            load_tasks_from_vault(vp, tasks_subpath=get_config("obsidian_tasks_subpath", "Tarefas"))
+            load_notes_from_vault(vp, notes_subpath=get_config("obsidian_notes_subpath", "Anotações"))
+            print("[Obsidian] Notes/tasks reloaded from vault.")
+        except Exception as e:
+            print(f"[Obsidian] Reload failed: {e}")
+
+    threading.Thread(target=_run, daemon=True).start()
 
 
 def show_windows_notification(title: str, message: str) -> None:
@@ -34,9 +64,114 @@ def show_windows_notification(title: str, message: str) -> None:
         pass
 
 
+def show_sticky_task_notification(
+    title: str,
+    message: str,
+    on_done: Callable[[], None] | None = None,
+    on_snooze: Callable[[], None] | None = None,
+) -> bool:
+    """Persistent Windows toast (scenario=reminder): stays on screen until the
+    user dismisses it. Returns True if the persistent toast was shown."""
+    try:
+        from windows_toasts import (
+            InteractableWindowsToaster,
+            Toast,
+            ToastButton,
+            ToastScenario,
+        )
+
+        def _handle_activated(args):
+            action = ""
+            try:
+                action = (getattr(args, "arguments", "") or "").lower()
+            except Exception:
+                pass
+            try:
+                if action == "sirius_snooze" and on_snooze:
+                    on_snooze()
+                elif on_done:
+                    on_done()
+            except Exception as e:
+                print(f"[TaskToast] Action callback failed: {e}")
+
+        toast = Toast(
+            text_fields=[title, message],
+            scenario=ToastScenario.Reminder,
+            on_activated=_handle_activated,
+        )
+
+        if on_done:
+            toast.AddAction(ToastButton(content="Concluído", arguments="sirius_done"))
+        if on_snooze:
+            toast.AddAction(ToastButton(content="Adiar 5 min", arguments="sirius_snooze"))
+        # scenario=reminder requires at least one action to persist on screen;
+        # without callbacks add a plain dismiss button.
+        if not on_done and not on_snooze:
+            toast.AddAction(ToastButton(content="Dispensar", arguments="sirius_dismiss"))
+
+        toaster = InteractableWindowsToaster("SIRIUS")
+        toaster.show_toast(toast)
+        return True
+    except Exception as e:
+        print(f"[TaskToast] Persistent toast unavailable ({e}); falling back.")
+    show_windows_notification(title, message)
+    return False
+
+
+def notify_task_alarm(task: dict) -> None:
+    """Fire a due scheduled task: sticky toast on PC + broadcast to React UI.
+
+    Button actions update the task directly in the database so both the PC
+    and the phone converge on the new status at the next sync.
+    """
+    task_id = str(task.get("id", ""))
+    title = str(task.get("title") or "Lembrete")
+    due_raw = str(task.get("due_at") or "")
+    try:
+        from datetime import datetime as _dt
+
+        due_txt = _dt.fromisoformat(due_raw).strftime("%H:%M")
+    except ValueError:
+        due_txt = due_raw
+
+    message = f"Está na hora: {title} ({due_txt})"
+
+    def _done():
+        try:
+            from persistence.repository import Repository
+            Repository().complete_scheduled_task(task_id)
+            print(f"[TaskAlarm] Task done via toast: {task_id}")
+        except Exception as e:
+            print(f"[TaskAlarm] Complete failed for {task_id}: {e}")
+
+    def _snooze():
+        try:
+            from persistence.repository import Repository
+            Repository().snooze_scheduled_task(task_id, minutes=5)
+            print(f"[TaskAlarm] Task snoozed via toast: {task_id}")
+        except Exception as e:
+            print(f"[TaskAlarm] Snooze failed for {task_id}: {e}")
+
+    show_sticky_task_notification(
+        "SIRIUS — Tarefa agendada", message, on_done=_done, on_snooze=_snooze
+    )
+
+    try:
+        manager.broadcast_sync(WsMessage("task_alarm", {
+            "id": task_id,
+            "text": title,
+            "message": message,
+            "due_at": due_raw,
+        }))
+    except Exception:
+        pass
+    print(f"[TaskAlarm] Fired: {title} ({due_txt}) [{task_id}]")
+
+
 def _create_desktop_shortcut() -> None:
     """Create a desktop shortcut for SIRIUS (platform-aware)."""
-    import os, sys
+    import os
+    import sys
     shortcut_name = "SIRIUS"
     desktop = Path(os.path.expanduser("~/Desktop"))
     exe = Path(sys.executable).resolve()
@@ -254,6 +389,22 @@ async def _handler(ws: websockets.asyncio.server.ServerConnection) -> None:
                 if manager.on_briefing_dismiss:
                     manager.on_briefing_dismiss()
 
+            elif msg_type == "task_action":
+                task_id = str(data.get("task_id", ""))
+                action = str(data.get("action", "done"))
+                try:
+                    repo = Repository()
+                    if action == "done":
+                        repo.complete_scheduled_task(task_id)
+                    elif action == "dismiss":
+                        repo.dismiss_scheduled_task(task_id)
+                    elif action == "snooze":
+                        repo.snooze_scheduled_task(
+                            task_id, minutes=int(data.get("minutes", 5) or 5)
+                        )
+                except Exception as e:
+                    print(f"[TaskAlarm] UI action '{action}' failed for {task_id}: {e}")
+
             elif msg_type == "create_desktop_shortcut":
                 threading.Thread(target=_create_desktop_shortcut, daemon=True).start()
 
@@ -266,10 +417,26 @@ async def _handler(ws: websockets.asyncio.server.ServerConnection) -> None:
                 from core.config_loader import get_all_config
                 cfg = get_all_config()
                 await ws.send(json.dumps({"type": "config", **cfg}))
-
+            elif msg_type == "request_activity_data":  # noqa: F823
+                stats = Repository().get_weekly_stats()
+                await ws.send(json.dumps({"type": "activity_data", "stats": stats}))
+            elif msg_type == "request_activity_summary":
+                await ws.send(json.dumps({"type": "activity_summary", "text": "Resumo de atividade gerado pela IA."}))
+            elif msg_type == "set_activity_monitor":
+                enabled = data.get("enabled", False)
+                from core.config_loader import save_configs
+                # Atualiza permissão de monitoramento
+                perms = {"activity_monitor": enabled}
+                save_configs(perms)
+                await ws.send(json.dumps({"type": "activity_monitor_ack", "enabled": enabled}))
+            elif msg_type == "clear_activity_data":
+                from persistence.repository import Repository
+                repo = Repository()
+                repo.clear_activity_data()
+                await ws.send(json.dumps({"type": "activity_cleared", "ok": True}))
             elif msg_type == "save_config":
-                from core.config_loader import save_configs, set_secret, get_all_config
                 from config.permissions import save_permissions
+                from core.config_loader import get_all_config, save_configs, set_secret
                 payload = data.get("payload", {})
                 secrets = data.get("secrets", {})
                 user_perms = data.get("permissions")
@@ -289,6 +456,9 @@ async def _handler(ws: websockets.asyncio.server.ServerConnection) -> None:
                 cfg = get_all_config()
                 await ws.send(json.dumps({"type": "config", **cfg}))
                 await ws.send(json.dumps({"type": "config_saved", "ok": True}))
+                # Re-index Obsidian vault if a path is configured now
+                if payload.get("obsidian_vault_path"):
+                    reload_obsidian_data()
                 # Reload assistant with new config
                 try:
                     from main import request_restart
@@ -297,7 +467,6 @@ async def _handler(ws: websockets.asyncio.server.ServerConnection) -> None:
                     pass
 
             elif msg_type == "google_auth":
-                import threading
                 from core.google_auth import run_auth_flow
                 def _do_auth():
                     try:
@@ -342,9 +511,15 @@ async def _handler(ws: websockets.asyncio.server.ServerConnection) -> None:
 
             elif msg_type == "save_onboarding":
                 try:
-                    from core.config_loader import save_configs, get_all_config, get_base_dir
-                    from core.config_loader import set_secret, _read_json, _CONFIGS_FILE
                     from config.permissions import save_permissions
+                    from core.config_loader import (
+                        _CONFIGS_FILE,
+                        _read_json,
+                        get_all_config,
+                        get_base_dir,
+                        save_configs,
+                        set_secret,
+                    )
                     cfg_data = data.get("config", {})
                     secrets = data.get("secrets", {})
                     user_perms = data.get("permissions")
@@ -395,10 +570,11 @@ async def _handler(ws: websockets.asyncio.server.ServerConnection) -> None:
                         print(f"[RemoteKey] Generated URL: {login_url}")
                         qr_data_url = ""
                         try:
+                            import base64
+                            from io import BytesIO
+
                             import qrcode
                             import qrcode.image.pil
-                            from io import BytesIO
-                            import base64
                             print(f"[DEBUG WS] Generating QR code for {login_url}...")
                             qr = qrcode.make(login_url, image_factory=qrcode.image.pil.PilImage)
                             buf = BytesIO()
@@ -416,15 +592,15 @@ async def _handler(ws: websockets.asyncio.server.ServerConnection) -> None:
                             "manual": manual,
                             "qr_data_url": qr_data_url,
                         }))
-                        print(f"[DEBUG WS] remote_key message sent to frontend")
+                        print("[DEBUG WS] remote_key message sent to frontend")
                     else:
-                        print(f"[DEBUG WS] on_remote_key_request returned None/empty")
+                        print("[DEBUG WS] on_remote_key_request returned None/empty")
                         await ws.send(json.dumps({
                             "type": "remote_key_error",
                             "message": "Dashboard unavailable.",
                         }))
                 else:
-                    print(f"[DEBUG WS] on_remote_key_request NOT SET")
+                    print("[DEBUG WS] on_remote_key_request NOT SET")
                     await ws.send(json.dumps({
                         "type": "remote_key_error",
                         "message": "Remote control not initialized.",
@@ -437,6 +613,144 @@ async def _handler(ws: websockets.asyncio.server.ServerConnection) -> None:
                 max_jobs = payload.get("max_jobs", 5)
                 sources = data.get("sources", ["linkedin"])
                 Thread(target=_run_radar_scan, args=(keywords, max_jobs, sources), daemon=True).start()
+
+            elif msg_type == "obsidian_set_path":
+                vault_path = data.get("vault_path", "")
+                tasks_subpath = data.get("tasks_subpath", "")
+                notes_subpath = data.get("notes_subpath", "")
+                sirius_subpath = data.get("sirius_subpath", "")
+                from core.config_loader import set_config
+                if vault_path:
+                    set_config("obsidian_vault_path", vault_path)
+                    if tasks_subpath:
+                        set_config("obsidian_tasks_subpath", tasks_subpath)
+                    if notes_subpath:
+                        set_config("obsidian_notes_subpath", notes_subpath)
+                    if sirius_subpath:
+                        set_config("obsidian_sirius_subpath", sirius_subpath)
+                    print(f"[WS] Obsidian vault path set to {vault_path}")
+                    reload_obsidian_data()
+                    await ws.send(json.dumps({"type": "obsidian_set_path_ok", "ok": True}))
+                else:
+                    await ws.send(json.dumps({"type": "obsidian_set_path_ok", "ok": False, "error": "empty path"}))
+
+            elif msg_type == "obsidian_set_retention":
+                days = data.get("days", "")
+                from core.config_loader import set_config
+                if days and days.isdigit():
+                    set_config("obsidian_task_retention_days", int(days))
+                    await ws.send(json.dumps({"type": "obsidian_set_retention_ok", "ok": True}))
+                else:
+                    await ws.send(json.dumps({"type": "obsidian_set_retention_ok", "ok": False, "error": "invalid days"}))
+
+            elif msg_type == "obsidian_get_tasks":
+                repo = Repository()
+                tasks = repo.get_pending_tasks()
+                await ws.send(json.dumps({"type": "obsidian_tasks", "tasks": tasks}))
+
+            elif msg_type == "obsidian_mark_done":
+                task_id = data.get("task_id")
+                end_date = data.get("end_date", "")
+                if task_id is not None:
+                    repo = Repository()
+                    repo.mark_task_done(task_id, end_date)
+                    await ws.send(json.dumps({"type": "obsidian_mark_done_ok", "ok": True}))
+                else:
+                    await ws.send(json.dumps({"type": "obsidian_mark_done_ok", "ok": False, "error": "invalid task_id"}))
+
+            elif msg_type == "obsidian_cleanup_tasks":
+                repo = Repository()
+                deleted = repo.cleanup_completed_tasks()
+                await ws.send(json.dumps({"type": "obsidian_cleanup_tasks_ok", "ok": True, "deleted": deleted}))
+
+            elif msg_type == "obsidian_search_notes":
+                # Simple return list of note file paths (no vector similarity)
+                repo = Repository()
+                rows = repo.db.fetchall("SELECT id, file_path FROM obsidian_notes LIMIT 20")
+                notes = [{"id": r["id"], "file_path": r["file_path"]} for r in rows]
+                await ws.send(json.dumps({"type": "obsidian_notes", "notes": notes}))
+
+            elif msg_type == "obsidian_list_dirs":
+                # List directories under the vault root path supplied in payload.vault_path
+                vault_path = data.get("vault_path", "")
+                if not vault_path:
+                    await ws.send(json.dumps({"type": "obsidian_list_dirs_ok", "ok": False, "error": "missing vault_path"}))
+                    return
+
+                def _walk_dirs(base: str) -> list[str]:
+                    import os
+                    dirs = []
+                    for root, subdirs, files in os.walk(base):
+                        for d in subdirs:
+                            full = os.path.join(root, d)
+                            rel = os.path.relpath(full, base)
+                            dirs.append(rel.replace(os.sep, "/"))
+                    return dirs
+
+                try:
+                    base = Path(vault_path).resolve()
+                    if not base.is_dir():
+                        await ws.send(json.dumps({"type": "obsidian_list_dirs_ok", "ok": False, "error": "path not found"}))
+                        return
+                    dirs = await asyncio.to_thread(_walk_dirs, str(base))
+                    await ws.send(json.dumps({"type": "obsidian_list_dirs_ok", "ok": True, "dirs": dirs}))
+                except Exception as e:
+                    await ws.send(json.dumps({"type": "obsidian_list_dirs_ok", "ok": False, "error": str(e)}))
+
+            elif msg_type == "obsidian_list_drives":
+                # Windows drive letters (or filesystem root on other platforms)
+                def _list_drives() -> list[str]:
+                    import os
+                    if os.name == "nt":
+                        import string
+                        drives = []
+                        for letter in string.ascii_uppercase:
+                            root = f"{letter}:\\"
+                            if os.path.exists(root):
+                                drives.append(root)
+                        return drives
+                    return [os.path.abspath(os.sep)]
+
+                try:
+                    drives = await asyncio.to_thread(_list_drives)
+                    await ws.send(json.dumps({"type": "obsidian_list_drives_ok", "ok": True, "drives": drives}))
+                except Exception as e:
+                    await ws.send(json.dumps({"type": "obsidian_list_drives_ok", "ok": False, "error": str(e)}))
+
+            elif msg_type == "obsidian_list_children":
+                # List immediate subdirectories (one level) of a given path
+                def _list_children(base: str) -> list[dict]:
+                    import os
+                    children = []
+                    try:
+                        for entry in sorted(os.scandir(base), key=lambda e: e.name.lower()):
+                            if entry.is_dir():
+                                children.append({
+                                    "name": entry.name,
+                                    "path": os.path.abspath(entry.path),
+                                })
+                    except PermissionError:
+                        pass
+                    except OSError:
+                        pass
+                    return children
+
+                try:
+                    base = data.get("path", "")
+                    if not base:
+                        base = Path.home().resolve()
+                    if not Path(base).is_dir():
+                        await ws.send(json.dumps({"type": "obsidian_list_children_ok", "ok": False, "error": "path not found"}))
+                        return
+                    children = await asyncio.to_thread(_list_children, base)
+                    await ws.send(json.dumps({
+                        "type": "obsidian_list_children_ok",
+                        "ok": True,
+                        "path": str(Path(base).resolve()),
+                        "children": children,
+                    }))
+                except Exception as e:
+                    await ws.send(json.dumps({"type": "obsidian_list_children_ok", "ok": False, "error": str(e)}))
 
             elif msg_type == "list_radar_files":
                 from core.config_loader import get_base_dir
@@ -472,6 +786,52 @@ async def _handler(ws: websockets.asyncio.server.ServerConnection) -> None:
                 print("[WS] Shutdown requested via WebSocket — exiting...")
                 import os
                 os._exit(0)
+
+            elif msg_type == "get_plugins_list":
+                from core.plugin_loader import discover_plugins
+                from main import TOOL_DECLARATIONS
+                _core_names = {d["name"] for d in TOOL_DECLARATIONS}
+                _plugins_dir = Path(__file__).resolve().parent / "plugins"
+                registry = discover_plugins(_plugins_dir, _core_names, logger=print)
+                await ws.send(json.dumps({
+                    "type": "plugins_list",
+                    "plugins": registry.list_for_ui(),
+                }))
+
+            elif msg_type == "toggle_plugin":
+                plugin_name = data.get("plugin_name", "")
+                enabled = data.get("enabled", False)
+                from memory.config_manager import save_plugin_enabled
+                save_plugin_enabled(plugin_name, enabled)
+                from core.config_loader import get_all_config
+                cfg = get_all_config()
+                await ws.send(json.dumps({"type": "config", **cfg}))
+                await ws.send(json.dumps({"type": "plugin_toggled", "plugin_name": plugin_name, "enabled": enabled}))
+
+            elif msg_type == "get_monitors_list":
+                from actions.background_monitor import list_monitors
+                topics = list_monitors()
+                await ws.send(json.dumps({"type": "monitors_list", "topics": topics}))
+
+            elif msg_type == "add_monitor":
+                topic = data.get("topic", "").strip()
+                from actions.background_monitor import add_monitor
+                result = add_monitor(topic)
+                await ws.send(json.dumps({"type": "monitor_added", "topic": topic, "result": result}))
+                # Send updated list
+                from actions.background_monitor import list_monitors
+                topics = list_monitors()
+                await ws.send(json.dumps({"type": "monitors_list", "topics": topics}))
+
+            elif msg_type == "remove_monitor":
+                topic = data.get("topic", "").strip()
+                from actions.background_monitor import remove_monitor
+                result = remove_monitor(topic)
+                await ws.send(json.dumps({"type": "monitor_removed", "topic": topic, "result": result}))
+                # Send updated list
+                from actions.background_monitor import list_monitors
+                topics = list_monitors()
+                await ws.send(json.dumps({"type": "monitors_list", "topics": topics}))
 
     except websockets.exceptions.ConnectionClosed:
         pass

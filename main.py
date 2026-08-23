@@ -1,16 +1,15 @@
 from __future__ import annotations
-import platform as _platform
-import subprocess as _subprocess
-from datetime import datetime
+
 import asyncio
-import os
-import re
-import threading
 import json
+import platform as _platform
+import re
+import subprocess as _subprocess
 import sys
-import traceback
-import random
+import threading
 import time as _time
+import traceback
+from datetime import datetime
 from pathlib import Path
 
 # -- Set AppUserModelID early so Windows taskbar can associate the pinned shortcut --
@@ -33,64 +32,91 @@ if _platform.system() == "Windows":
             super().__init__(args, **kw)
     _subprocess.Popen = _Popen
 
-import sounddevice as sd
 import numpy as np
+import sounddevice as sd
 from google import genai
 from google.genai import types
 
-# -- UI backend selection (WS_UI=1 uses WebSocket/Tauri; default is PyQt6) -----
-_USE_WS = os.environ.get("SIRIUS_WS_UI", "").lower() in ("1", "true", "yes")
-_DASHBOARD: 'DashboardServer | None' = None  # shared dashboard instance
+# -- UI backend: WebSocket server for the Tauri/React frontend ----------------
+import ws_server as _ws
+from actions.obsidian_watcher import ObsidianWatcher
+from ws_server import WsUI as SiriusUI
+
+_DASHBOARD: 'DashboardServer | None' = None  # noqa: F821 — imported lazily below
 _DASHBOARD_READY = threading.Event()  # set when dashboard port is confirmed open
-if _USE_WS:
-    import ws_server as _ws
-    _ws.start()
-    from ws_server import WsUI as SiriusUI
+_ws.start()
+from core.activity_monitor import is_monitor_enabled, start_monitor
+
+start_monitor()
+from actions.obsidian_notes import load_notes_from_vault
+from actions.obsidian_tasks import load_tasks_from_vault
+from core.config_loader import get_all_config
+
+cfg = get_all_config()
+vault_path = cfg.get("obsidian_vault_path")
+if vault_path:
+    vault = Path(vault_path)
+    watcher = ObsidianWatcher(vault,
+                              tasks_subpath=cfg.get("obsidian_tasks_subpath", "Tarefas"),
+                              notes_subpath=cfg.get("obsidian_notes_subpath", "Anotações"))
+    watcher.start(
+        on_task_change=lambda fp: load_tasks_from_vault(vault,
+                                                      tasks_subpath=cfg.get("obsidian_tasks_subpath", "Tarefas")),
+        on_note_change=lambda fp: load_notes_from_vault(vault,
+                                                      notes_subpath=cfg.get("obsidian_notes_subpath", "Anotações")),
+    )
+    # Initial load
+    load_tasks_from_vault(vault,
+                          tasks_subpath=cfg.get("obsidian_tasks_subpath", "Tarefas"))
+    load_notes_from_vault(vault,
+                          notes_subpath=cfg.get("obsidian_notes_subpath", "Anotações"))
+    print(f"[Main] Obsidian integration initialized with vault at {vault}")
 else:
-    from PyQt6.QtCore import QSharedMemory
-    from PyQt6.QtNetwork import QLocalServer, QLocalSocket
-    from PyQt6.QtWidgets import QApplication
-    from sirius_ui import SiriusUI
-from memory.memory_manager import (
-    load_memory, update_memory, format_memory_for_prompt,
-    should_extract_memory, extract_memory,
-    process_user_input, get_repo,
-)
+    print("[Main] No obsidian vault path configured; skipping initialization.")
 
-from actions.file_processor import file_processor
-from actions.flight_finder     import flight_finder
-from actions.open_app          import open_app
-from actions.weather_report    import weather_action
-from actions.send_message      import send_message
-from actions.reminder          import reminder
-from actions.computer_settings import computer_settings
-from actions.screen_processor  import screen_process
-from actions.youtube_video     import youtube_video
-from actions.desktop           import desktop_control
-from actions.browser_control   import browser_control
-from actions.file_controller   import file_controller
-from actions.code_helper       import code_helper
-from actions.dev_agent         import dev_agent
-from actions.web_search        import web_search as web_search_action
-from actions.web_search        import _news as _fetch_news_sync, _gemini_headlines
-from actions.proactive         import ProactiveEngine
-from actions.computer_control  import computer_control
-from actions.game_updater      import game_updater
-from actions.google_calendar  import google_calendar as calendar_action
-from actions.notion_calendar import notion_calendar as notion_calendar_action
-from actions.gmail            import gmail_action
-from actions.deep_research    import deep_research
-from actions.linkedin_jobs_radar import linkedin_jobs_radar
 from actions.apply_assist import apply_assist
+from actions.browser_control import browser_control
 from actions.business_radar import business_radar
+from actions.code_helper import code_helper
+from actions.computer_control import computer_control
+from actions.computer_settings import computer_settings
+from actions.deep_research import deep_research
+from actions.desktop import desktop_control
+from actions.dev_agent import dev_agent
+from actions.file_controller import file_controller
+from actions.file_processor import file_processor
+from actions.flight_finder import flight_finder
 from actions.freela_arsenal import freela_arsenal
+from actions.game_updater import game_updater
+from actions.gmail import gmail_action
+from actions.google_calendar import google_calendar as calendar_action
+from actions.linkedin_jobs_radar import linkedin_jobs_radar
+from actions.notion_calendar import notion_calendar as notion_calendar_action
+from actions.open_app import open_app
+from actions.reminder import reminder
+from actions.screen_processor import screen_process
+from actions.send_message import send_message
+from actions.weather_report import weather_action
+from actions.web_search import _news as _fetch_news_sync
+from actions.web_search import web_search as web_search_action
+from actions.youtube_video import youtube_video
 from config.permissions import (
-    is_granted, get_category, grant_permission, PERMISSION_META,
+    PERMISSION_META,
+    get_category,
+    grant_permission,
+    is_granted,
 )
-from memory.config_manager import get_speak_briefing_enabled as get_brief_enabled, get_assistant_name, save_assistant_config
-
-
 from core.config_loader import get_base_dir
+from memory.config_manager import get_assistant_name
+from memory.memory_manager import (
+    extract_memory,
+    format_memory_for_prompt,
+    get_repo,
+    load_memory,
+    process_user_input,
+    should_extract_memory,
+    update_memory,
+)
 
 BASE_DIR        = get_base_dir()
 PROMPT_PATH     = BASE_DIR / "core" / "prompt.txt"
@@ -184,7 +210,7 @@ def _persist_message_to_db(instance: "SiriusLive", role: str, content: str) -> N
     try:
         repo = get_repo()
         if repo is None:
-            print(f"[Memory] DB persist skipped — repo not available")
+            print("[Memory] DB persist skipped — repo not available")
             return
         if instance._conv_id is None:
             instance._conv_id = repo.create_conversation(title=f"SIRIUS Live {datetime.now().strftime('%Y-%m-%d %H:%M')}")
@@ -240,6 +266,17 @@ def _is_port_open(host: str = '127.0.0.1', port: int = 8000, timeout: float = 0.
         return False
 
 
+def _now_context_str() -> str:
+    """Fresh [CURRENT DATE & TIME] block — always call at usage time so the
+    model's clock matches the moment the text is actually sent/spoken."""
+    now      = datetime.now()
+    time_str = now.strftime("%A, %B %d, %Y — %I:%M %p")
+    return (
+        f"[CURRENT DATE & TIME]\n"
+        f"Right now it is: {time_str}\n"
+        f"Use this to calculate exact times for reminders."
+    )
+
 def _load_system_prompt() -> str:
     global _system_prompt_cache
     if _system_prompt_cache is not None:
@@ -257,10 +294,14 @@ def _load_system_prompt() -> str:
 
 _CTRL_RE = re.compile(r"<ctrl\d+>", re.IGNORECASE)
 
-def _clean_transcript(text: str) -> str:    
+def _clean_transcript(text: str) -> str:
     text = _CTRL_RE.sub("", text)
     text = re.sub(r"[\x00-\x08\x0b-\x1f]", "", text)
     return text.strip()
+
+# Bundled plugin modules (loaded via importlib in frozen mode when plugins/
+# is not shipped as loose .py files to avoid AV blocking in _MEIxxxxx temp dir)
+_BUNDLED_PLUGIN_MODULES = ["calorie_counter", "pushup_counter", "upload_video"]
 
 TOOL_DECLARATIONS = [
     {
@@ -316,10 +357,52 @@ TOOL_DECLARATIONS = [
     },
     {
         "name": "system_status",
-        "description": "Reports system health: CPU, RAM, disk usage, uptime, and GPU load. Call this when user asks about system performance or resources.",
+        "description": (
+            "Returns real-time system metrics: CPU usage, RAM, GPU load, CPU temperature, "
+            "uptime, and process count. Use when the user asks about computer performance, "
+            "temperature, memory, or resource usage."
+        ),
         "parameters": {
             "type": "OBJECT",
             "properties": {},
+        }
+    },
+    {
+        "name": "add_monitor",
+        "description": (
+            "Starts monitoring a topic. SIRIUS checks it once a day via news search "
+            "and alerts the user when there is a new development. Use when the user "
+            "says 'monitor X', 'track X', 'acompanha notícias de X'. "
+            "Do NOT add crypto, financial, or trading topics."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "topic": {"type": "STRING", "description": "Topic to monitor (e.g. 'space exploration', 'AI news')"}
+            },
+            "required": ["topic"]
+        }
+    },
+    {
+        "name": "remove_monitor",
+        "description": (
+            "Stops monitoring a previously added topic. Use when the user says "
+            "'stop monitoring X', 'para de monitorar X'."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "topic": {"type": "STRING", "description": "Topic to stop monitoring"}
+            },
+            "required": ["topic"]
+        }
+    },
+    {
+        "name": "list_monitors",
+        "description": "Lists all topics currently being monitored.",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {}
         }
     },
     {
@@ -903,6 +986,40 @@ TOOL_DECLARATIONS = [
             "required": []
         }
     },
+    {
+        "name": "obsidian_notes_search",
+        "description": (
+            "Busca nas notas do Obsidian do usuário (vault configurado nas integrações). "
+            "Use quando o usuário perguntar sobre o conteúdo das anotações dele no Obsidian, "
+            "ex: 'o que tenho anotado sobre X?', 'procure nas minhas notas por Y'. "
+            "Retorna os trechos mais relevantes com o caminho da nota."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "query": {
+                    "type": "STRING",
+                    "description": "Termo/tema para buscar nas notas. Deixe vazio para listar as notas mais recentes."
+                },
+                "limit": {
+                    "type": "INTEGER",
+                    "description": "Máximo de resultados (default: 5)"
+                }
+            },
+            "required": ["query"]
+        }
+    },
+    {
+        "name": "obsidian_tasks_list",
+        "description": (
+            "Lista as tarefas pendentes do Obsidian do usuário. "
+            "Use quando o usuário perguntar sobre tarefas/afazeres anotados no vault dele."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {}
+        }
+    },
 ]
 
 class SiriusLive:
@@ -951,6 +1068,21 @@ class SiriusLive:
         self._fft_mic_counter = 0
         self._fft_tts_counter = 0
 
+        # Proactive engine 2.0 (context rotation, time-of-day, monitors)
+        from actions.proactive import ProactiveEngine
+        self._proactive = ProactiveEngine()
+
+        # Plugin registry (discover once at startup; enable/disable re-read per call)
+        from core.plugin_loader import discover_plugins
+        _core_names    = {d["name"] for d in TOOL_DECLARATIONS}
+        _plugins_dir   = Path(__file__).resolve().parent / "plugins"
+        self._plugin_registry = discover_plugins(
+            _plugins_dir,
+            _core_names,
+            logger=lambda m: (print(f"[Plugins] {m}"), self.ui.write_log(f"SYS: {m}")),
+            bundled_module_names=_BUNDLED_PLUGIN_MODULES,
+        )
+
         threading.Thread(target=self._lazy_init_tts, daemon=True).start()
         threading.Thread(target=self._tts_worker, daemon=True).start()
 
@@ -972,7 +1104,7 @@ class SiriusLive:
 
         if _DASHBOARD is not None:
             if not port_open:
-                print(f"[DEBUG _make_remote_key] WARNING: _DASHBOARD exists but port 8000 not listening!")
+                print("[DEBUG _make_remote_key] WARNING: _DASHBOARD exists but port 8000 not listening!")
             key    = _DASHBOARD.new_key()
             url    = _DASHBOARD.get_url()
             manual = _DASHBOARD.get_manual_url()
@@ -982,7 +1114,7 @@ class SiriusLive:
 
         if self._dashboard is not None:
             if not port_open:
-                print(f"[DEBUG _make_remote_key] WARNING: self._dashboard exists but port 8000 not listening!")
+                print("[DEBUG _make_remote_key] WARNING: self._dashboard exists but port 8000 not listening!")
             key    = self._dashboard.new_key()
             url    = self._dashboard.get_url()
             manual = self._dashboard.get_manual_url()
@@ -991,10 +1123,9 @@ class SiriusLive:
             return url, key, login_url, manual
 
         # Fallback: generate key locally without DashboardServer
-        print(f"[DEBUG _make_remote_key] FALLBACK path — no dashboard object at all")
+        print("[DEBUG _make_remote_key] FALLBACK path — no dashboard object at all")
         import secrets
         import string
-        import socket
 
         _key_chars = [c for c in (string.ascii_uppercase + string.digits)
                       if c not in ('O', 'I', 'L', '0', '1')]
@@ -1128,20 +1259,13 @@ class SiriusLive:
         return result.strip()
 
     def _build_config(self) -> types.LiveConnectConfig:
-        from datetime import datetime
-        from memory.config_manager import get_assistant_name, get_user_name
+        from memory.config_manager import get_user_name
 
         memory     = load_memory()
         mem_str    = format_memory_for_prompt(memory)
         sys_prompt = _load_system_prompt()
 
-        now      = datetime.now()
-        time_str = now.strftime("%A, %B %d, %Y — %I:%M %p")
-        time_ctx = (
-            f"[CURRENT DATE & TIME]\n"
-            f"Right now it is: {time_str}\n"
-            f"Use this to calculate exact times for reminders.\n\n"
-        )
+        time_ctx = _now_context_str() + "\n\n"
 
         # Identity injection
         _asst_name = get_assistant_name()
@@ -1166,7 +1290,7 @@ class SiriusLive:
             output_audio_transcription={},
             input_audio_transcription={},
             system_instruction="\n".join(parts),
-            tools=[{"function_declarations": TOOL_DECLARATIONS}],
+            tools=[{"function_declarations": TOOL_DECLARATIONS + self._plugin_registry.get_tool_declarations()}],
             speech_config=types.SpeechConfig(
                 voice_config=types.VoiceConfig(
                     prebuilt_voice_config=types.PrebuiltVoiceConfig(
@@ -1198,7 +1322,6 @@ class SiriusLive:
             return (e.get("value", "") if isinstance(e, dict) else str(e)).strip()
         lang = _val("language")
         name = _val("name")
-        time_str = datetime.now().strftime("%H:%M")
 
         # Fetch news in background
         loop = asyncio.get_event_loop()
@@ -1230,8 +1353,11 @@ class SiriusLive:
             return
 
         # Send greeting via Gemini Live
+        # Capture the time at speak-moment: news fetch + modal dismiss wait
+        # can take minutes, so a time captured earlier would be stale.
         lang_clause = f" Responda em {lang}." if lang else ""
         name_clause = f" Chame o usuário de {name}." if name else ""
+        time_str = datetime.now().strftime("%H:%M")
         greeting_text = (
             f"Cumprimente o usuário, são {time_str}. "
             f"Se houver notícias, resuma UMA manchete em uma frase e diga que a lista completa está na tela. "
@@ -1245,6 +1371,15 @@ class SiriusLive:
         )
         self.ui.write_log("SYS: Briefing greeting enviado após dismiss.")
 
+        # Atividade: resumo semanal se monitoramento estiver ativo
+        if is_monitor_enabled():
+            from persistence.repository import Repository
+            repo = Repository()
+            stats = repo.get_weekly_stats()
+            summary = (f"Na última semana você ficou {stats['avg_daily_minutes']:.0f} min por dia em média. "
+                       f"Os apps mais usados foram: {', '.join(a['name'] for a in stats['top_apps'])}.")
+            self._tts_queue.put(summary)
+
     async def _run_proactive_mode(self) -> None:
         while True:
             await asyncio.sleep(15)
@@ -1257,7 +1392,27 @@ class SiriusLive:
                 if not self._proactive.should_trigger(self._last_user_speech):
                     continue
                 self._proactive.mark_triggered()
-                prompt = self._proactive.build_prompt(memory)
+
+                from actions.background_monitor import list_monitors
+                monitors = list_monitors()
+
+                recent_turns: list[str] = []
+                try:
+                    if self._conv_id:
+                        from persistence.repository import Repository
+                        msgs = Repository().get_messages(int(self._conv_id), limit=8)
+                        recent_turns = [
+                            f"{m.get('role', '')}: {str(m.get('content', ''))[:200]}"
+                            for m in msgs
+                        ]
+                except Exception:
+                    recent_turns = []
+
+                prompt = self._proactive.build_prompt(
+                    memory,
+                    monitors=monitors or None,
+                    recent_turns=recent_turns or None,
+                )
                 import google.generativeai as genai
                 genai.configure(api_key=_get_api_key())
                 m = genai.GenerativeModel("gemini-2.5-flash")
@@ -1269,6 +1424,39 @@ class SiriusLive:
                         self.ui.show_suggestion(result[:200])
             except Exception as e:
                 print(f"[Proactive] Check failed: {e}")
+
+    async def _run_background_monitor(self) -> None:
+        """Check user-configured topics once per day; speak alerts when new headlines appear."""
+        from actions.background_monitor import check_all as monitor_check_all
+
+        await asyncio.sleep(300)          # wait 5 min after startup before first check
+        while True:
+            if self.session:
+                # Don't interrupt if user spoke recently or SIRIUS is mid-sentence
+                with self._speaking_lock:
+                    speaking = self._is_speaking
+                recent_speech = (_time.monotonic() - self._last_user_speech) < 30
+                if not speaking and not recent_speech:
+                    try:
+                        alerts = await asyncio.to_thread(monitor_check_all)
+                        memory = load_memory()
+                        lang_e = memory.get("identity", {}).get("language", {})
+                        lang   = (lang_e.get("value", "") if isinstance(lang_e, dict) else str(lang_e)).strip() or "Portuguese"
+                        for alert in alerts:
+                            msg = (
+                                f"{alert}\n\n"
+                                f"Inform the user about this development naturally in {lang}. "
+                                "One brief sentence only."
+                            )
+                            await self.session.send_client_content(
+                                turns={"parts": [{"text": msg}]},
+                                turn_complete=True,
+                            )
+                            self.ui.write_log("SYS: Monitor alert sent.")
+                            await asyncio.sleep(6)   # gap between consecutive alerts
+                    except Exception as e:
+                        print(f"[Monitor] ⚠️ Background check error: {e}")
+            await asyncio.sleep(1800)     # check every 30 minutes
 
     async def _execute_tool(self, fc) -> types.FunctionResponse:
         name = fc.name
@@ -1303,7 +1491,8 @@ class SiriusLive:
             if hasattr(self.ui, 'request_close_app'):
                 self.ui.request_close_app()
             def _shutdown():
-                import time, os
+                import os
+                import time
                 time.sleep(2.5)
                 os._exit(0)
             threading.Thread(target=_shutdown, daemon=True).start()
@@ -1347,19 +1536,22 @@ class SiriusLive:
                 result = r or "Weather delivered."
 
             elif name == "system_status":
-                import psutil
-                cpu  = psutil.cpu_percent(interval=0.5)
-                ram  = psutil.virtual_memory()
-                boot = psutil.boot_time()
-                uptime_secs = _time.time() - boot
-                uptime_h    = int(uptime_secs // 3600)
-                uptime_m    = int((uptime_secs % 3600) // 60)
-                result = (
-                    f"CPU: {cpu}% | "
-                    f"RAM: {ram.percent}% ({ram.used // 1024**3}GB/{ram.total // 1024**3}GB) | "
-                    f"Uptime: {uptime_h}h {uptime_m}m | "
-                    f"Processes: {len(psutil.pids())}"
-                )
+                from actions.system_monitor import get_system_status
+                r = await loop.run_in_executor(None, get_system_status)
+                result = str(r)
+
+            elif name == "add_monitor":
+                from actions.background_monitor import add_monitor
+                result = await loop.run_in_executor(None, lambda: add_monitor(args.get("topic", "")))
+
+            elif name == "remove_monitor":
+                from actions.background_monitor import remove_monitor
+                result = await loop.run_in_executor(None, lambda: remove_monitor(args.get("topic", "")))
+
+            elif name == "list_monitors":
+                from actions.background_monitor import list_monitors
+                topics = await loop.run_in_executor(None, list_monitors)
+                result = str(topics)
 
             elif name == "browser_control":
                 r = await loop.run_in_executor(None, lambda: browser_control(parameters=args, player=self.ui))
@@ -1383,6 +1575,7 @@ class SiriusLive:
 
             elif name == "screen_process":
                 import time as _t_mod
+
                 from actions.screen_processor import _capture_camera, _capture_screen
                 _now = _t_mod.monotonic()
                 _cooldown = 4.0
@@ -1439,7 +1632,7 @@ class SiriusLive:
                 result = r or "Done."
 
             elif name == "agent_task":
-                from agent.task_queue import get_queue, TaskPriority
+                from agent.task_queue import TaskPriority, get_queue
                 priority_map = {"low": TaskPriority.LOW, "normal": TaskPriority.NORMAL, "high": TaskPriority.HIGH}
                 priority = priority_map.get(args.get("priority", "normal").lower(), TaskPriority.NORMAL)
                 task_id  = get_queue().submit(goal=args.get("goal", ""), priority=priority, speak=self.speak)
@@ -1486,6 +1679,17 @@ class SiriusLive:
                 r = await loop.run_in_executor(None, lambda: workspaces(parameters=args, player=self.ui))
                 result = r or "Done."
 
+            elif name == "obsidian_notes_search":
+                from actions.obsidian_search import search_notes
+                result = await loop.run_in_executor(
+                    None,
+                    lambda: search_notes(args.get("query", ""), args.get("limit", 5)),
+                )
+
+            elif name == "obsidian_tasks_list":
+                from actions.obsidian_search import list_tasks
+                result = await loop.run_in_executor(None, list_tasks)
+
             elif name == "deep_research":
                 r = await loop.run_in_executor(None, lambda: deep_research(parameters=args, player=self.ui))
                 result = r or "Done."
@@ -1506,6 +1710,13 @@ class SiriusLive:
                 r = await loop.run_in_executor(None, lambda: freela_arsenal(parameters=args, player=self.ui, speak=self.speak))
                 result = r or "Done."
 
+
+            elif self._plugin_registry.has(name):
+                r = await loop.run_in_executor(
+                    None,
+                    lambda: self._plugin_registry.run(name, args, player=self.ui, session_memory=None)
+                )
+                result = r or "Done."
 
             else:
                 result = f"Unknown tool: {name}"
@@ -1877,7 +2088,7 @@ class SiriusLive:
             else:
                 self._dashboard = DashboardServer()
                 self._dashboard._ready_event = self._dashboard_ready
-                print(f"[DEBUG main] Starting DashboardServer in background...")
+                print("[DEBUG main] Starting DashboardServer in background...")
                 print(f"[DEBUG main] Dashboard IP: {self._dashboard._ip}")
                 task = asyncio.ensure_future(self._dashboard.serve())
                 def _on_dashboard_done(fut):
@@ -1922,6 +2133,7 @@ class SiriusLive:
                     self._allow_mic = asyncio.Event()
 
                     if self._dashboard:
+                        self._dashboard._assistant_running = True
                         await self._dashboard.broadcast({"type": "status", "state": "active"})
 
                     tg.create_task(self._send_realtime())
@@ -1929,6 +2141,7 @@ class SiriusLive:
                     tg.create_task(self._receive_audio())
                     tg.create_task(self._play_audio())
                     tg.create_task(self._run_proactive_mode())
+                    tg.create_task(self._run_background_monitor())
                     if self._dashboard:
                         tg.create_task(self._relay_phone_audio())
 
@@ -1972,6 +2185,7 @@ class SiriusLive:
             self.ui.set_state("THINKING")
             self.ui.write_log("SYS: Reconectando...")
             if self._dashboard:
+                self._dashboard._assistant_running = False
                 await self._dashboard.broadcast({"type": "status", "state": "sleeping"})
             print("[SIRIUS] Reconnecting in 3s...")
             await asyncio.sleep(3)
@@ -2082,6 +2296,7 @@ class SiriusLocal:
 
     def __init__(self, ui: SiriusUI):
         import queue as _queue
+
         from core.config_loader import get_all_config
         self.ui               = ui
         self._config          = get_all_config()
@@ -2098,16 +2313,22 @@ class SiriusLocal:
         self._fft_mic_counter = 0
         self._fft_tts_counter = 0
 
+        # Plugin registry (discover once at startup; enable/disable re-read per call)
+        from core.plugin_loader import discover_plugins
+        _core_names    = {d["name"] for d in TOOL_DECLARATIONS}
+        _plugins_dir   = Path(__file__).resolve().parent / "plugins"
+        self._plugin_registry = discover_plugins(
+            _plugins_dir,
+            _core_names,
+            logger=lambda m: (print(f"[Plugins] {m}"), self.ui.write_log(f"SYS: {m}")),
+            bundled_module_names=_BUNDLED_PLUGIN_MODULES,
+        )
+
     def _build_system_prompt(self) -> str:
         sys_p   = _load_system_prompt()
         memory  = load_memory()
         mem_str = format_memory_for_prompt(memory)
-        now     = datetime.now()
-        time_ctx = (
-            f"[CURRENT DATE & TIME]\n"
-            f"Right now it is: {now.strftime('%A, %B %d, %Y — %I:%M %p')}\n"
-            f"Use this to calculate exact times for reminders."
-        )
+        time_ctx = _now_context_str()
         parts = [sys_p]
         if mem_str:
             parts.append(mem_str)
@@ -2189,7 +2410,8 @@ class SiriusLocal:
             if hasattr(self.ui, 'request_close_app'):
                 self.ui.request_close_app()
             def _shutdown():
-                import time, os
+                import os
+                import time
                 time.sleep(2.5)
                 os._exit(0)
             threading.Thread(target=_shutdown, daemon=True).start()
@@ -2245,7 +2467,7 @@ class SiriusLocal:
                 result = r or "Done."
 
             elif name == "agent_task":
-                from agent.task_queue import get_queue, TaskPriority
+                from agent.task_queue import TaskPriority, get_queue
                 priority_map = {
                     "low": TaskPriority.LOW,
                     "normal": TaskPriority.NORMAL,
@@ -2298,6 +2520,14 @@ class SiriusLocal:
                 r = workspaces(parameters=args, player=self.ui)
                 result = r or "Done."
 
+            elif name == "obsidian_notes_search":
+                from actions.obsidian_search import search_notes
+                result = search_notes(args.get("query", ""), args.get("limit", 5))
+
+            elif name == "obsidian_tasks_list":
+                from actions.obsidian_search import list_tasks
+                result = list_tasks()
+
             elif name == "deep_research":
                 r = deep_research(parameters=args, player=self.ui)
                 result = r or "Done."
@@ -2318,6 +2548,26 @@ class SiriusLocal:
                 r = freela_arsenal(parameters=args, player=self.ui, speak=self.speak)
                 result = r or "Done."
                 return "Shutting down."
+
+            elif name == "system_status":
+                from actions.system_monitor import get_system_status
+                result = str(get_system_status())
+
+            elif name == "add_monitor":
+                from actions.background_monitor import add_monitor
+                result = add_monitor(args.get("topic", ""))
+
+            elif name == "remove_monitor":
+                from actions.background_monitor import remove_monitor
+                result = remove_monitor(args.get("topic", ""))
+
+            elif name == "list_monitors":
+                from actions.background_monitor import list_monitors
+                topics = list_monitors()
+                result = str(topics)
+
+            elif self._plugin_registry.has(name):
+                result = self._plugin_registry.run(name, args, player=self.ui, session_memory=None) or "Done."
 
             else:
                 result = f"Unknown tool: {name}"
@@ -2348,7 +2598,8 @@ class SiriusLocal:
         ] + list(self._conversation)
 
         _NEEDS_LLM_ROUND = {"web_search", "screen_process", "agent_task"}
-        ollama_tools = _to_ollama_tools(TOOL_DECLARATIONS)
+        plugin_decls  = self._plugin_registry.get_tool_declarations()
+        ollama_tools  = _to_ollama_tools(TOOL_DECLARATIONS + plugin_decls)
 
         MAX_TOOL_ROUNDS = 6
         for _round in range(MAX_TOOL_ROUNDS):
@@ -2751,54 +3002,9 @@ class SiriusLocal:
             traceback.print_exc()
 
 
-if not _USE_WS:
-
-    def _check_single_instance() -> bool:
-        """If another instance exists, tell it to show window and return True."""
-        _SHARED_KEY = "SIRIUS_SINGLE_INSTANCE"
-        _SERVER_KEY = "SIRIUS_LOCAL_SERVER"
-
-        app = QApplication.instance() or QApplication(sys.argv)
-
-        shared_mem = QSharedMemory(_SHARED_KEY)
-        if shared_mem.attach():
-            socket = QLocalSocket()
-            socket.connectToServer(_SERVER_KEY)
-            if socket.waitForConnected(2000):
-                socket.write(b"show")
-                socket.waitForBytesWritten(1000)
-                socket.disconnectFromServer()
-            return True
-
-        shared_mem.create(1)
-        app._sirius_shared_mem = shared_mem
-
-        QLocalServer.removeServer(_SERVER_KEY)
-        server = QLocalServer()
-        server.listen(_SERVER_KEY)
-        app._sirius_server = server
-        return False
-
-    def _setup_ipc_server(app, show_window_cb):
-        """Wire IPC server to a show-window callback."""
-        server = getattr(app, "_sirius_server", None)
-        if server is None:
-            return
-
-        def _on_connection():
-            while server.hasPendingConnections():
-                conn = server.nextPendingConnection()
-                if conn.waitForReadyRead(2000):
-                    conn.readAll()
-                    show_window_cb()
-                conn.disconnectFromServer()
-
-        server.newConnection.connect(_on_connection)
-
-
 def _migrate_legacy_configs():
     """Move config keys from api_keys.json to configs.json (legacy migration)."""
-    from core.config_loader import _read_json, _write_json, _CONFIGS_FILE, _SECRETS_FILE
+    from core.config_loader import _CONFIGS_FILE, _SECRETS_FILE, _read_json, _write_json
     api_keys = _read_json(_SECRETS_FILE)
     config_keys = {"assistant_mode", "user_name", "llm_provider", "stt_engine",
                    "stt_language", "stt_model", "tts_engine", "tts_voice",
@@ -2820,52 +3026,51 @@ def main():
     # Preload torch to optimize Kokoro load
     def _preload_torch():
         try:
-            import torch
+            pass
         except Exception:
             pass
     threading.Thread(target=_preload_torch, daemon=True).start()
 
-    if not _USE_WS and _check_single_instance():
-        return  # Another instance is running — exit silently
-
-    if _USE_WS:
-        _migrate_legacy_configs()
+    _migrate_legacy_configs()
 
     ui = SiriusUI()
+    ui.show_startup_panel()
 
-    if _USE_WS:
-        ui.show_startup_panel()
+    # Start remote dashboard early (available before Assistant connects)
+    def _start_dashboard():
+        try:
+            from dashboard.server import DashboardServer
+            ds = DashboardServer()
+            global _DASHBOARD, _DASHBOARD_READY
+            ds._ready_event = _DASHBOARD_READY
+            _DASHBOARD = ds
+            print(f"[DEBUG main] Early dashboard thread started. IP={ds._ip}")
+            asyncio.run(ds.serve())
+        except Exception as e:
+            print(f"[MAIN] Dashboard disabled: {e}")
+            traceback.print_exc()
+            _DASHBOARD = None
+            _DASHBOARD_READY.set()
+    print("[DEBUG main] Starting early dashboard thread...")
+    threading.Thread(target=_start_dashboard, daemon=True).start()
 
-        # Start remote dashboard early (available before Assistant connects)
-        def _start_dashboard():
-            try:
-                from dashboard.server import DashboardServer
-                ds = DashboardServer()
-                global _DASHBOARD, _DASHBOARD_READY
-                ds._ready_event = _DASHBOARD_READY
-                _DASHBOARD = ds
-                print(f"[DEBUG main] Early dashboard thread started. IP={ds._ip}")
-                asyncio.run(ds.serve())
-            except Exception as e:
-                print(f"[MAIN] Dashboard disabled: {e}")
-                traceback.print_exc()
-                _DASHBOARD = None
-                _DASHBOARD_READY.set()
-        print("[DEBUG main] Starting early dashboard thread...")
-        threading.Thread(target=_start_dashboard, daemon=True).start()
-
-    if not _USE_WS:
-        _setup_ipc_server(ui._app, ui._win.show_window)
+    # Start the scheduled-task alarm loop (fires due reminders on PC + phone;
+    # first tick also catches up on tasks missed while SIRIUS was offline).
+    try:
+        from core.task_alarm import start_scheduler
+        start_scheduler()
+        print("[DEBUG main] TaskAlarmScheduler started.")
+    except Exception as e:
+        print(f"[MAIN] Task alarm scheduler disabled: {e}")
 
     def runner():
-        if _USE_WS:
-            # Check WS server status FIRST — before blocking on onboarding
-            if not _ws.was_started():
-                print("[RUNNER] WS server not started — another backend instance is already running. Skipping assistant to avoid duplicate voice output.")
-                _ws.show_windows_notification("SIRIUS", "Outra instância já está rodando. Esta será encerrada.")
-                return
-            ui.set_startup_progress(1, 5, "Verificando configuração inicial...")
-            ui.wait_for_onboarding()
+        # Check WS server status FIRST — before blocking on onboarding
+        if not _ws.was_started():
+            print("[RUNNER] WS server not started — another backend instance is already running. Skipping assistant to avoid duplicate voice output.")
+            _ws.show_windows_notification("SIRIUS", "Outra instância já está rodando. Esta será encerrada.")
+            return
+        ui.set_startup_progress(1, 5, "Verificando configuração inicial...")
+        ui.wait_for_onboarding()
         ui.wait_for_api_key()
 
         from core.config_loader import get_all_config, get_secret
@@ -2879,10 +3084,10 @@ def main():
         if mode == "local":
             gemini_key = cfg.get("gemini_api_key") or get_secret("gemini_api_key")
             if gemini_key:
-                print(f"[RUNNER] assistant_mode='local' but gemini_api_key IS SET — forcing gemini mode")
+                print("[RUNNER] assistant_mode='local' but gemini_api_key IS SET — forcing gemini mode")
                 mode = "gemini"
             else:
-                print(f"[RUNNER] assistant_mode='local' and no gemini key — staying local")
+                print("[RUNNER] assistant_mode='local' and no gemini key — staying local")
 
         # Safeguard: sync llm_provider with assistant_mode and persist
         from core.config_loader import set_config
@@ -2896,8 +3101,7 @@ def main():
             ui.write_log(f"SYS: assistant_mode='local' but llm_provider='{llm_prov}' — fixed to 'ollama'")
             set_config("llm_provider", "ollama")
 
-        if _USE_WS:
-            ui.set_startup_progress(2, 5, "Iniciando motor de IA...")
+        ui.set_startup_progress(2, 5, "Iniciando motor de IA...")
 
         try:
             if mode == "local":
@@ -2921,8 +3125,7 @@ def main():
                 sirius.run()
             else:
                 print(f"[RUNNER] Starting SiriusLive (mode={mode!r})...")
-                if _USE_WS:
-                    ui.set_startup_progress(3, 5, "Aguardando interface...")
+                ui.set_startup_progress(3, 5, "Aguardando interface...")
                 sirius = SiriusLive(ui)
                 global _sirius_instance
                 _sirius_instance = sirius
@@ -2931,31 +3134,26 @@ def main():
             msg = f"Configuração incompleta — {e}"
             ui.write_log(f"ERR: {msg}")
             print(f"[RUNNER] Config error: {e}")
-            if _USE_WS:
-                ui.set_startup_status(msg)
-                ui.hide_startup_panel()
-                _ws.show_windows_notification("SIRIUS", msg)
+            ui.set_startup_status(msg)
+            ui.hide_startup_panel()
+            _ws.show_windows_notification("SIRIUS", msg)
         except Exception as e:
             msg = f"Erro ao iniciar assistente — {e}"
             ui.write_log(f"ERR: {msg}")
             traceback.print_exc()
-            if _USE_WS:
-                ui.set_startup_status(msg)
-                ui.hide_startup_panel()
-                _ws.show_windows_notification("SIRIUS", msg)
+            ui.set_startup_status(msg)
+            ui.hide_startup_panel()
+            _ws.show_windows_notification("SIRIUS", msg)
         except KeyboardInterrupt:
             print("\nShutting down...")
 
     threading.Thread(target=runner, daemon=True).start()
-    if _USE_WS:
-        try:
-            while True:
-                import time
-                time.sleep(1)
-        except KeyboardInterrupt:
-            print("\nShutting down...")
-    else:
-        ui.root.mainloop()
+    try:
+        while True:
+            import time
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("\nShutting down...")
 
 if __name__ == "__main__":
     main()

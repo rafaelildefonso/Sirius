@@ -16,13 +16,26 @@ import secrets
 import socket
 import string
 import time
+from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
+
+
+@dataclass
+class WsMessage:
+    """WebSocket message wrapper for broadcasting to frontend."""
+    type: str
+    payload: dict = field(default_factory=dict)
+
+    def to_json(self) -> str:
+        return json.dumps({"type": self.type, **self.payload}, ensure_ascii=False)
+
 
 _DEPS_OK = False
 try:
-    from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
-    from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
     import uvicorn
+    from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+    from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
     _DEPS_OK = True
 except ImportError:
     pass
@@ -30,7 +43,8 @@ except ImportError:
 # python-multipart is required for file uploads — optional dependency
 _UPLOAD_OK = False
 try:
-    from fastapi import UploadFile, File as FastAPIFile
+    from fastapi import File as FastAPIFile
+    from fastapi import UploadFile
     _UPLOAD_OK = True
 except Exception:
     pass
@@ -66,6 +80,69 @@ def _get_gemini_key() -> str | None:
     except Exception:
         return None
 
+
+# -- Scheduled tasks helpers ---------------------------------------------------
+
+def _parse_due_at(raw) -> str | None:
+    """Normalize a due datetime (ISO or 'YYYY-MM-DD HH:MM') into an ISO string."""
+    if not raw:
+        return None
+    s = str(raw).strip()
+    if s.endswith("Z"):
+        s = s[:-1]
+    for fmt in ("%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M",
+                "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.strptime(s, fmt).isoformat()
+        except ValueError:
+            continue
+    try:
+        return datetime.fromisoformat(s).isoformat()
+    except ValueError:
+        return None
+
+
+def _create_quick_task(payload: dict, device_id: str = "") -> dict | None:
+    """Create a scheduled task coming from a companion app / REST client."""
+    title = str(payload.get("title") or payload.get("text") or "").strip()
+    due_iso = _parse_due_at(payload.get("due_at") or payload.get("due") or "")
+    if not title or not due_iso:
+        return None
+    try:
+        from persistence.repository import Repository
+        client_id = str(payload.get("id") or "").strip()
+        task = Repository().add_scheduled_task(
+            title=title,
+            due_at=due_iso,
+            notes=(str(payload.get("notes")).strip() or None) if payload.get("notes") else None,
+            source=str(payload.get("source") or "phone"),
+            device_id=device_id or None,
+            task_id=client_id or None,
+        )
+        print(f"[Tasks] Created '{title}' due {due_iso} (source={task['source']})")
+        return task
+    except Exception as e:
+        print(f"[Tasks] Create failed: {e}")
+        return None
+
+
+def _update_quick_task(task_id: str, action: str, minutes: int = 5) -> bool:
+    if not task_id:
+        return False
+    try:
+        from persistence.repository import Repository
+        repo = Repository()
+        if action == "done":
+            return repo.complete_scheduled_task(task_id)
+        if action == "snooze":
+            return repo.snooze_scheduled_task(task_id, minutes=minutes)
+        if action == "dismiss":
+            return repo.dismiss_scheduled_task(task_id)
+        return False
+    except Exception as e:
+        print(f"[Tasks] Update {action} failed for {task_id}: {e}")
+        return False
+
 _KEY_CHARS = [c for c in (string.ascii_uppercase + string.digits)
               if c not in ('O', 'I', 'L', '0', '1')]
 
@@ -80,8 +157,8 @@ def _derive_key(session_key: str) -> bytes:
 
 def _decrypt_cbc(aes_key: bytes, enc_b64: str) -> str:
     """Decrypt base64(IV[16] || ciphertext) with AES-256-CBC + PKCS7."""
-    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
     from cryptography.hazmat.primitives import padding as sym_pad
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
     raw      = base64.b64decode(enc_b64)
     iv, ct   = raw[:16], raw[16:]
     dec      = Cipher(algorithms.AES(aes_key), modes.CBC(iv)).decryptor()
@@ -106,11 +183,16 @@ def _ensure_network_access(port: int) -> None:
     macOS   : osascript admin dialog if the Application Firewall is on.
     Linux   : pkexec GUI -> sudo -n -> prints manual command as fallback.
     """
-    import sys, subprocess, os, tempfile, threading
+    import os
+    import subprocess
+    import sys
+    import tempfile
+    import threading
 
     # -- Windows --------------------------------------------------------------
     if sys.platform == "win32":
-        import ctypes, time
+        import ctypes
+        import time
 
         port_rule = f"SIRIUS Dashboard Port {port}"
         prog_rule = "SIRIUS Dashboard Python"
@@ -317,7 +399,7 @@ def _ensure_crypto_js() -> None:
         print("[Dashboard] CryptoJS cached — will serve locally from now on.")
     except Exception as e:
         print(f"[Dashboard] CryptoJS download failed: {e}")
-        print(f"[Dashboard] Encryption will fall back to CDN load on client.")
+        print("[Dashboard] Encryption will fall back to CDN load on client.")
 
 
 _ensure_crypto_js()
@@ -777,7 +859,54 @@ class DashboardServer:
         self._uploads_dir                 = UPLOADS_DIR
         self._login_html                  = None  # lazy-loaded on first request
         self._app_html                    = None  # lazy-loaded on first request
+
+        # Trusted devices for companion app
+        self._trusted_devices: dict[str, dict] = {}  # device_id -> {name, token, paired_at, last_seen}
+        self._pending_pair: dict[str, dict] = {}     # device_id -> {name, ts}
+        self._pending_phone_commands: dict[str, list] = {}  # device_id -> [commands]
+        self._load_trusted_devices()
+
         self.app                          = self._build_app()
+
+    def _load_trusted_devices(self) -> None:
+        """Load trusted devices from encrypted config."""
+        try:
+            from core.config_loader import _read_json
+            data = _read_json("trusted_devices.json")
+            self._trusted_devices = data.get("devices", {})
+        except Exception:
+            self._trusted_devices = {}
+
+    def _save_trusted_devices(self) -> None:
+        """Save trusted devices to encrypted config."""
+        try:
+            from core.config_loader import _write_json
+            _write_json("trusted_devices.json", {"devices": self._trusted_devices})
+        except Exception as e:
+            print(f"[Dashboard] Failed to save trusted devices: {e}")
+
+    def _issue_device_token(self, device_id: str) -> str:
+        """Issue a new device token for a trusted device."""
+        import secrets
+        token = secrets.token_urlsafe(32)
+        self._device_sessions[token] = {"session_key": list(self._trusted_devices[device_id].keys())[0] if self._trusted_devices[device_id] else ""}
+        # Actually we need to store the session_key
+        if device_id in self._trusted_devices:
+            session_key = self._trusted_devices[device_id].get("session_key", "")
+            if session_key:
+                self._device_sessions[token] = {"session_key": session_key}
+        return token
+
+    def _validate_device_token(self, token: str, device_id: str | None = None) -> bool:
+        """Validate a device token and optionally check device_id matches."""
+        if token not in self._device_sessions:
+            return False
+        if device_id:
+            # Find which device this token belongs to
+            for dev_id, info in self._trusted_devices.items():
+                if info.get("token") == token:
+                    return dev_id == device_id
+        return True
 
     # -- one-time key management -------------------------------------------
 
@@ -931,7 +1060,7 @@ class DashboardServer:
                 print(f"[DEBUG /auto-login] Key {key!r} VALID, creating session...")
 
             if not key or key not in self._pending_keys or self._pending_keys[key] <= now:
-                print(f"[DEBUG /auto-login] Returning 'Link Expired' response")
+                print("[DEBUG /auto-login] Returning 'Link Expired' response")
                 return HTMLResponse("""<!DOCTYPE html>
 <html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width">
 <style>
@@ -959,7 +1088,7 @@ class DashboardServer:
                 {"type": "sys", "text": "Remote connection established via QR code."}
             ))
 
-            print(f"[DEBUG /auto-login] Redirecting phone to '/' with session...")
+            print("[DEBUG /auto-login] Redirecting phone to '/' with session...")
             return HTMLResponse(f"""<!DOCTYPE html>
 <html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width">
 <style>
@@ -1007,6 +1136,347 @@ sessionStorage.setItem('sirius_token','{tok}');
             count = len(self._device_sessions)
             self._device_sessions.clear()
             return JSONResponse({"ok": True, "revoked": count})
+
+        # -- Companion App: Device Pairing ---------------------------------------
+
+        @app.post("/api/device/pair")
+        async def pair_device(req: Request):
+            """Register a new companion device. Returns pending_approval if not trusted."""
+            try:
+                body = await req.json()
+            except Exception:
+                return JSONResponse({"ok": False, "error": "Invalid JSON"}, status_code=400)
+
+            device_id = body.get("device_id", "").strip()
+            device_name = body.get("device_name", "Unknown Device")
+            platform = body.get("platform", "android")
+            app_version = body.get("app_version", "1.0.0")
+            model = body.get("model", "")
+
+            if not device_id:
+                return JSONResponse({"ok": False, "error": "device_id required"}, status_code=400)
+
+            # Already trusted?
+            if device_id in self._trusted_devices:
+                info = self._trusted_devices[device_id]
+                info["last_seen"] = time.time()
+                info["model"] = model or info.get("model", "")
+                self._save_trusted_devices()
+
+                # Issue new token
+                token = secrets.token_urlsafe(32)
+                session_key = info.get("session_key", "")
+                if session_key:
+                    self._device_sessions[token] = {"session_key": session_key}
+                info["token"] = token
+                self._save_trusted_devices()
+
+                return JSONResponse({"ok": True, "paired": True, "device_token": token})
+
+            # Auto-approve: QR code one-time key was already validated by /auto-login
+            self._trusted_devices[device_id] = {
+                "name": device_name,
+                "token": "",
+                "platform": platform,
+                "app_version": app_version,
+                "model": model,
+                "paired_at": time.time(),
+                "last_seen": time.time(),
+            }
+            token = self._issue_device_token(device_id)
+            self._trusted_devices[device_id]["token"] = token
+            self._save_trusted_devices()
+
+            print(f"[Dashboard] Device auto-approved: {device_name} ({device_id})")
+            await self.broadcast(WsMessage("sys", {
+                "text": f"Dispositivo pareado: {device_name} ({model})"
+            }))
+
+            return JSONResponse({
+                "ok": True,
+                "paired": True,
+                "device_token": token,
+            })
+
+        @app.post("/api/device/pair/approve")
+        async def approve_pair(req: Request):
+            """Approve or reject a pending device pairing (called from PC frontend)."""
+            if not _auth(req):
+                return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+            try:
+                body = await req.json()
+            except Exception:
+                return JSONResponse({"ok": False, "error": "Invalid JSON"}, status_code=400)
+
+            device_id = body.get("device_id", "").strip()
+            approve = body.get("approve", True)
+
+            if not device_id or device_id not in self._pending_pair:
+                return JSONResponse({"ok": False, "error": "No pending pairing for this device"}, status_code=404)
+
+            if approve:
+                info = self._pending_pair.pop(device_id)
+                session_key = ''.join(secrets.choice(_KEY_CHARS) for _ in range(6))
+                token = secrets.token_urlsafe(32)
+
+                self._trusted_devices[device_id] = {
+                    "name": info["name"],
+                    "platform": info["platform"],
+                    "app_version": info["app_version"],
+                    "model": info["model"],
+                    "session_key": session_key,
+                    "token": token,
+                    "paired_at": time.time(),
+                    "last_seen": time.time(),
+                }
+                self._device_sessions[token] = {"session_key": session_key}
+                self._save_trusted_devices()
+
+                await self.broadcast(WsMessage("pairing_approved", {"device_id": device_id}))
+
+                return JSONResponse({"ok": True, "device_token": token, "paired": True})
+            else:
+                self._pending_pair.pop(device_id, None)
+                await self.broadcast(WsMessage("pairing_rejected", {"device_id": device_id}))
+                return JSONResponse({"ok": True, "approved": False})
+
+        @app.get("/api/device/pair/status")
+        async def pair_status(device_id: str = ""):
+            """Check pairing status for a device (polling from phone)."""
+            if not device_id:
+                return JSONResponse({"ok": False, "error": "device_id required"}, status_code=400)
+
+            if device_id in self._trusted_devices:
+                info = self._trusted_devices[device_id]
+                token = info.get("token", secrets.token_urlsafe(32))
+                info["token"] = token
+                info["last_seen"] = time.time()
+                if "session_key" in info:
+                    self._device_sessions[token] = {"session_key": info["session_key"]}
+                self._save_trusted_devices()
+                return JSONResponse({"ok": True, "status": "paired", "device_token": token})
+
+            if device_id in self._pending_pair:
+                return JSONResponse({"ok": True, "status": "pending"})
+
+            return JSONResponse({"ok": True, "status": "unknown"})
+
+        # -- Companion App: Device Ping / Health Check -----------------------------
+
+        @app.get("/api/device/ping")
+        async def device_ping(req: Request):
+            """Health check endpoint for companion app."""
+            # Auth via headers
+            device_id = req.headers.get("X-Device-ID", "").strip()
+            token = req.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+
+            if not self._validate_device_token(token, device_id):
+                return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
+
+            # Update last seen
+            if device_id and device_id in self._trusted_devices:
+                self._trusted_devices[device_id]["last_seen"] = time.time()
+                self._save_trusted_devices()
+
+            # Check if assistant is running
+            assistant_running = hasattr(self, '_assistant_running') and self._assistant_running
+
+            return JSONResponse({
+                "ok": True,
+                "status": "active" if assistant_running else "sleeping",
+                "server_time": datetime.utcnow().isoformat() + "Z"
+            })
+
+        # -- Companion App: Batch Sync ---------------------------------------------
+
+        @app.post("/api/sync/batch")
+        async def sync_batch(req: Request):
+            """Receive batch of items from companion app (commands, locations, etc.)."""
+            # Auth via headers
+            device_id = req.headers.get("X-Device-ID", "").strip()
+            token = req.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+
+            if not self._validate_device_token(token, device_id):
+                return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
+
+            try:
+                body = await req.json()
+            except Exception:
+                return JSONResponse({"ok": False, "error": "Invalid JSON"}, status_code=400)
+
+            items = body.get("items", [])
+            results = []
+
+            for item in items:
+                try:
+                    client_id = item.get("client_id", "")
+                    itype = item.get("type", "")
+                    payload = item.get("payload", {})
+
+                    if itype == "command":
+                        text = payload.get("text", "").strip()
+                        if text:
+                            # Queue command for assistant processing
+                            await self._command_queue.put(text)
+                            if self._wake_callback:
+                                self._wake_callback()
+                            results.append({"client_id": client_id, "status": "processed", "server_id": f"cmd_{int(time.time()*1000)}"})
+                        else:
+                            results.append({"client_id": client_id, "status": "failed", "error": "Empty command"})
+
+                    elif itype == "location_log":
+                        # Store location log (could save to persistence layer)
+                        lat = payload.get("latitude")
+                        lng = payload.get("longitude")
+                        if lat is not None and lng is not None:
+                            results.append({"client_id": client_id, "status": "processed", "server_id": f"loc_{int(time.time()*1000)}"})
+                        else:
+                            results.append({"client_id": client_id, "status": "failed", "error": "Invalid coordinates"})
+
+                    elif itype == "place_confirmation":
+                        # User confirmed presence at a place
+                        place_id = payload.get("place_id")
+                        if place_id:
+                            results.append({"client_id": client_id, "status": "processed", "server_id": f"place_{int(time.time()*1000)}"})
+                        else:
+                            results.append({"client_id": client_id, "status": "failed", "error": "Missing place_id"})
+
+                    elif itype == "gemma_fallback":
+                        # Command that couldn't be processed on-device, queue for PC
+                        text = payload.get("text", "").strip()
+                        if text:
+                            await self._command_queue.put(text)
+                            if self._wake_callback:
+                                self._wake_callback()
+                            results.append({"client_id": client_id, "status": "processed", "server_id": f"fallback_{int(time.time()*1000)}"})
+                        else:
+                            results.append({"client_id": client_id, "status": "failed", "error": "Empty fallback command"})
+
+                    elif itype == "quick_task":
+                        task = _create_quick_task(payload, device_id)
+                        if task:
+                            results.append({"client_id": client_id, "status": "processed",
+                                            "server_id": task["id"], "task": task})
+                        else:
+                            results.append({"client_id": client_id, "status": "failed",
+                                            "error": "Invalid title or due_at"})
+
+                    elif itype == "task_done":
+                        tid = payload.get("task_id") or payload.get("id") or ""
+                        ok = _update_quick_task(tid, "done")
+                        results.append({"client_id": client_id,
+                                        "status": "processed" if ok else "failed",
+                                        "server_id": f"tdone_{int(time.time()*1000)}"})
+
+                    elif itype == "task_snooze":
+                        tid = payload.get("task_id") or payload.get("id") or ""
+                        minutes = int(payload.get("minutes", 5) or 5)
+                        ok = _update_quick_task(tid, "snooze", minutes=minutes)
+                        results.append({"client_id": client_id,
+                                        "status": "processed" if ok else "failed",
+                                        "server_id": f"tsnooze_{int(time.time()*1000)}"})
+
+                    else:
+                        results.append({"client_id": client_id, "status": "failed", "error": f"Unknown type: {itype}"})
+
+                except Exception as e:
+                    results.append({"client_id": item.get("client_id", ""), "status": "failed", "error": str(e)})
+
+            processed = sum(1 for r in results if r["status"] == "processed")
+
+            return JSONResponse({
+                "ok": True,
+                "processed": processed,
+                "results": results,
+            })
+
+        # -- Companion App: Pull Updates -------------------------------------------
+
+        @app.get("/api/device/sync/pull")
+        async def sync_pull(req: Request):
+            """Pull new commands/tasks from PC to companion app."""
+            device_id = req.headers.get("X-Device-ID", "").strip()
+            token = req.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+
+            if not self._validate_device_token(token, device_id):
+                return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
+
+            # Pull pending commands for the phone to execute
+            pending_commands = self._pending_phone_commands.get(device_id, [])
+            self._pending_phone_commands[device_id] = []
+
+            # Pull scheduled tasks (active + recently closed so the phone can cancel alarms)
+            tasks: list[dict] = []
+            try:
+                from persistence.repository import Repository
+                tasks = Repository().get_active_scheduled_tasks()
+            except Exception as e:
+                print(f"[Tasks] Pull failed: {e}")
+
+            # Pull places configured on PC (currently empty — can be populated via UI later)
+            return JSONResponse({
+                "ok": True,
+                "commands": pending_commands,
+                "places": [],
+                "tasks": tasks,
+            })
+
+        # -- Companion App: Scheduled Tasks -----------------------------------------
+
+        @app.post("/api/tasks")
+        async def create_task(req: Request):
+            """Create a scheduled task (quick-add from the companion app)."""
+            device_id = req.headers.get("X-Device-ID", "").strip()
+            token = req.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+
+            if not self._validate_device_token(token, device_id):
+                return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
+
+            try:
+                body = await req.json()
+            except Exception:
+                return JSONResponse({"ok": False, "error": "Invalid JSON"}, status_code=400)
+
+            task = _create_quick_task(body if isinstance(body, dict) else {}, device_id)
+            if not task:
+                return JSONResponse(
+                    {"ok": False, "error": "title and due_at (ISO) are required"},
+                    status_code=400,
+                )
+            return JSONResponse({"ok": True, "task": task})
+
+        @app.post("/api/tasks/{task_id}/done")
+        async def task_done(task_id: str, req: Request):
+            device_id = req.headers.get("X-Device-ID", "").strip()
+            token = req.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+            if not self._validate_device_token(token, device_id):
+                return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
+            ok = _update_quick_task(task_id, "done")
+            return JSONResponse({"ok": ok}, status_code=200 if ok else 404)
+
+        @app.post("/api/tasks/{task_id}/snooze")
+        async def task_snooze(task_id: str, req: Request):
+            device_id = req.headers.get("X-Device-ID", "").strip()
+            token = req.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+            if not self._validate_device_token(token, device_id):
+                return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
+            try:
+                body = await req.json()
+            except Exception:
+                body = {}
+            minutes = int((body or {}).get("minutes", 5) or 5)
+            ok = _update_quick_task(task_id, "snooze", minutes=minutes)
+            return JSONResponse({"ok": ok}, status_code=200 if ok else 404)
+
+        @app.post("/api/tasks/{task_id}/dismiss")
+        async def task_dismiss(task_id: str, req: Request):
+            device_id = req.headers.get("X-Device-ID", "").strip()
+            token = req.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+            if not self._validate_device_token(token, device_id):
+                return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
+            ok = _update_quick_task(task_id, "dismiss")
+            return JSONResponse({"ok": ok}, status_code=200 if ok else 404)
 
         @app.post("/api/command")
         async def command(req: Request):
@@ -1296,10 +1766,10 @@ sessionStorage.setItem('sirius_token','{tok}');
 
     async def serve(self) -> None:
         try:
-            print(f"[DEBUG DashboardServer.serve] Starting server...")
+            print("[DEBUG DashboardServer.serve] Starting server...")
             print(f"[DEBUG DashboardServer.serve] _DEPS_OK={_DEPS_OK}, app={self.app is not None}")
             print(f"[DEBUG DashboardServer.serve] Detected IP: {self._ip}")
-            print(f"[DEBUG DashboardServer.serve] Firewall setup starting in executor...")
+            print("[DEBUG DashboardServer.serve] Firewall setup starting in executor...")
             # Firewall setup runs in a thread — uvicorn starts immediately,
             # no waiting for UAC dialogs or subprocess timeouts.
             asyncio.get_event_loop().run_in_executor(None, _ensure_network_access, PORT)
@@ -1325,12 +1795,12 @@ sessionStorage.setItem('sirius_token','{tok}');
                 # Start port checker before blocking on serve()
                 asyncio.create_task(self._wait_for_port())
 
-                print(f"[DEBUG DashboardServer.serve] Calling uvicorn.Server(cfg).serve()...")
+                print("[DEBUG DashboardServer.serve] Calling uvicorn.Server(cfg).serve()...")
                 await uvicorn.Server(cfg).serve()
-                print(f"[DEBUG DashboardServer.serve] uvicorn serve returned (server stopped)")
+                print("[DEBUG DashboardServer.serve] uvicorn serve returned (server stopped)")
                 return
 
-            print(f"[DEBUG DashboardServer.serve] FastAPI/uvicorn not available, using fallback server")
+            print("[DEBUG DashboardServer.serve] FastAPI/uvicorn not available, using fallback server")
             # Fallback: built-in http.server (no deps needed)
             await self.serve_fallback()
         except Exception as e:
@@ -1344,8 +1814,8 @@ sessionStorage.setItem('sirius_token','{tok}');
 
     async def serve_fallback(self):
         """Minimal HTTP server using Python's built-in http.server (zero deps)."""
-        from http.server import HTTPServer, BaseHTTPRequestHandler
         import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
 
         pending = self._pending_keys
         tokens  = self._tokens

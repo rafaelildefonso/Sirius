@@ -1,6 +1,7 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useWebSocket } from "./hooks/useWebSocket";
 import HudCanvas from "./components/HudCanvas";
 import LogPanel from "./components/LogPanel";
@@ -34,6 +35,8 @@ function App() {
     startupInfo,
     notification,
     clearNotification,
+    taskAlarm,
+    sendTaskAction,
     remoteKeyData,
     remoteKeyError,
     clearRemoteKeyError,
@@ -66,6 +69,7 @@ function App() {
   } = useWebSocket();
 
   const [view, setView] = useState<"hud" | "radar">("hud");
+  const lastVisibilityRef = useRef<boolean | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [showRemote, setShowRemote] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
@@ -182,6 +186,25 @@ function App() {
 
   // Listen for Tauri tray events and forward to backend
   useEffect(() => {
+    const reportVisibility = async () => {
+      try {
+        const win = getCurrentWindow();
+        const [visible, minimized] = await Promise.all([
+          win.isVisible(),
+          win.isMinimized(),
+        ]);
+        const derived = visible && !minimized;
+        if (derived !== lastVisibilityRef.current) {
+          lastVisibilityRef.current = derived;
+          send({ type: "set_visibility", visible: derived });
+        }
+      } catch {
+        /* Tauri API unavailable (e.g. non-Tauri mode) */
+      }
+    };
+
+    reportVisibility();
+    const pollId = window.setInterval(reportVisibility, 1500);
     const unlistenMute = listen("toggle-mute", () => {
       send({ type: "toggle_mute" });
     });
@@ -191,10 +214,15 @@ function App() {
     const unlistenHidden = listen("window-hidden", () => {
       send({ type: "set_visibility", visible: false });
     });
+    const unlistenFocus = getCurrentWindow()
+      .onFocusChanged(reportVisibility)
+      .catch(() => () => {});
     return () => {
+      window.clearInterval(pollId);
       unlistenMute.then((f) => f());
       unlistenShown.then((f) => f());
       unlistenHidden.then((f) => f());
+      unlistenFocus.then((f) => f());
     };
   }, [send]);
 
@@ -259,6 +287,49 @@ function App() {
         <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 animate-slide-up">
           <div className="bg-sirius-panel2 border border-sirius-border rounded-lg px-4 py-2 shadow-lg">
             <p className="text-sirius-text-dim text-xs">{notification}</p>
+          </div>
+        </div>
+      )}
+
+      {/* Persistent task alarm banner — stays until the user resolves it */}
+      {taskAlarm && (
+        <div className="fixed top-16 left-1/2 -translate-x-1/2 z-50 animate-slide-up w-[min(92%,30rem)]">
+          <div
+            role="alertdialog"
+            aria-live="assertive"
+            className="bg-sirius-panel2 border-2 border-red-500 rounded-xl px-5 py-4 shadow-2xl shadow-red-900/40"
+          >
+            <div className="flex items-start gap-3">
+              <span className="text-2xl leading-none mt-0.5">⏰</span>
+              <div className="flex-1 min-w-0">
+                <p className="text-red-400 font-bold text-sm tracking-wide uppercase">
+                  Está na hora!
+                </p>
+                <p className="text-white font-semibold text-base mt-1 break-words">
+                  {taskAlarm.text}
+                </p>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 mt-3">
+              <button
+                onClick={() => sendTaskAction(taskAlarm.id, "snooze", 5)}
+                className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-amber-500/60 text-amber-400 hover:bg-amber-500/10 transition-colors cursor-pointer"
+              >
+                Adiar 5 min
+              </button>
+              <button
+                onClick={() => sendTaskAction(taskAlarm.id, "dismiss")}
+                className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-sirius-border text-sirius-text-dim hover:bg-white/5 transition-colors cursor-pointer"
+              >
+                Dispensar
+              </button>
+              <button
+                onClick={() => sendTaskAction(taskAlarm.id, "done")}
+                className="text-xs font-bold px-3 py-1.5 rounded-lg bg-green-600 hover:bg-green-500 text-white transition-colors cursor-pointer"
+              >
+                Concluído
+              </button>
+            </div>
           </div>
         </div>
       )}
