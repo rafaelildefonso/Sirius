@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import type { PermissionItem } from "../hooks/useWebSocket";
 
 interface SettingsModalProps {
@@ -20,7 +20,7 @@ interface SettingsModalProps {
   send?: (msg: Record<string, unknown>) => void;
 }
 
-type SettingsTab = "general" | "preferences" | "permissions" | "engines";
+type SettingsTab = "general" | "preferences" | "permissions" | "engines" | "plugins" | "monitores" | "integrations" | "atividade";
 
 const SECRET_KEYS = [
   "gemini_api_key",
@@ -53,6 +53,31 @@ function SettingsModal({
   const [secrets, setSecrets] = useState<Record<string, string>>({});
   const [loaded, setLoaded] = useState(false);
   const [localPerms, setLocalPerms] = useState<Record<string, boolean>>({});
+
+  // Plugins
+  const [plugins, setPlugins] = useState<{ name: string; description: string; file: string; valid: boolean; error: string; enabled: boolean }[]>([]);
+  const [pluginsLoading, setPluginsLoading] = useState(false);
+  const [pluginsError, setPluginsError] = useState<string | null>(null);
+
+  // Monitors
+  const [monitors, setMonitors] = useState<string[]>([]);
+  const [monitorsLoading, setMonitorsLoading] = useState(false);
+  const [monitorsError, setMonitorsError] = useState<string | null>(null);
+  const [newMonitorTopic, setNewMonitorTopic] = useState("");
+
+  // Obsidian Picker
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [pickerPath, setPickerPath] = useState("");
+  const [pickerItems, setPickerItems] = useState<{ name: string; path: string }[]>([]);
+  const [pickerDrives, setPickerDrives] = useState<string[]>([]);
+  const [pickerLoading, setPickerLoading] = useState(false);
+
+  // Atividade
+  type ActivityDay = { day: string; minutes: number };
+  type ActivityApp = { name: string; minutes: number };
+  const [activityStats, setActivityStats] = useState<{ days: ActivityDay[]; avg_daily_minutes: number; top_apps: ActivityApp[] } | null>(null);
+  const [activityLoading, setActivityLoading] = useState(false);
+  const [activityError, setActivityError] = useState<string | null>(null);
 
   // Switch away from engines tab when mode is not local
   useEffect(() => {
@@ -89,6 +114,159 @@ function SettingsModal({
     onCheckGoogleStatus?.();
   }, [onCheckGoogleStatus]);
 
+  const fetchPlugins = useCallback(() => {
+    if (!send) return;
+    setPluginsLoading(true);
+    setPluginsError(null);
+    const handler = (event: MessageEvent) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === "plugins_list") {
+          window.removeEventListener("message", handler);
+          setPlugins(data.plugins ?? []);
+          setPluginsLoading(false);
+        }
+      } catch { /* ignore */ }
+    };
+    window.addEventListener("message", handler);
+    send({ type: "get_plugins_list" });
+  }, [send]);
+
+  const fetchMonitors = useCallback(() => {
+    if (!send) return;
+    setMonitorsLoading(true);
+    setMonitorsError(null);
+    const handler = (event: MessageEvent) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === "monitors_list") {
+          window.removeEventListener("message", handler);
+          setMonitors(data.topics ?? []);
+          setMonitorsLoading(false);
+        }
+      } catch { /* ignore */ }
+    };
+    window.addEventListener("message", handler);
+    send({ type: "get_monitors_list" });
+  }, [send]);
+
+  const togglePlugin = useCallback((pluginName: string, enabled: boolean) => {
+    if (!send) return;
+    send({ type: "toggle_plugin", plugin_name: pluginName, enabled });
+    setPlugins((prev) => prev.map((p) => (p.name === pluginName ? { ...p, enabled } : p)));
+  }, [send]);
+
+  const addMonitor = useCallback(() => {
+    if (!send || !newMonitorTopic.trim()) return;
+    send({ type: "add_monitor", topic: newMonitorTopic.trim() });
+    setMonitors((prev) => [...prev, newMonitorTopic.trim()]);
+    setNewMonitorTopic("");
+  }, [send, newMonitorTopic]);
+
+  const removeMonitor = useCallback((topic: string) => {
+    if (!send) return;
+    send({ type: "remove_monitor", topic });
+    setMonitors((prev) => prev.filter((t) => t !== topic));
+  }, [send]);
+
+  // -- Obsidian Picker --
+  const openPicker = useCallback(() => {
+    if (!send) return;
+    setPickerOpen(true);
+    setPickerDrives([]);
+    setPickerItems([]);
+    setPickerLoading(true);
+    const handler = (event: MessageEvent) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === "obsidian_list_drives_ok") {
+          window.removeEventListener("message", handler);
+          setPickerDrives(data.drives ?? []);
+          setPickerLoading(false);
+        }
+      } catch { /* ignore */ }
+    };
+    window.addEventListener("message", handler);
+    send({ type: "obsidian_list_drives" });
+  }, [send]);
+
+  const navigatePicker = useCallback((path: string) => {
+    if (!send) return;
+    setPickerPath(path);
+    setPickerLoading(true);
+    setPickerItems([]);
+    const handler = (event: MessageEvent) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === "obsidian_list_children_ok") {
+          window.removeEventListener("message", handler);
+          setPickerItems(data.children ?? []);
+          setPickerLoading(false);
+        }
+      } catch { /* ignore */ }
+    };
+    window.addEventListener("message", handler);
+    send({ type: "obsidian_list_children", path });
+  }, [send]);
+
+  // -- Atividade --
+  const fetchActivity = useCallback(() => {
+    if (!send) return;
+    setActivityLoading(true);
+    setActivityError(null);
+    const handler = (event: MessageEvent) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === "activity_data") {
+          window.removeEventListener("message", handler);
+          setActivityStats(data.stats ?? null);
+          setActivityLoading(false);
+        }
+      } catch { /* ignore */ }
+    };
+    window.addEventListener("message", handler);
+    send({ type: "request_activity_data" });
+  }, [send]);
+
+  const toggleActivityMonitor = useCallback((enabled: boolean) => {
+    if (!send) return;
+    send({ type: "set_activity_monitor", enabled });
+  }, [send]);
+
+  const clearActivityData = useCallback(() => {
+    if (!send) return;
+    if (!window.confirm("Limpar todos os dados de atividade?")) return;
+    const handler = (event: MessageEvent) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === "activity_cleared") {
+          window.removeEventListener("message", handler);
+          setActivityStats(null);
+        }
+      } catch { /* ignore */ }
+    };
+    window.addEventListener("message", handler);
+    send({ type: "clear_activity_data" });
+  }, [send]);
+
+  // Initialize Obsidian fields from config
+  useEffect(() => {
+    if (!config) return;
+    setCfg((prev) => ({
+      ...prev,
+      obsidian_vault_path: config["obsidian_vault_path"] ?? "",
+      obsidian_tasks_subpath: config["obsidian_tasks_subpath"] ?? "",
+      obsidian_notes_subpath: config["obsidian_notes_subpath"] ?? "",
+      obsidian_sirius_subpath: config["obsidian_sirius_subpath"] ?? "",
+      obsidian_task_retention_days: String(config["obsidian_task_retention_days"] ?? "30"),
+    }));
+  }, [config]);
+
+  useEffect(() => {
+    fetchPlugins();
+    fetchMonitors();
+  }, [fetchPlugins, fetchMonitors]);
+
   const handleSave = () => {
     if (onSaveConfig) {
       onSaveConfig(cfg, secrets, localPerms);
@@ -104,11 +282,21 @@ function SettingsModal({
     setSecrets((prev) => ({ ...prev, [key]: value }));
   };
 
+  useEffect(() => {
+    if (tab === "atividade") {
+      fetchActivity();
+    }
+  }, [tab, fetchActivity]);
+
   const tabs: { id: SettingsTab; label: string }[] = [
     { id: "general", label: "General" },
     { id: "preferences", label: "Preferências" },
     { id: "permissions", label: "Permissions" },
     ...(cfg["assistant_mode"] === "local" ? [{ id: "engines" as SettingsTab, label: "Local Engines" }] : []),
+    { id: "plugins" as SettingsTab, label: "Plugins" },
+    { id: "monitores" as SettingsTab, label: "Monitores" },
+    { id: "integrations" as SettingsTab, label: "Integrations" },
+    { id: "atividade" as SettingsTab, label: "Atividade" },
   ];
 
   return (
@@ -377,6 +565,221 @@ function SettingsModal({
                   <p className="text-sirius-text-dim text-[10px] font-mono">
                     Loading permissions...
                   </p>
+                )}
+              </div>
+            ) : tab === "plugins" ? (
+              <div className="space-y-3">
+                <SectionTitle>Plugins</SectionTitle>
+                {pluginsLoading ? (
+                  <p className="text-sirius-text-dim text-[10px] font-mono">Loading plugins...</p>
+                ) : pluginsError ? (
+                  <p className="text-sirius-red text-[10px] font-mono">{pluginsError}</p>
+                ) : plugins.length === 0 ? (
+                  <p className="text-sirius-text-dim text-[10px] font-mono">Nenhum plugin encontrado.</p>
+                ) : (
+                  <div className="space-y-2">
+                    {plugins.map((plugin) => (
+                      <div key={plugin.name} className="flex items-start gap-3 p-2 rounded-lg border border-sirius-border">
+                        <div className="flex-1 min-w-0">
+                          <p className={`text-[10px] font-mono font-bold ${plugin.valid ? "text-sirius-text" : "text-sirius-red"}`}>
+                            {plugin.name}
+                          </p>
+                          <p className="text-sirius-text-dim text-[9px] font-mono mt-0.5">{plugin.description}</p>
+                          {plugin.error && (
+                            <p className="text-sirius-red text-[9px] font-mono mt-0.5">{plugin.error}</p>
+                          )}
+                        </div>
+                        <button
+                          onClick={() => togglePlugin(plugin.name, !plugin.enabled)}
+                          className={`w-8 h-4 rounded-full transition-colors relative shrink-0 mt-0.5 ${plugin.enabled ? "bg-sirius-pri" : "bg-sirius-border"}`}
+                        >
+                          <span className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-all ${plugin.enabled ? "left-4" : "left-0.5"}`} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : tab === "monitores" ? (
+              <div className="space-y-3">
+                <SectionTitle>Monitoramento Proativo</SectionTitle>
+                <p className="text-sirius-text-dim text-[9px] font-mono">
+                  Adicione topicos para monitoramento proativo.
+                </p>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={newMonitorTopic}
+                    onChange={(e) => setNewMonitorTopic(e.target.value)}
+                    placeholder="Ex: clima em sao-paulo"
+                    className="flex-1 bg-sirius-bg border border-sirius-border rounded px-2 py-1 text-xs font-mono text-sirius-text outline-none focus:border-sirius-pri transition-colors placeholder:text-sirius-text-dim"
+                    onKeyDown={(e) => { if (e.key === "Enter") addMonitor(); }}
+                  />
+                  <button
+                    onClick={addMonitor}
+                    disabled={!newMonitorTopic.trim()}
+                    className={`text-[10px] font-mono font-bold px-2 py-1 rounded transition-colors ${newMonitorTopic.trim() ? "bg-sirius-pri text-sirius-bg hover:brightness-110" : "bg-sirius-border text-sirius-text-dim cursor-not-allowed"}`}
+                  >
+                    + Add
+                  </button>
+                </div>
+                {monitorsLoading ? (
+                  <p className="text-sirius-text-dim text-[10px] font-mono">Loading...</p>
+                ) : monitorsError ? (
+                  <p className="text-sirius-red text-[10px] font-mono">{monitorsError}</p>
+                ) : monitors.length === 0 ? (
+                  <p className="text-sirius-text-dim text-[10px] font-mono">Nenhum monitor configurado.</p>
+                ) : (
+                  <div className="space-y-1">
+                    {monitors.map((topic) => (
+                      <div key={topic} className="flex items-center justify-between p-2 rounded border border-sirius-border">
+                        <span className="text-sirius-text text-[10px] font-mono">{topic}</span>
+                        <button
+                          onClick={() => removeMonitor(topic)}
+                          className="text-sirius-red text-[9px] font-mono hover:text-sirius-white transition-colors"
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : tab === "integrations" ? (
+              <div className="space-y-3">
+                <SectionTitle>Obsidian Vault</SectionTitle>
+                <TextInput
+                  label="Caminho do Vault"
+                  value={cfg["obsidian_vault_path"] ?? ""}
+                  onChange={(v) => updateCfg("obsidian_vault_path", v)}
+                />
+                <div className="flex gap-2">
+                  <button
+                    onClick={openPicker}
+                    className="text-[10px] font-mono font-bold px-2 py-1 rounded text-sirius-text-dim hover:text-sirius-white border border-sirius-border hover:border-sirius-pri transition-colors"
+                  >
+                    Procurar...
+                  </button>
+                  {pickerOpen && (
+                    <span className="text-[9px] font-mono text-sirius-text-dim self-center">{pickerPath || "(raiz)"}</span>
+                  )}
+                </div>
+                {pickerOpen && (
+                  <div className="border border-sirius-border rounded p-2 max-h-32 overflow-y-auto space-y-0.5">
+                    {pickerLoading ? (
+                      <p className="text-sirius-text-dim text-[9px] font-mono">Carregando...</p>
+                    ) : pickerDrives.length > 0 && pickerItems.length === 0 ? (
+                      pickerDrives.map((d) => (
+                        <button
+                          key={d}
+                          onClick={() => navigatePicker(d)}
+                          className="w-full text-left text-[10px] font-mono text-sirius-text hover:text-sirius-pri px-1 py-0.5 rounded hover:bg-sirius-pri-dim/10 transition-colors"
+                        >
+                          {d}
+                        </button>
+                      ))
+                    ) : pickerItems.length === 0 ? (
+                      <p className="text-sirius-text-dim text-[9px] font-mono">Vazio</p>
+                    ) : (
+                      <>
+                        {pickerPath && (
+                          <button
+                            onClick={() => {
+                              const parent = pickerPath.replace(/\\/g, "/").split("/").slice(0, -1).join("/");
+                              if (parent && parent !== pickerPath) navigatePicker(parent);
+                            }}
+                            className="w-full text-left text-[10px] font-mono text-sirius-text-dim hover:text-sirius-white px-1 py-0.5 rounded hover:bg-sirius-pri-dim/10 transition-colors"
+                          >
+                            ..
+                          </button>
+                        )}
+                        {pickerItems.map((item) => (
+                          <button
+                            key={item.path}
+                            onClick={() => navigatePicker(item.path)}
+                            className="w-full text-left text-[10px] font-mono text-sirius-text hover:text-sirius-pri px-1 py-0.5 rounded hover:bg-sirius-pri-dim/10 transition-colors"
+                          >
+                            {item.name}/
+                          </button>
+                        ))}
+                      </>
+                    )}
+                    {!pickerLoading && pickerItems.length > 0 && (
+                      <button
+                        onClick={() => { updateCfg("obsidian_vault_path", pickerPath); setPickerOpen(false); }}
+                        className="w-full text-left text-[10px] font-mono font-bold text-sirius-pri hover:text-sirius-white px-1 py-0.5 rounded bg-sirius-pri-dim/20 transition-colors"
+                      >
+                        Selecionar esta pasta
+                      </button>
+                    )}
+                  </div>
+                )}
+                <TextInput label="Subpasta de Tarefas" value={cfg["obsidian_tasks_subpath"] ?? ""} onChange={(v) => updateCfg("obsidian_tasks_subpath", v)} />
+                <TextInput label="Subpasta de Notas" value={cfg["obsidian_notes_subpath"] ?? ""} onChange={(v) => updateCfg("obsidian_notes_subpath", v)} />
+                <TextInput label="Subpasta Sirius" value={cfg["obsidian_sirius_subpath"] ?? ""} onChange={(v) => updateCfg("obsidian_sirius_subpath", v)} />
+                <Separator />
+                <SectionTitle>Retenção</SectionTitle>
+                <TextInput
+                  label="Retencao de Tarefas (dias)"
+                  value={cfg["obsidian_task_retention_days"] ?? "30"}
+                  onChange={(v) => updateCfg("obsidian_task_retention_days", v)}
+                />
+              </div>
+            ) : tab === "atividade" ? (
+              <div className="space-y-3">
+                <SectionTitle>Uso de Apps</SectionTitle>
+                <div className="flex items-center justify-between py-1">
+                  <label className="text-sirius-text-dim text-[10px] font-mono">Monitorar uso de apps</label>
+                  <button
+                    onClick={() => toggleActivityMonitor(cfg["activity_monitor"] !== "true")}
+                    className={`w-8 h-4 rounded-full transition-colors relative ${cfg["activity_monitor"] === "true" ? "bg-sirius-pri" : "bg-sirius-border"}`}
+                  >
+                    <span className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-all ${cfg["activity_monitor"] === "true" ? "left-4" : "left-0.5"}`} />
+                  </button>
+                </div>
+                {activityLoading ? (
+                  <p className="text-sirius-text-dim text-[10px] font-mono">Carregando...</p>
+                ) : activityError ? (
+                  <p className="text-sirius-red text-[10px] font-mono">{activityError}</p>
+                ) : activityStats ? (
+                  <div className="space-y-2">
+                    <div className="space-y-1">
+                      {activityStats.days.map((d) => (
+                        <div key={d.day} className="flex items-center gap-2">
+                          <span className="text-[9px] font-mono text-sirius-text-dim w-8 shrink-0">{d.day}</span>
+                          <div className="flex-1 bg-sirius-border rounded h-2 overflow-hidden">
+                            <div
+                              className="h-full bg-sirius-pri rounded transition-all"
+                              style={{ width: `${Math.min((d.minutes / (Math.max(...activityStats.days.map((x) => x.minutes), 1))) * 100, 100)}%` }}
+                            />
+                          </div>
+                          <span className="text-[9px] font-mono text-sirius-text-dim w-10 text-right">{d.minutes}min</span>
+                        </div>
+                      ))}
+                    </div>
+                    <p className="text-[9px] font-mono text-sirius-text-dim">
+                      Media diaria: {Math.round(activityStats.avg_daily_minutes)} min
+                    </p>
+                    {activityStats.top_apps.length > 0 && (
+                      <div className="space-y-0.5">
+                        <p className="text-[9px] font-mono text-sirius-text-dim uppercase tracking-wider">Top apps</p>
+                        {activityStats.top_apps.map((app) => (
+                          <div key={app.name} className="flex items-center justify-between">
+                            <span className="text-[10px] font-mono text-sirius-text">{app.name}</span>
+                            <span className="text-[9px] font-mono text-sirius-text-dim">{app.minutes}min</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <button
+                      onClick={clearActivityData}
+                      className="text-[10px] font-mono font-bold px-2 py-1 rounded text-sirius-red border border-sirius-red/30 hover:bg-sirius-red/10 transition-colors"
+                    >
+                      Limpar dados
+                    </button>
+                  </div>
+                ) : (
+                  <p className="text-sirius-text-dim text-[10px] font-mono">Nenhum dado disponivel.</p>
                 )}
               </div>
             ) : (
