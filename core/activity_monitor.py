@@ -9,7 +9,6 @@ import psutil
 import win32gui
 import win32process
 
-from config.permissions import get_permissions
 from core.config_loader import get_all_config
 from persistence.repository import Repository
 
@@ -148,11 +147,29 @@ class ActivityMonitor:
 _monitor: Optional[ActivityMonitor] = None
 
 
-def start_monitor() -> ActivityMonitor:
-    """Initialise and start the global monitor. Should be called once at app launch."""
+def is_enabled_in_config() -> bool:
+    """Return whether the user enabled activity monitoring in configs.json.
+
+    Accepts the string "true"/"false" (UI convention) and the legacy dict
+    shape {"enabled": bool, ...}.
+    """
+    cfg = get_all_config().get("activity_monitor")
+    if isinstance(cfg, str):
+        return cfg.strip().lower() == "true"
+    if isinstance(cfg, dict):
+        return bool(cfg.get("enabled", False))
+    return False
+
+
+def start_monitor() -> Optional[ActivityMonitor]:
+    """Initialise and start the global monitor. Should be called once at app launch.
+
+    Idempotent: returns the running monitor if already active.
+    """
     global _monitor
-    perms = get_permissions()
-    if not perms.get("activity_monitor", False):
+    if _monitor is not None and is_monitor_enabled():
+        return _monitor
+    if not is_enabled_in_config():
         # monitor disabled by user
         return None
     _monitor = ActivityMonitor()

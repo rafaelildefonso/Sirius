@@ -355,6 +355,7 @@ export function useWebSocket() {
         case "activity_summary":
         case "activity_monitor_ack":
         case "activity_cleared":
+        case "activity_error":
         case "plugins_list":
         case "monitors_list":
         case "plugin_toggled":

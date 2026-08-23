@@ -418,22 +418,39 @@ async def _handler(ws: websockets.asyncio.server.ServerConnection) -> None:
                 cfg = get_all_config()
                 await ws.send(json.dumps({"type": "config", **cfg}))
             elif msg_type == "request_activity_data":  # noqa: F823
-                stats = Repository().get_weekly_stats()
-                await ws.send(json.dumps({"type": "activity_data", "stats": stats}))
+                try:
+                    stats = Repository().get_weekly_stats()
+                    await ws.send(json.dumps({"type": "activity_data", "stats": stats}))
+                except Exception as e:
+                    traceback.print_exc()
+                    await ws.send(json.dumps({"type": "activity_error", "message": str(e)}))
             elif msg_type == "request_activity_summary":
                 await ws.send(json.dumps({"type": "activity_summary", "text": "Resumo de atividade gerado pela IA."}))
-            elif msg_type == "set_activity_monitor":
-                enabled = data.get("enabled", False)
-                from core.config_loader import save_configs
-                # Atualiza permissão de monitoramento
-                perms = {"activity_monitor": enabled}
-                save_configs(perms)
-                await ws.send(json.dumps({"type": "activity_monitor_ack", "enabled": enabled}))
+            elif msg_type == "set_activity_monitor":  # noqa: F823
+                try:
+                    enabled = bool(data.get("enabled", False))
+                    from core.config_loader import get_all_config, set_config
+                    # Fonte única de verdade: configs.json como string "true"/"false"
+                    set_config("activity_monitor", "true" if enabled else "false")
+                    if enabled:
+                        from core.activity_monitor import start_monitor
+                        start_monitor()
+                    else:
+                        from core.activity_monitor import stop_monitor
+                        stop_monitor()
+                    # Devolve o config atualizado para a UI re-renderizar o toggle
+                    await ws.send(json.dumps({"type": "config", **get_all_config()}))
+                    await ws.send(json.dumps({"type": "activity_monitor_ack", "enabled": enabled}))
+                except Exception as e:
+                    traceback.print_exc()
+                    await ws.send(json.dumps({"type": "activity_error", "message": str(e)}))
             elif msg_type == "clear_activity_data":
-                from persistence.repository import Repository
-                repo = Repository()
-                repo.clear_activity_data()
-                await ws.send(json.dumps({"type": "activity_cleared", "ok": True}))
+                try:
+                    Repository().clear_activity_data()
+                    await ws.send(json.dumps({"type": "activity_cleared", "ok": True}))
+                except Exception as e:
+                    traceback.print_exc()
+                    await ws.send(json.dumps({"type": "activity_error", "message": str(e)}))
             elif msg_type == "save_config":
                 from config.permissions import save_permissions
                 from core.config_loader import get_all_config, save_configs, set_secret

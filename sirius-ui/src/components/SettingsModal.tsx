@@ -214,16 +214,32 @@ function SettingsModal({
     if (!send) return;
     setActivityLoading(true);
     setActivityError(null);
+    let settled = false;
     const handler = (event: MessageEvent) => {
       try {
         const data = JSON.parse(event.data);
         if (data.type === "activity_data") {
+          settled = true;
           window.removeEventListener("message", handler);
+          clearTimeout(timer);
           setActivityStats(data.stats ?? null);
+          setActivityLoading(false);
+        } else if (data.type === "activity_error") {
+          settled = true;
+          window.removeEventListener("message", handler);
+          clearTimeout(timer);
+          setActivityError(String(data.message ?? "Erro ao carregar dados de atividade."));
           setActivityLoading(false);
         }
       } catch { /* ignore */ }
     };
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      window.removeEventListener("message", handler);
+      setActivityLoading(false);
+      setActivityError("Servidor nao respondeu (timeout).");
+    }, 5000);
     window.addEventListener("message", handler);
     send({ type: "request_activity_data" });
   }, [send]);
@@ -236,15 +252,30 @@ function SettingsModal({
   const clearActivityData = useCallback(() => {
     if (!send) return;
     if (!window.confirm("Limpar todos os dados de atividade?")) return;
+    let settled = false;
     const handler = (event: MessageEvent) => {
       try {
         const data = JSON.parse(event.data);
         if (data.type === "activity_cleared") {
+          settled = true;
           window.removeEventListener("message", handler);
+          clearTimeout(timer);
           setActivityStats(null);
+          setActivityError(null);
+        } else if (data.type === "activity_error") {
+          settled = true;
+          window.removeEventListener("message", handler);
+          clearTimeout(timer);
+          setActivityError(String(data.message ?? "Erro ao limpar dados de atividade."));
         }
       } catch { /* ignore */ }
     };
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      window.removeEventListener("message", handler);
+      setActivityError("Servidor nao respondeu ao limpar dados.");
+    }, 5000);
     window.addEventListener("message", handler);
     send({ type: "clear_activity_data" });
   }, [send]);
