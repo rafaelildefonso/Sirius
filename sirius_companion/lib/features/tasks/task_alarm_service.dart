@@ -1,5 +1,7 @@
+import 'dart:async';
 import 'dart:convert';
 
+import 'package:alarm/alarm.dart';
 import 'package:drift/drift.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_timezone/flutter_timezone.dart';
@@ -7,6 +9,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:timezone/data/latest_all.dart' as tzdata;
 import 'package:timezone/timezone.dart' as tz;
 import 'package:uuid/uuid.dart';
+import 'package:vibration/vibration.dart';
 
 import '../../core/config/constants.dart';
 import '../../core/storage/database/database.dart';
@@ -15,7 +18,9 @@ import '../../core/sync/sync_worker.dart';
 
 /// Central service for scheduled tasks:
 /// - quick-add from the phone (offline-first, synced to the PC)
-/// - local exact alarms that fire full-screen even when the device is locked
+/// - silent native exact alarms (no sound, screen lights up over the
+///   lockscreen via full-screen intent, powered by the `alarm` plugin) that
+///   fire even when the app process is dead
 /// - convergence with the PC via the sync pull (tasks created on PC/voice)
 class TaskAlarmService {
   TaskAlarmService._();
@@ -26,17 +31,52 @@ class TaskAlarmService {
   static bool _initialized = false;
   static bool _bgInitialized = false;
 
-  static const String _payloadPrefix = 'task|';
-  static const Duration _overdueFireWindow = Duration(minutes: 15);
+  /// Attention pattern when a task alarm fires: 3 short vibrations.
+  static const List<int> _vibrationPattern = [
+    0, 400, 600, // buzz
+    600, 400, // pause, buzz
+    600, 400, // pause, buzz
+  ];
 
-  /// Background isolates (WorkManager) never run main(), so the plugin must
-  /// be initialized there too before zonedSchedule works.
+  /// Fires the finite attention vibration (3 short bursts). Safe to call on
+  /// platforms/devices without a vibrator.
+  static Future<void> fireAttentionPattern() async {
+    try {
+      if (await Vibration.hasVibrator() != true) return;
+      await Vibration.vibrate(pattern: _vibrationPattern);
+    } catch (e) {
+      print('[TaskAlarm] Vibration failed: $e');
+    }
+  }
+
+  static const String _payloadPrefix = 'task|';
+
+  /// A task found overdue by up to this much still fires when the pull brings
+  /// it in late (WorkManager runs at most every ~15 min). Beyond that the
+  /// task is closed out instead of ringing hours later.
+  static const Duration _overdueFireWindow = Duration(hours: 2);
+
+  /// Stable native-alarm id for a task. The plugin forbids ids 0 and -1.
+  static int alarmId(String remoteId) {
+    final h = remoteId.hashCode;
+    return (h == 0 || h == -1) ? 0x7E57 : h;
+  }
+
+  /// Background isolates (WorkManager) never run main(), so both the
+  /// notification plugin and the native alarm engine must be initialized
+  /// there too before scheduling works.
   static Future<void> _ensureBackgroundReady() async {
     if (_initialized || _bgInitialized) return;
     const settings = InitializationSettings(
       android: AndroidInitializationSettings('@mipmap/ic_launcher'),
     );
     await _plugin.initialize(settings: settings);
+    try {
+      // Idempotent (single-flight internally); also re-arms stored alarms.
+      await Alarm.init();
+    } catch (e) {
+      print('[TaskAlarm] Alarm engine init failed in background isolate: $e');
+    }
     _bgInitialized = true;
   }
 
@@ -51,6 +91,15 @@ class TaskAlarmService {
     await _ensureTimezone();
     await _createChannel();
     await ensurePermissions();
+
+    try {
+      await Alarm.init();
+      final scheduled = await Alarm.getAlarms();
+      print('[TaskAlarm] Native alarm engine ready '
+          '(${scheduled.length} alarm(s) armed)');
+    } catch (e) {
+      print('[TaskAlarm] Native alarm engine init failed: $e');
+    }
 
     _initialized = true;
   }
@@ -185,7 +234,7 @@ class TaskAlarmService {
 
   static Future<void> markDone(String remoteId, {bool sync = true}) async {
     await _updateStatus(remoteId, 'done');
-    await _cancelAlarm(remoteId.hashCode);
+    await _cancelAlarmsFor(remoteId);
     if (sync) {
       await _enqueueAction(SyncItemType.taskDone, remoteId);
       await SyncWorker.triggerSync();
@@ -209,6 +258,15 @@ class TaskAlarmService {
           status: const Value('pending'),
           updatedAt: Value(DateTime.now()),
         ));
+
+    // Stop whatever is ringing/scheduled and re-arm at the new time.
+    await _cancelAlarmsFor(remoteId);
+    await _scheduleAlarm(
+      remoteId: remoteId,
+      title: task.title,
+      dueAt: newDue,
+    );
+
     await _enqueueAction(SyncItemType.taskSnooze, remoteId, minutes: minutes);
     await SyncWorker.triggerSync();
   }
@@ -225,9 +283,10 @@ class TaskAlarmService {
         .get();
   }
 
-  /// Recovery pass at app start: re-arms alarms for pending tasks that lost
-  /// theirs (previous scheduling failure, reboot edge cases) and closes out
-  /// stale overdue ones so they don't sit in the list forever.
+  /// Recovery pass at app start: re-arms EVERY pending task's alarm with the
+  /// current settings (also migrates alarms armed by older app versions to
+  /// the silent configuration), and closes out stale overdue ones so they
+  /// don't sit in the list forever.
   static Future<void> rescheduleMissingAlarms() async {
     await _ensureBackgroundReady();
     await _ensureTimezone();
@@ -236,13 +295,12 @@ class TaskAlarmService {
     try {
       final rows = await (db.select(db.scheduledTasks)
             ..where((tbl) =>
-                tbl.alarmScheduled.equals(false) &
-                (tbl.status.equals('pending') |
-                    tbl.status.equals('notified'))))
+                tbl.status.equals('pending') |
+                tbl.status.equals('notified')))
           .get();
       if (rows.isEmpty) return;
 
-      print('[TaskAlarm] Rescheduling ${rows.length} task(s) without alarm');
+      print('[TaskAlarm] Re-arming ${rows.length} task alarm(s)');
       final now = DateTime.now();
       for (final t in rows) {
         if (t.dueAt.isAfter(now)) {
@@ -251,16 +309,19 @@ class TaskAlarmService {
             title: t.title,
             dueAt: t.dueAt,
           );
-        } else if (now.difference(t.dueAt) <= _overdueFireWindow &&
+        } else if (!t.alarmScheduled &&
+            now.difference(t.dueAt) <= _overdueFireWindow &&
             t.status == 'pending') {
           // Recently missed — surface it instead of silently skipping.
           await _showOverdueNotification(t.remoteId, t.title, t.dueAt);
           await markNotifiedLocally(t.remoteId);
-        } else {
+        } else if (!t.alarmScheduled) {
           // Long overdue and never fired: close it locally. Server sync
           // trusts the local status, so it won't resurrect on the next pull.
           await _updateStatus(t.remoteId, 'dismissed');
         }
+        // else: past-due but an alarm is armed — leave the native engine
+        // handle/stop it on its own reconciliation.
       }
     } catch (e) {
       print('[TaskAlarm] Reschedule pass failed: $e');
@@ -309,7 +370,7 @@ class TaskAlarmService {
                 alarmScheduled: const Value(false),
               ));
         }
-        await _cancelAlarm(remoteId.hashCode);
+        await _cancelAlarmsFor(remoteId);
         continue;
       }
 
@@ -320,6 +381,10 @@ class TaskAlarmService {
         continue;
       }
 
+      // Keep the local 'notified' marker (alarm already fired here) so the
+      // upsert below doesn't reset it to pending and re-fire on every pull.
+      final nextStatus = existing?.status == 'notified' ? 'notified' : 'pending';
+
       if (existing == null) {
         await db.into(db.scheduledTasks).insert(
               ScheduledTasksCompanion.insert(
@@ -327,7 +392,7 @@ class TaskAlarmService {
                 title: title,
                 dueAt: dueAt,
                 notes: Value(map['notes'] as String?),
-                status: const Value('pending'),
+                status: Value(nextStatus),
                 source: Value((map['source'] as String?) ?? 'pc'),
                 createdAt: now,
                 updatedAt: now,
@@ -340,7 +405,7 @@ class TaskAlarmService {
               title: Value(title),
               notes: Value(map['notes'] as String?),
               dueAt: Value(dueAt),
-              status: const Value('pending'),
+              status: Value(nextStatus),
               updatedAt: Value(now),
             ));
       }
@@ -352,14 +417,36 @@ class TaskAlarmService {
           dueAt: dueAt,
         );
       } else if (now.difference(dueAt) <= _overdueFireWindow &&
-          existing == null) {
-        // Recently missed while offline — fire now instead of silently skipping.
+          nextStatus == 'pending') {
+        // Recently missed while offline / pulled in late — fire now instead
+        // of silently skipping. markNotifiedLocally prevents repeats.
         await _showOverdueNotification(remoteId, title, dueAt);
+        await markNotifiedLocally(remoteId);
       }
     }
   }
 
   // ── Notification handling ─────────────────────────────────────────────────
+
+  /// Silent heads-up details used for "atrasada" notices (the real ring is
+  /// handled natively by the alarm engine, not by a notification).
+  static AndroidNotificationDetails _overdueDetails() {
+    return const AndroidNotificationDetails(
+      AppConstants.taskAlarmChannelId,
+      AppConstants.taskAlarmChannelName,
+      channelDescription: 'Lembretes em tela cheia (silencioso, com vibração)',
+      importance: Importance.max,
+      priority: Priority.max,
+      category: AndroidNotificationCategory.alarm,
+      playSound: false,
+      enableVibration: true,
+      visibility: NotificationVisibility.public,
+      autoCancel: true,
+      actions: [
+        AndroidNotificationAction('task_dismiss', 'Dispensar'),
+      ],
+    );
+  }
 
   /// Parses a 'task|$id|$title' payload into [taskId, title] for routing,
   /// or null if the payload is not a task alarm.
@@ -406,31 +493,10 @@ class TaskAlarmService {
 
   // ── Internals ─────────────────────────────────────────────────────────────
 
-  /// Silent alarm details: screen lights up + vibrates, no sound.
-  static AndroidNotificationDetails _alarmDetails() {
-    return const AndroidNotificationDetails(
-      AppConstants.taskAlarmChannelId,
-      AppConstants.taskAlarmChannelName,
-      channelDescription: 'Lembretes em tela cheia (silencioso, com vibração)',
-      importance: Importance.max,
-      priority: Priority.max,
-      category: AndroidNotificationCategory.alarm,
-      playSound: false,
-      enableVibration: true,
-      fullScreenIntent: true,
-      visibility: NotificationVisibility.public,
-      ongoing: true,
-      autoCancel: false,
-      actions: [
-        AndroidNotificationAction('task_dismiss', 'Dispensar'),
-      ],
-    );
-  }
-
-  /// Schedules the exact alarm. Never throws — returns whether it worked so
-  /// callers can log/warn. Falls back to inexact scheduling when the OS
-  /// denies exact alarms instead of failing outright (the old behaviour left
-  /// tasks with NO alarm at all).
+  /// Schedules the native exact alarm: silent (volume 0), screen lights up
+  /// over the lockscreen via full-screen intent — survives process death and
+  /// reboots. The attention vibration is fired from Dart when it rings.
+  /// Never throws — returns whether it worked so callers can log/warn.
   static Future<bool> _scheduleAlarm({
     required String remoteId,
     required String title,
@@ -440,56 +506,57 @@ class TaskAlarmService {
     await _ensureBackgroundReady();
 
     final db = AppDatabase();
+    final id = alarmId(remoteId);
     try {
-      final scheduledDate = tz.TZDateTime.from(dueAt, tz.local);
-      print('[TaskAlarm] Scheduling "$title" for '
-          '${scheduledDate.toIso8601String()} '
-          '(epoch=${scheduledDate.millisecondsSinceEpoch}, now epoch='
-          '${DateTime.now().millisecondsSinceEpoch})');
-
-      if (!scheduledDate.isAfter(tz.TZDateTime.now(tz.local))) {
+      final now = DateTime.now();
+      if (!dueAt.isAfter(now)) {
         print('[TaskAlarm] Skip: due time already past.');
         await (db.update(db.scheduledTasks)
               ..where((tbl) => tbl.remoteId.equals(remoteId)))
             .write(ScheduledTasksCompanion(alarmScheduled: const Value(false)));
         return false;
       }
+      print('[TaskAlarm] Scheduling "$title" for ${dueAt.toIso8601String()} '
+          '(in ${dueAt.difference(now).inMinutes} min)');
 
-      var mode = AndroidScheduleMode.exactAllowWhileIdle;
-      try {
-        final android = _plugin.resolvePlatformSpecificImplementation<
-            AndroidFlutterLocalNotificationsPlugin>();
-        var canExact = await android?.canScheduleExactNotifications() ?? false;
-        if (!canExact) {
-          try {
-            final granted = await Permission.scheduleExactAlarm.request();
-            canExact = granted.isGranted ||
-                (await android?.canScheduleExactNotifications() ?? false);
-          } catch (_) {}
-          if (!canExact) {
-            mode = AndroidScheduleMode.inexactAllowWhileIdle;
-            print('[TaskAlarm] Exact alarms denied — falling back to inexact');
-          }
-        }
-      } catch (_) {
-        // Older devices without the exact-alarm API — exact is fine as-is.
-      }
-
-      await _plugin.zonedSchedule(
-        id: remoteId.hashCode,
-        title: '⏰ Hora da tarefa!',
-        body: title,
-        scheduledDate: scheduledDate,
-        notificationDetails: NotificationDetails(android: _alarmDetails()),
-        androidScheduleMode: mode,
-        payload: '$_payloadPrefix$remoteId|$title',
+      final ok = await Alarm.set(
+        alarmSettings: AlarmSettings(
+          id: id,
+          dateTime: dueAt,
+          // Bundled silent audio: the engine always plays something through
+          // MediaPlayer, and setting the system ALARM volume to 0 can be
+          // clamped/rejected (DND, OEMs) — which let the device alarm sound
+          // leak through at low volume. Feeding it actual silence removes
+          // any audible output regardless of volume handling.
+          assetAudioPath: 'assets/audio/silent.wav',
+          loopAudio: false,
+          // No sound, no native vibration loop: silent playback + the finite
+          // Dart-side pattern ([fireAttentionPattern]) when it rings.
+          vibrate: false,
+          // Off: its "alarm may not ring" warning notification plays the
+          // device's default alert sound when posted (the plugin channel has
+          // no explicit null sound), which breaks the fully-silent design.
+          warningNotificationOnKill: false,
+          androidFullScreenIntent: true,
+          payload: '$_payloadPrefix$remoteId|$title',
+          volumeSettings: const VolumeSettings.fixed(
+            volume: 0,
+            showSystemUI: false,
+          ),
+          notificationSettings: NotificationSettings(
+            title: '⏰ Hora da tarefa!',
+            body: title,
+            stopButton: 'Dispensar',
+            androidStopAlarmOnDismiss: true,
+          ),
+        ),
       );
 
       await (db.update(db.scheduledTasks)
             ..where((tbl) => tbl.remoteId.equals(remoteId)))
-          .write(ScheduledTasksCompanion(alarmScheduled: const Value(true)));
-      print('[TaskAlarm] Scheduled OK ($mode)');
-      return true;
+          .write(ScheduledTasksCompanion(alarmScheduled: Value(ok)));
+      print('[TaskAlarm] Scheduled ${ok ? 'OK' : 'FAILED'}');
+      return ok;
     } catch (e, stack) {
       print('[TaskAlarm] FAILED to schedule "$title": $e');
       print(stack);
@@ -511,14 +578,19 @@ class TaskAlarmService {
       title:
           '⏰ Tarefa atrasada (${hh.hour.toString().padLeft(2, '0')}:${hh.minute.toString().padLeft(2, '0')})',
       body: title,
-      notificationDetails: NotificationDetails(android: _alarmDetails()),
+      notificationDetails: NotificationDetails(android: _overdueDetails()),
       payload: '$_payloadPrefix$remoteId|$title',
     );
   }
 
-  static Future<void> _cancelAlarm(int notificationId) async {
+  /// Cancels both engines for a task: the legacy FLN scheduled notification
+  /// (old app versions) and the native alarm.
+  static Future<void> _cancelAlarmsFor(String remoteId) async {
     try {
-      await _plugin.cancel(id: notificationId);
+      await _plugin.cancel(id: remoteId.hashCode);
+    } catch (_) {}
+    try {
+      await Alarm.stop(alarmId(remoteId));
     } catch (_) {}
   }
 

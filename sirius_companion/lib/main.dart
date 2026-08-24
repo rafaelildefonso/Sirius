@@ -1,8 +1,12 @@
+import 'dart:async';
+
+import 'package:alarm/alarm.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'core/storage/database/database.dart';
 import 'core/sync/sync_worker.dart';
+import 'core/sync/foreground_sync.dart';
 import 'core/network/api_client.dart';
 import 'features/pairing/presentation/pairing_screen.dart';
 import 'features/home/presentation/home_screen.dart';
@@ -28,6 +32,11 @@ class SiriusCompanionApp extends ConsumerStatefulWidget {
 
 class _SiriusCompanionAppState extends ConsumerState<SiriusCompanionApp> {
   final AppDatabase _db = AppDatabase();
+  // Element type (AlarmSet) is intentionally left unannotated — the class
+  // isn't exported by the package's public API.
+  StreamSubscription? _ringingSub;
+  int? _displayedRingId;
+  bool _wasRinging = false;
 
   @override
   void initState() {
@@ -48,10 +57,12 @@ class _SiriusCompanionAppState extends ConsumerState<SiriusCompanionApp> {
       onDidReceiveNotificationResponse: _handleNotificationResponse,
     );
 
-    // Task alarms: channels, permissions, exact scheduling.
+    // Task alarms: channels, permissions, native engine (looping sound).
     await TaskAlarmService.initialize(_notificationPlugin);
     // Re-arm alarms for pending tasks that lost theirs (reboot / old failure).
     await TaskAlarmService.rescheduleMissingAlarms();
+    // Open the ringing screen whenever a native alarm fires.
+    _listenForRingingAlarms();
 
     // Launched by a full-screen task alarm (possibly over the lockscreen)?
     try {
@@ -66,7 +77,54 @@ class _SiriusCompanionAppState extends ConsumerState<SiriusCompanionApp> {
       }
     } catch (_) {}
 
+    ForegroundSyncService.instance.start();
+
     await ref.read(geofenceManagerProvider).initialize();
+  }
+
+  /// Opens the ring screen whenever a native alarm starts ringing — including
+  /// cold starts triggered by the full-screen intent over the lockscreen.
+  void _listenForRingingAlarms() {
+    _ringingSub = Alarm.ringing.listen((ringing) {
+      final alarms = [...ringing.alarms]
+        ..sort((a, b) => a.dateTime.compareTo(b.dateTime));
+      final hasRinging = alarms.isNotEmpty;
+      // Attention buzz on the empty → ringing transition (the stream also
+      // re-emits when an alarm stops, which must not vibrate again).
+      if (hasRinging && !_wasRinging) {
+        TaskAlarmService.fireAttentionPattern();
+      }
+      _wasRinging = hasRinging;
+      for (final alarm in alarms) {
+        if (_displayedRingId == alarm.id) continue;
+        _openRingScreen(alarm);
+        break;
+      }
+    });
+  }
+
+  Future<void> _openRingScreen(AlarmSettings alarm) async {
+    _displayedRingId = alarm.id;
+    // Cold start: wait for the Navigator to exist before pushing.
+    for (var i = 0; i < 60 && _navigatorKey.currentState == null; i++) {
+      await WidgetsBinding.instance.endOfFrame;
+    }
+    final nav = _navigatorKey.currentState;
+    if (nav == null) {
+      _displayedRingId = null;
+      return;
+    }
+    final parts = TaskAlarmService.handleNotificationRoute(alarm.payload ?? '');
+    await nav.push(
+      MaterialPageRoute(
+        builder: (_) => AlarmScreen(
+          alarmId: alarm.id,
+          taskId: parts?[0] ?? '',
+          title: parts?[1] ?? alarm.notificationSettings.body,
+        ),
+      ),
+    );
+    if (_displayedRingId == alarm.id) _displayedRingId = null;
   }
 
   void _openAlarmFromPayload(String payload) {
@@ -74,7 +132,11 @@ class _SiriusCompanionAppState extends ConsumerState<SiriusCompanionApp> {
     if (parts == null) return;
     _navigatorKey.currentState?.push(
       MaterialPageRoute(
-        builder: (_) => AlarmScreen(taskId: parts[0], title: parts[1]),
+        builder: (_) => AlarmScreen(
+          alarmId: TaskAlarmService.alarmId(parts[0]),
+          taskId: parts[0],
+          title: parts[1],
+        ),
       ),
     );
   }
@@ -96,8 +158,11 @@ class _SiriusCompanionAppState extends ConsumerState<SiriusCompanionApp> {
       if (openParts != null) {
         _navigatorKey.currentState?.push(
           MaterialPageRoute(
-            builder: (_) =>
-                AlarmScreen(taskId: openParts[0], title: openParts[1]),
+            builder: (_) => AlarmScreen(
+              alarmId: TaskAlarmService.alarmId(openParts[0]),
+              taskId: openParts[0],
+              title: openParts[1],
+            ),
           ),
         );
       }
@@ -106,6 +171,7 @@ class _SiriusCompanionAppState extends ConsumerState<SiriusCompanionApp> {
 
   @override
   void dispose() {
+    _ringingSub?.cancel();
     super.dispose();
   }
 

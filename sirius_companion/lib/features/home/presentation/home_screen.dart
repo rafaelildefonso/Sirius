@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'dart:async';
+import 'package:permission_handler/permission_handler.dart';
 import '../application/home_controller.dart';
 import '../../../../core/storage/models/sync_item.dart' as sync_model;
 import '../../../../core/device_identity.dart';
@@ -67,6 +68,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           children: [
             _ConnectionStatusCard(state: state),
             const SizedBox(height: 16),
+            const _AlarmPermissionBanner(),
+            const SizedBox(height: 16),
             _TaskQuickAddCard(onCreated: _refreshTasks),
             const SizedBox(height: 16),
             _UpcomingTasksSection(tick: _taskTick, onChanged: _refreshTasks),
@@ -124,6 +127,114 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             },
             style: FilledButton.styleFrom(backgroundColor: const Color(0xFFEF4444)),
             child: const Text('Desparear'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Warns when the permissions needed for task alarms to actually ring are
+/// missing (notifications, exact alarms). Hidden once everything is granted.
+class _AlarmPermissionBanner extends StatefulWidget {
+  const _AlarmPermissionBanner();
+
+  @override
+  State<_AlarmPermissionBanner> createState() => _AlarmPermissionBannerState();
+}
+
+class _AlarmPermissionBannerState extends State<_AlarmPermissionBanner> {
+  bool _checking = true;
+  bool _missingNotification = false;
+  bool _missingExactAlarm = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _check());
+  }
+
+  Future<void> _check({bool request = false}) async {
+    try {
+      var notif = await Permission.notification.status;
+      if (request && !notif.isGranted) {
+        notif = await Permission.notification.request();
+      }
+      var exact = await Permission.scheduleExactAlarm.status;
+      if (request && !exact.isGranted) {
+        try {
+          exact = await Permission.scheduleExactAlarm.request();
+        } catch (_) {}
+      }
+      if (!mounted) return;
+      setState(() {
+        _checking = false;
+        _missingNotification = !notif.isGranted;
+        _missingExactAlarm = !exact.isGranted;
+      });
+    } catch (_) {
+      if (mounted) setState(() => _checking = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_checking || (!_missingNotification && !_missingExactAlarm)) {
+      return const SizedBox.shrink();
+    }
+    final missing = [
+      if (_missingNotification) 'notificações',
+      if (_missingExactAlarm) 'alarmes exatos',
+    ].join(' e ');
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF59E0B).withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: const Color(0xFFF59E0B).withValues(alpha: 0.4),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.alarm_off_rounded,
+                  color: Color(0xFFF59E0B), size: 22),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  'Sem $missing os alarmes de tarefa podem não tocar.',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 13.5,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: () => _check(request: true),
+                  icon: const Icon(Icons.verified_user_outlined, size: 18),
+                  label: const Text('Permitir'),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: openAppSettings,
+                  icon: const Icon(Icons.settings_outlined, size: 18),
+                  label: const Text('Configurações'),
+                ),
+              ),
+            ],
           ),
         ],
       ),
