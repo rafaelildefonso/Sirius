@@ -95,6 +95,16 @@ def save_speak_briefing_enabled(enabled: bool) -> None:
     cfg["speak_briefing_enabled"] = enabled
     _save_configs(cfg)
 
+def get_init_sound_enabled() -> bool:
+    cfg = get_all_config()
+    return cfg.get("init_sound_enabled", True)
+
+def save_init_sound_enabled(enabled: bool) -> None:
+    ensure_config_dir()
+    cfg = get_all_config()
+    cfg["init_sound_enabled"] = enabled
+    _save_configs(cfg)
+
 def get_speak_proactive_enabled() -> bool:
     cfg = get_all_config()
     return cfg.get("speak_proactive_enabled", True)

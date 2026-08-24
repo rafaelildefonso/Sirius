@@ -33,7 +33,7 @@ def _collect_runtime_data():
             if f.is_file() and not f.name.startswith("__"):
                 dst = str(f.relative_to(BASE_DIR))
                 datas.append((str(f), dst))
-    for fname in (".env",):
+    for fname in (".env", "init_sound.wav"):
         fp = BASE_DIR / fname
         if fp.exists():
             datas.append((str(fp), fname))

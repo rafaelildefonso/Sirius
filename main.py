@@ -2154,6 +2154,10 @@ class SiriusLive:
                         if hasattr(self.ui, 'hide_startup_panel'):
                             self.ui.hide_startup_panel()
 
+                        # Startup chime
+                        from core.sounds import play_init_sound
+                        tg.create_task(asyncio.to_thread(play_init_sound))
+
                         # Morning briefing — fires once per process
                         if not self._briefing_sent:
                             from memory.config_manager import get_speak_briefing_enabled
@@ -2963,6 +2967,8 @@ class SiriusLocal:
                     self.ui.set_startup_progress(5, 5, "SIRIUS pronto!")
                     self.ui.set_startup_status("* All systems ready.")
                     self.ui.hide_startup_panel()
+                    from core.sounds import play_init_sound_async
+                    play_init_sound_async()
                 except Exception as e:
                     traceback.print_exc()
                     self.ui.write_log(f"ERR: TTS — {e}")
