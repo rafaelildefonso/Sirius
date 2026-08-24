@@ -34,7 +34,9 @@ class AppConstants {
   static const String geofenceChannelName = 'Geofence Alerts';
   static const String syncChannelId = 'sync_channel';
   static const String syncChannelName = 'Sync Status';
-  static const String taskAlarmChannelId = 'task_alarm_channel';
+  /// v2: silent (no sound) + vibration. Android ignores config changes on an
+  /// existing channel, so switching to silent required a fresh channel id.
+  static const String taskAlarmChannelId = 'task_alarm_channel_v2';
   static const String taskAlarmChannelName = 'Lembretes de Tarefas';
   
   // Gemma

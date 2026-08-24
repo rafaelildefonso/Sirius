@@ -2,7 +2,8 @@ import 'package:flutter/material.dart';
 
 import '../task_alarm_service.dart';
 
-/// Full-screen alarm page shown over the lockscreen when a task fires.
+/// Full-screen silent reminder shown over the lockscreen when a task fires:
+/// task name + a single dismiss button (no sound, vibration only).
 class AlarmScreen extends StatelessWidget {
   final String taskId;
   final String title;
@@ -13,12 +14,8 @@ class AlarmScreen extends StatelessWidget {
     required this.title,
   });
 
-  Future<void> _resolve(BuildContext context, bool done) async {
-    if (done) {
-      await TaskAlarmService.markDone(taskId);
-    } else {
-      await TaskAlarmService.snooze(taskId, minutes: 5);
-    }
+  Future<void> _dismiss(BuildContext context) async {
+    await TaskAlarmService.markDone(taskId);
     if (context.mounted) {
       Navigator.of(context).popUntil((route) => route.isFirst);
     }
@@ -27,14 +24,14 @@ class AlarmScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF1A0505),
+      backgroundColor: const Color(0xFF07090F),
       body: Container(
         width: double.infinity,
         decoration: const BoxDecoration(
           gradient: RadialGradient(
             center: Alignment(0, -0.4),
             radius: 1.2,
-            colors: [Color(0xFF3B0D0D), Color(0xFF0A0203)],
+            colors: [Color(0xFF141B33), Color(0xFF030407)],
           ),
         ),
         child: SafeArea(
@@ -45,23 +42,23 @@ class AlarmScreen extends StatelessWidget {
                 padding: const EdgeInsets.all(28),
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
-                  color: const Color(0xFFEF4444).withOpacity(0.15),
+                  color: const Color(0xFF6366F1).withValues(alpha: 0.15),
                   border: Border.all(
-                    color: const Color(0xFFEF4444).withOpacity(0.5),
+                    color: const Color(0xFF6366F1).withValues(alpha: 0.5),
                     width: 3,
                   ),
                 ),
                 child: const Icon(
-                  Icons.alarm_rounded,
+                  Icons.task_alt_rounded,
                   size: 72,
-                  color: Color(0xFFEF4444),
+                  color: Color(0xFF6366F1),
                 ),
               ),
               const SizedBox(height: 28),
               const Text(
-                'ESTÁ NA HORA!',
+                'LEMBRETE',
                 style: TextStyle(
-                  color: Color(0xFFEF4444),
+                  color: Color(0xFF6366F1),
                   fontSize: 18,
                   fontWeight: FontWeight.w800,
                   letterSpacing: 4,
@@ -84,43 +81,25 @@ class AlarmScreen extends StatelessWidget {
               const SizedBox(height: 64),
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 40),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    FilledButton.icon(
-                      onPressed: () => _resolve(context, true),
-                      icon: const Icon(Icons.check_circle_outline, size: 26),
-                      label: const Text(
-                        'Feito',
-                        style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
-                      ),
-                      style: FilledButton.styleFrom(
-                        backgroundColor: const Color(0xFF22C55E),
-                        foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(vertical: 18),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(16),
-                        ),
+                child: SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                    onPressed: () => _dismiss(context),
+                    icon: const Icon(Icons.check_circle_outline, size: 26),
+                    label: const Text(
+                      'Dispensar',
+                      style: TextStyle(
+                          fontSize: 20, fontWeight: FontWeight.w700),
+                    ),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: const Color(0xFF6366F1),
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 18),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(16),
                       ),
                     ),
-                    const SizedBox(height: 14),
-                    OutlinedButton.icon(
-                      onPressed: () => _resolve(context, false),
-                      icon: const Icon(Icons.snooze_rounded, size: 26),
-                      label: const Text(
-                        'Adiar 5 min',
-                        style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
-                      ),
-                      style: OutlinedButton.styleFrom(
-                        foregroundColor: const Color(0xFFFBBF24),
-                        side: const BorderSide(color: Color(0xFFFBBF24), width: 2),
-                        padding: const EdgeInsets.symmetric(vertical: 16),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(16),
-                        ),
-                      ),
-                    ),
-                  ],
+                  ),
                 ),
               ),
             ],

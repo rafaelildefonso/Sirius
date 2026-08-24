@@ -50,6 +50,8 @@ class _SiriusCompanionAppState extends ConsumerState<SiriusCompanionApp> {
 
     // Task alarms: channels, permissions, exact scheduling.
     await TaskAlarmService.initialize(_notificationPlugin);
+    // Re-arm alarms for pending tasks that lost theirs (reboot / old failure).
+    await TaskAlarmService.rescheduleMissingAlarms();
 
     // Launched by a full-screen task alarm (possibly over the lockscreen)?
     try {

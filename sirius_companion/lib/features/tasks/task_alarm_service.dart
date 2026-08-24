@@ -49,11 +49,41 @@ class TaskAlarmService {
     _plugin = plugin;
 
     await _ensureTimezone();
+    await _createChannel();
+    await ensurePermissions();
 
-    // Notification permission (Android 13+)
-    await Permission.notification.request();
+    _initialized = true;
+  }
 
-    // Exact alarms (Android 12+ — required for reliable locked-screen firing)
+  /// Creates the notification channel. Uses a dedicated id (v2) because
+  /// Android freezes channel settings after first creation — the old channel
+  /// played alarm sounds and could not be silenced in place.
+  static Future<void> _createChannel() async {
+    const channel = AndroidNotificationChannel(
+      AppConstants.taskAlarmChannelId,
+      AppConstants.taskAlarmChannelName,
+      description: 'Lembretes em tela cheia (silencioso, com vibração)',
+      importance: Importance.max,
+      playSound: false,
+      enableVibration: true,
+    );
+    await _plugin
+        .resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin>()
+        ?.createNotificationChannel(channel);
+  }
+
+  /// (Re-)checks every permission needed for alarms to actually fire.
+  /// Called on init AND before each scheduling — Android 13/14 can leave
+  /// notifications or exact alarms ungranted after the very first prompt,
+  /// which made zonedSchedule throw and the alarm silently never exist.
+  static Future<void> ensurePermissions() async {
+    try {
+      if (!await Permission.notification.isGranted) {
+        await Permission.notification.request();
+      }
+    } catch (_) {}
+
     try {
       final exact = await Permission.scheduleExactAlarm.status;
       if (!exact.isGranted) {
@@ -63,29 +93,12 @@ class TaskAlarmService {
       // scheduleExactAlarm unsupported below API 31 — fine.
     }
 
-    // Full-screen intent permission (Android 14+ requires explicit opt-in)
     try {
       await _plugin
           .resolvePlatformSpecificImplementation<
               AndroidFlutterLocalNotificationsPlugin>()
           ?.requestFullScreenIntentPermission();
     } catch (_) {}
-
-    const channel = AndroidNotificationChannel(
-      AppConstants.taskAlarmChannelId,
-      AppConstants.taskAlarmChannelName,
-      description: 'Alarmes em tela cheia para tarefas agendadas',
-      importance: Importance.max,
-      playSound: true,
-      enableVibration: true,
-      audioAttributesUsage: AudioAttributesUsage.alarm,
-    );
-    await _plugin
-        .resolvePlatformSpecificImplementation<
-            AndroidFlutterLocalNotificationsPlugin>()
-        ?.createNotificationChannel(channel);
-
-    _initialized = true;
   }
 
   static Future<void> _ensureTimezone() async {
@@ -94,8 +107,26 @@ class TaskAlarmService {
     try {
       final name = await FlutterTimezone.getLocalTimezone();
       tz.setLocalLocation(tz.getLocation(name));
-    } catch (_) {
-      // Fall back to UTC offsets via TZDateTime.from below.
+      print('[TaskAlarm] Timezone: $name');
+    } catch (e) {
+      // Keep going with a fixed-offset zone derived from the device clock
+      // instead of silently falling back to UTC. Alarm instants are computed
+      // from epoch millis so timing stays exact either way — this mainly
+      // fixes display/routing. Note: Etc/GMT names use POSIX (inverted) sign,
+      // e.g. Brazil (UTC-3) is 'Etc/GMT+3'.
+      final now = DateTime.now();
+      final off = now.timeZoneOffset;
+      final posixSign = off.isNegative ? '+' : '-';
+      final hh = off.inHours.abs().toString().padLeft(2, '0');
+      final mm = (off.inMinutes.abs() % 60).toString().padLeft(2, '0');
+      final suffix = mm == '00' ? '' : ':$mm';
+      final fallbackName = 'Etc/GMT$posixSign$hh$suffix';
+      try {
+        tz.setLocalLocation(tz.getLocation(fallbackName));
+        print('[TaskAlarm] Timezone detection failed ($e) — using $fallbackName');
+      } catch (_) {
+        print('[TaskAlarm] Timezone detection failed ($e) — using UTC');
+      }
     }
     _tzReady = true;
   }
@@ -108,6 +139,11 @@ class TaskAlarmService {
     final remoteId = const Uuid().v4();
     final now = DateTime.now();
     final cleanTitle = title.trim();
+
+    // Re-check notification/exact-alarm permissions right before scheduling:
+    // if they were denied after the first prompt, zonedSchedule would throw
+    // and the alarm would silently never fire.
+    await ensurePermissions();
 
     final db = AppDatabase();
     await db.into(db.scheduledTasks).insert(ScheduledTasksCompanion.insert(
@@ -131,7 +167,14 @@ class TaskAlarmService {
       clientId: const Uuid().v4(),
     );
 
-    await _scheduleAlarm(remoteId: remoteId, title: cleanTitle, dueAt: dueAt);
+    final scheduled = await _scheduleAlarm(
+      remoteId: remoteId,
+      title: cleanTitle,
+      dueAt: dueAt,
+    );
+    if (!scheduled) {
+      print('[TaskAlarm] WARNING: alarm for "$cleanTitle" was NOT scheduled');
+    }
 
     // Push to the PC right away so the toast/PC side knows about it.
     await SyncWorker.triggerSync();
@@ -180,6 +223,48 @@ class TaskAlarmService {
           ..orderBy([(u) => OrderingTerm.asc(u.dueAt)])
           ..limit(limit))
         .get();
+  }
+
+  /// Recovery pass at app start: re-arms alarms for pending tasks that lost
+  /// theirs (previous scheduling failure, reboot edge cases) and closes out
+  /// stale overdue ones so they don't sit in the list forever.
+  static Future<void> rescheduleMissingAlarms() async {
+    await _ensureBackgroundReady();
+    await _ensureTimezone();
+
+    final db = AppDatabase();
+    try {
+      final rows = await (db.select(db.scheduledTasks)
+            ..where((tbl) =>
+                tbl.alarmScheduled.equals(false) &
+                (tbl.status.equals('pending') |
+                    tbl.status.equals('notified'))))
+          .get();
+      if (rows.isEmpty) return;
+
+      print('[TaskAlarm] Rescheduling ${rows.length} task(s) without alarm');
+      final now = DateTime.now();
+      for (final t in rows) {
+        if (t.dueAt.isAfter(now)) {
+          await _scheduleAlarm(
+            remoteId: t.remoteId,
+            title: t.title,
+            dueAt: t.dueAt,
+          );
+        } else if (now.difference(t.dueAt) <= _overdueFireWindow &&
+            t.status == 'pending') {
+          // Recently missed — surface it instead of silently skipping.
+          await _showOverdueNotification(t.remoteId, t.title, t.dueAt);
+          await markNotifiedLocally(t.remoteId);
+        } else {
+          // Long overdue and never fired: close it locally. Server sync
+          // trusts the local status, so it won't resurrect on the next pull.
+          await _updateStatus(t.remoteId, 'dismissed');
+        }
+      }
+    } catch (e) {
+      print('[TaskAlarm] Reschedule pass failed: $e');
+    }
   }
 
   // ── Server convergence ────────────────────────────────────────────────────
@@ -297,10 +382,11 @@ class TaskAlarmService {
     final taskId = parts[0];
 
     switch (response.actionId) {
-      case 'task_done':
+      case 'task_dismiss':
+      case 'task_done': // legacy button from previous app versions
         await markDone(taskId);
         return null;
-      case 'task_snooze':
+      case 'task_snooze': // legacy button from previous app versions
         await snooze(taskId);
         return null;
       default:
@@ -320,49 +406,98 @@ class TaskAlarmService {
 
   // ── Internals ─────────────────────────────────────────────────────────────
 
+  /// Silent alarm details: screen lights up + vibrates, no sound.
   static AndroidNotificationDetails _alarmDetails() {
     return const AndroidNotificationDetails(
       AppConstants.taskAlarmChannelId,
       AppConstants.taskAlarmChannelName,
-      channelDescription: 'Alarmes em tela cheia para tarefas agendadas',
+      channelDescription: 'Lembretes em tela cheia (silencioso, com vibração)',
       importance: Importance.max,
       priority: Priority.max,
       category: AndroidNotificationCategory.alarm,
+      playSound: false,
+      enableVibration: true,
       fullScreenIntent: true,
       visibility: NotificationVisibility.public,
-      audioAttributesUsage: AudioAttributesUsage.alarm,
       ongoing: true,
       autoCancel: false,
       actions: [
-        AndroidNotificationAction('task_done', 'Feito'),
-        AndroidNotificationAction('task_snooze', '+5 min'),
+        AndroidNotificationAction('task_dismiss', 'Dispensar'),
       ],
     );
   }
 
-  static Future<void> _scheduleAlarm({
+  /// Schedules the exact alarm. Never throws — returns whether it worked so
+  /// callers can log/warn. Falls back to inexact scheduling when the OS
+  /// denies exact alarms instead of failing outright (the old behaviour left
+  /// tasks with NO alarm at all).
+  static Future<bool> _scheduleAlarm({
     required String remoteId,
     required String title,
     required DateTime dueAt,
   }) async {
     await _ensureTimezone();
-    final scheduledDate = tz.TZDateTime.from(dueAt, tz.local);
-    if (!scheduledDate.isAfter(tz.TZDateTime.now(tz.local))) return;
-
-    await _plugin.zonedSchedule(
-      id: remoteId.hashCode,
-      title: '⏰ Hora da tarefa!',
-      body: title,
-      scheduledDate: scheduledDate,
-      notificationDetails: NotificationDetails(android: _alarmDetails()),
-      androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
-      payload: '$_payloadPrefix$remoteId|$title',
-    );
+    await _ensureBackgroundReady();
 
     final db = AppDatabase();
-    await (db.update(db.scheduledTasks)
-          ..where((tbl) => tbl.remoteId.equals(remoteId)))
-        .write(ScheduledTasksCompanion(alarmScheduled: const Value(true)));
+    try {
+      final scheduledDate = tz.TZDateTime.from(dueAt, tz.local);
+      print('[TaskAlarm] Scheduling "$title" for '
+          '${scheduledDate.toIso8601String()} '
+          '(epoch=${scheduledDate.millisecondsSinceEpoch}, now epoch='
+          '${DateTime.now().millisecondsSinceEpoch})');
+
+      if (!scheduledDate.isAfter(tz.TZDateTime.now(tz.local))) {
+        print('[TaskAlarm] Skip: due time already past.');
+        await (db.update(db.scheduledTasks)
+              ..where((tbl) => tbl.remoteId.equals(remoteId)))
+            .write(ScheduledTasksCompanion(alarmScheduled: const Value(false)));
+        return false;
+      }
+
+      var mode = AndroidScheduleMode.exactAllowWhileIdle;
+      try {
+        final android = _plugin.resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin>();
+        var canExact = await android?.canScheduleExactNotifications() ?? false;
+        if (!canExact) {
+          try {
+            final granted = await Permission.scheduleExactAlarm.request();
+            canExact = granted.isGranted ||
+                (await android?.canScheduleExactNotifications() ?? false);
+          } catch (_) {}
+          if (!canExact) {
+            mode = AndroidScheduleMode.inexactAllowWhileIdle;
+            print('[TaskAlarm] Exact alarms denied — falling back to inexact');
+          }
+        }
+      } catch (_) {
+        // Older devices without the exact-alarm API — exact is fine as-is.
+      }
+
+      await _plugin.zonedSchedule(
+        id: remoteId.hashCode,
+        title: '⏰ Hora da tarefa!',
+        body: title,
+        scheduledDate: scheduledDate,
+        notificationDetails: NotificationDetails(android: _alarmDetails()),
+        androidScheduleMode: mode,
+        payload: '$_payloadPrefix$remoteId|$title',
+      );
+
+      await (db.update(db.scheduledTasks)
+            ..where((tbl) => tbl.remoteId.equals(remoteId)))
+          .write(ScheduledTasksCompanion(alarmScheduled: const Value(true)));
+      print('[TaskAlarm] Scheduled OK ($mode)');
+      return true;
+    } catch (e, stack) {
+      print('[TaskAlarm] FAILED to schedule "$title": $e');
+      print(stack);
+      await (db.update(db.scheduledTasks)
+            ..where((tbl) => tbl.remoteId.equals(remoteId)))
+          .write(ScheduledTasksCompanion(alarmScheduled: const Value(false)));
+      return false;
+    }
   }
 
   static Future<void> _showOverdueNotification(
