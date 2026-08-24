@@ -11,6 +11,9 @@ class AppConstants {
   static const Duration syncInterval = Duration(minutes: 15);
   static const int maxBatchSize = 100;
   static const int maxRetries = 4;
+  /// Items with more retries than this are dead-lettered: they stop being
+  /// pushed on every sync cycle and only count towards the "Falhas" stat.
+  static const int deadLetterRetries = 10;
   static const List<Duration> retryBackoff = [
     Duration(seconds: 30),
     Duration(minutes: 2),

@@ -9,7 +9,15 @@ part 'database.g.dart';
 
 @DriftDatabase(tables: [SyncItems, Places, ScheduledTasks])
 class AppDatabase extends _$AppDatabase {
-  AppDatabase() : super(_openConnection());
+  AppDatabase._() : super(_openConnection());
+
+  /// Single shared instance. The app opens connections from multiple places
+  /// (UI, services) and WorkManager spawns background isolates that also use
+  /// this class — a per-call instance meant concurrent SQLite access with no
+  /// busy timeout and led to lock contention. Never call close() on it.
+  static final AppDatabase instance = AppDatabase._();
+
+  factory AppDatabase() => instance;
 
   @override
   int get schemaVersion => 2;
@@ -39,6 +47,14 @@ LazyDatabase _openConnection() {
   return LazyDatabase(() async {
     final dbFolder = await getApplicationDocumentsDirectory();
     final file = File(p.join(dbFolder.path, 'sirius_companion.sqlite'));
-    return NativeDatabase(file);
+    return NativeDatabase(
+      file,
+      setup: (rawDb) {
+        // Wait instead of failing immediately when another isolate/connection
+        // holds the write lock, and allow concurrent readers via WAL.
+        rawDb.execute('PRAGMA busy_timeout = 5000');
+        rawDb.execute('PRAGMA journal_mode = WAL');
+      },
+    );
   });
 }

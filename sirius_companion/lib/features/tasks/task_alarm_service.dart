@@ -110,30 +110,26 @@ class TaskAlarmService {
     final cleanTitle = title.trim();
 
     final db = AppDatabase();
-    try {
-      await db.into(db.scheduledTasks).insert(ScheduledTasksCompanion.insert(
-            remoteId: remoteId,
-            title: cleanTitle,
-            dueAt: dueAt,
-            source: const Value('phone'),
-            createdAt: now,
-            updatedAt: now,
-          ));
+    await db.into(db.scheduledTasks).insert(ScheduledTasksCompanion.insert(
+          remoteId: remoteId,
+          title: cleanTitle,
+          dueAt: dueAt,
+          source: const Value('phone'),
+          createdAt: now,
+          updatedAt: now,
+        ));
 
-      await SyncRepository(db).enqueue(
-        type: SyncItemType.quickTask.value,
-        payloadJson: jsonEncode({
-          'id': remoteId,
-          'title': cleanTitle,
-          'due_at': dueAt.toIso8601String(),
-          'source': 'phone',
-          'timestamp': now.toIso8601String(),
-        }),
-        clientId: const Uuid().v4(),
-      );
-    } finally {
-      await db.close();
-    }
+    await SyncRepository(db).enqueue(
+      type: SyncItemType.quickTask.value,
+      payloadJson: jsonEncode({
+        'id': remoteId,
+        'title': cleanTitle,
+        'due_at': dueAt.toIso8601String(),
+        'source': 'phone',
+        'timestamp': now.toIso8601String(),
+      }),
+      clientId: const Uuid().v4(),
+    );
 
     await _scheduleAlarm(remoteId: remoteId, title: cleanTitle, dueAt: dueAt);
 
@@ -155,26 +151,21 @@ class TaskAlarmService {
 
   static Future<void> snooze(String remoteId, {int minutes = 5}) async {
     final db = AppDatabase();
-    ScheduledTask? task;
-    try {
-      task = await (db.select(db.scheduledTasks)
-            ..where((tbl) => tbl.remoteId.equals(remoteId)))
-          .getSingleOrNull();
-      if (task == null) return;
+    final task = await (db.select(db.scheduledTasks)
+          ..where((tbl) => tbl.remoteId.equals(remoteId)))
+        .getSingleOrNull();
+    if (task == null) return;
 
-      final base =
-          task.dueAt.isAfter(DateTime.now()) ? task.dueAt : DateTime.now();
-      final newDue = base.add(Duration(minutes: minutes));
-      await (db.update(db.scheduledTasks)
-            ..where((tbl) => tbl.remoteId.equals(remoteId)))
-          .write(ScheduledTasksCompanion(
-            dueAt: Value(newDue),
-            status: const Value('pending'),
-            updatedAt: Value(DateTime.now()),
-          ));
-    } finally {
-      await db.close();
-    }
+    final base =
+        task.dueAt.isAfter(DateTime.now()) ? task.dueAt : DateTime.now();
+    final newDue = base.add(Duration(minutes: minutes));
+    await (db.update(db.scheduledTasks)
+          ..where((tbl) => tbl.remoteId.equals(remoteId)))
+        .write(ScheduledTasksCompanion(
+          dueAt: Value(newDue),
+          status: const Value('pending'),
+          updatedAt: Value(DateTime.now()),
+        ));
     await _enqueueAction(SyncItemType.taskSnooze, remoteId, minutes: minutes);
     await SyncWorker.triggerSync();
   }
@@ -183,16 +174,12 @@ class TaskAlarmService {
 
   static Future<List<ScheduledTask>> getPendingTasks({int limit = 20}) async {
     final db = AppDatabase();
-    try {
-      return await (db.select(db.scheduledTasks)
-            ..where((tbl) =>
-                tbl.status.equals('pending') | tbl.status.equals('notified'))
-            ..orderBy([(u) => OrderingTerm.asc(u.dueAt)])
-            ..limit(limit))
-          .get();
-    } finally {
-      await db.close();
-    }
+    return await (db.select(db.scheduledTasks)
+          ..where((tbl) =>
+              tbl.status.equals('pending') | tbl.status.equals('notified'))
+          ..orderBy([(u) => OrderingTerm.asc(u.dueAt)])
+          ..limit(limit))
+        .get();
   }
 
   // ── Server convergence ────────────────────────────────────────────────────
@@ -205,89 +192,85 @@ class TaskAlarmService {
     await _ensureBackgroundReady();
 
     final db = AppDatabase();
-    try {
-      for (final raw in tasks) {
-        if (raw is! Map) continue;
-        final map = Map<String, dynamic>.from(raw);
-        final remoteId = map['id'] as String?;
-        final title = (map['title'] as String?)?.trim();
-        final dueRaw = map['due_at'] as String?;
-        final status = (map['status'] as String?) ?? 'pending';
-        if (remoteId == null || title == null || title.isEmpty) continue;
+    for (final raw in tasks) {
+      if (raw is! Map) continue;
+      final map = Map<String, dynamic>.from(raw);
+      final remoteId = map['id'] as String?;
+      final title = (map['title'] as String?)?.trim();
+      final dueRaw = map['due_at'] as String?;
+      final status = (map['status'] as String?) ?? 'pending';
+      if (remoteId == null || title == null || title.isEmpty) continue;
 
-        DateTime? dueAt;
-        try {
-          dueAt = dueRaw == null ? null : DateTime.parse(dueRaw).toLocal();
-        } on FormatException {
-          continue;
-        }
-        if (dueAt == null) continue;
+      DateTime? dueAt;
+      try {
+        dueAt = dueRaw == null ? null : DateTime.parse(dueRaw).toLocal();
+      } on FormatException {
+        continue;
+      }
+      if (dueAt == null) continue;
 
-        final existing = await (db.select(db.scheduledTasks)
-              ..where((tbl) => tbl.remoteId.equals(remoteId)))
-            .getSingleOrNull();
-        final now = DateTime.now();
+      final existing = await (db.select(db.scheduledTasks)
+            ..where((tbl) => tbl.remoteId.equals(remoteId)))
+          .getSingleOrNull();
+      final now = DateTime.now();
 
-        if (status == 'done' || status == 'dismissed') {
-          if (existing != null) {
-            await (db.update(db.scheduledTasks)
-                  ..where((tbl) => tbl.remoteId.equals(remoteId)))
-                .write(ScheduledTasksCompanion(
-                  status: Value(status),
-                  updatedAt: Value(now),
-                  alarmScheduled: const Value(false),
-                ));
-          }
-          await _cancelAlarm(remoteId.hashCode);
-          continue;
-        }
-
-        if (existing != null &&
-            existing.status != 'pending' &&
-            existing.status != 'notified') {
-          // Locally closed already; server says active — trust local.
-          continue;
-        }
-
-        if (existing == null) {
-          await db.into(db.scheduledTasks).insert(
-                ScheduledTasksCompanion.insert(
-                  remoteId: remoteId,
-                  title: title,
-                  dueAt: dueAt,
-                  notes: Value(map['notes'] as String?),
-                  status: const Value('pending'),
-                  source: Value((map['source'] as String?) ?? 'pc'),
-                  createdAt: now,
-                  updatedAt: now,
-                ),
-              );
-        } else {
+      if (status == 'done' || status == 'dismissed') {
+        if (existing != null) {
           await (db.update(db.scheduledTasks)
                 ..where((tbl) => tbl.remoteId.equals(remoteId)))
               .write(ScheduledTasksCompanion(
-                title: Value(title),
-                notes: Value(map['notes'] as String?),
-                dueAt: Value(dueAt),
-                status: const Value('pending'),
+                status: Value(status),
                 updatedAt: Value(now),
+                alarmScheduled: const Value(false),
               ));
         }
-
-        if (dueAt.isAfter(now)) {
-          await _scheduleAlarm(
-            remoteId: remoteId,
-            title: title,
-            dueAt: dueAt,
-          );
-        } else if (now.difference(dueAt) <= _overdueFireWindow &&
-            existing == null) {
-          // Recently missed while offline — fire now instead of silently skipping.
-          await _showOverdueNotification(remoteId, title, dueAt);
-        }
+        await _cancelAlarm(remoteId.hashCode);
+        continue;
       }
-    } finally {
-      await db.close();
+
+      if (existing != null &&
+          existing.status != 'pending' &&
+          existing.status != 'notified') {
+        // Locally closed already; server says active — trust local.
+        continue;
+      }
+
+      if (existing == null) {
+        await db.into(db.scheduledTasks).insert(
+              ScheduledTasksCompanion.insert(
+                remoteId: remoteId,
+                title: title,
+                dueAt: dueAt,
+                notes: Value(map['notes'] as String?),
+                status: const Value('pending'),
+                source: Value((map['source'] as String?) ?? 'pc'),
+                createdAt: now,
+                updatedAt: now,
+              ),
+            );
+      } else {
+        await (db.update(db.scheduledTasks)
+              ..where((tbl) => tbl.remoteId.equals(remoteId)))
+            .write(ScheduledTasksCompanion(
+              title: Value(title),
+              notes: Value(map['notes'] as String?),
+              dueAt: Value(dueAt),
+              status: const Value('pending'),
+              updatedAt: Value(now),
+            ));
+      }
+
+      if (dueAt.isAfter(now)) {
+        await _scheduleAlarm(
+          remoteId: remoteId,
+          title: title,
+          dueAt: dueAt,
+        );
+      } else if (now.difference(dueAt) <= _overdueFireWindow &&
+          existing == null) {
+        // Recently missed while offline — fire now instead of silently skipping.
+        await _showOverdueNotification(remoteId, title, dueAt);
+      }
     }
   }
 
@@ -327,16 +310,12 @@ class TaskAlarmService {
 
   static Future<void> markNotifiedLocally(String remoteId) async {
     final db = AppDatabase();
-    try {
-      await (db.update(db.scheduledTasks)
-            ..where((tbl) => tbl.remoteId.equals(remoteId)))
-          .write(ScheduledTasksCompanion(
-            status: const Value('notified'),
-            updatedAt: Value(DateTime.now()),
-          ));
-    } finally {
-      await db.close();
-    }
+    await (db.update(db.scheduledTasks)
+          ..where((tbl) => tbl.remoteId.equals(remoteId)))
+        .write(ScheduledTasksCompanion(
+          status: const Value('notified'),
+          updatedAt: Value(DateTime.now()),
+        ));
   }
 
   // ── Internals ─────────────────────────────────────────────────────────────
@@ -381,13 +360,9 @@ class TaskAlarmService {
     );
 
     final db = AppDatabase();
-    try {
-      await (db.update(db.scheduledTasks)
-            ..where((tbl) => tbl.remoteId.equals(remoteId)))
-          .write(ScheduledTasksCompanion(alarmScheduled: const Value(true)));
-    } finally {
-      await db.close();
-    }
+    await (db.update(db.scheduledTasks)
+          ..where((tbl) => tbl.remoteId.equals(remoteId)))
+        .write(ScheduledTasksCompanion(alarmScheduled: const Value(true)));
   }
 
   static Future<void> _showOverdueNotification(
@@ -414,17 +389,13 @@ class TaskAlarmService {
 
   static Future<void> _updateStatus(String remoteId, String status) async {
     final db = AppDatabase();
-    try {
-      await (db.update(db.scheduledTasks)
-            ..where((tbl) => tbl.remoteId.equals(remoteId)))
-          .write(ScheduledTasksCompanion(
-            status: Value(status),
-            alarmScheduled: const Value(false),
-            updatedAt: Value(DateTime.now()),
-          ));
-    } finally {
-      await db.close();
-    }
+    await (db.update(db.scheduledTasks)
+          ..where((tbl) => tbl.remoteId.equals(remoteId)))
+        .write(ScheduledTasksCompanion(
+          status: Value(status),
+          alarmScheduled: const Value(false),
+          updatedAt: Value(DateTime.now()),
+        ));
   }
 
   static Future<void> _enqueueAction(
@@ -433,18 +404,14 @@ class TaskAlarmService {
     int minutes = 5,
   }) async {
     final db = AppDatabase();
-    try {
-      await SyncRepository(db).enqueue(
-        type: type.value,
-        payloadJson: jsonEncode({
-          'task_id': remoteId,
-          if (type == SyncItemType.taskSnooze) 'minutes': minutes,
-          'timestamp': DateTime.now().toIso8601String(),
-        }),
-        clientId: const Uuid().v4(),
-      );
-    } finally {
-      await db.close();
-    }
+    await SyncRepository(db).enqueue(
+      type: type.value,
+      payloadJson: jsonEncode({
+        'task_id': remoteId,
+        if (type == SyncItemType.taskSnooze) 'minutes': minutes,
+        'timestamp': DateTime.now().toIso8601String(),
+      }),
+      clientId: const Uuid().v4(),
+    );
   }
 }

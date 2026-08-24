@@ -104,7 +104,6 @@ class AiService {
       }),
       clientId: const Uuid().v4(),
     );
-    await db.close();
   }
 
   String _buildPrompt(String text) {

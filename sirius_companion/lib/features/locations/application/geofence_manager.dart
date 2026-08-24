@@ -158,7 +158,6 @@ class GeofenceManager {
     final places = await (db.select(db.places)
           ..where((tbl) => tbl.isActive.equals(true)))
         .get();
-    await db.close();
 
     final geofences = places.map((p) => GeofenceRegion.fromPlace(p)).toList();
     _isolatePort?.send(StartTracking(geofences));
@@ -232,7 +231,6 @@ class GeofenceManager {
         createdAt: DateTime.now(),
       ),
     );
-    await db.close();
     await _syncGeofencesToIsolate();
   }
 
@@ -247,7 +245,6 @@ class GeofenceManager {
         isActive: Value(place.isActive),
       ),
     );
-    await db.close();
     await _syncGeofencesToIsolate();
   }
 
@@ -264,7 +261,6 @@ class GeofenceManager {
         ),
       );
     }
-    await db.close();
     await _notifyTriggerFromPlace(placeId, eventType);
   }
 
@@ -285,7 +281,6 @@ class GeofenceManager {
   Future<void> deletePlace(String placeId) async {
     final db = AppDatabase();
     await (db.delete(db.places)..where((tbl) => tbl.uuid.equals(placeId))).go();
-    await db.close();
     await _syncGeofencesToIsolate();
   }
 
@@ -294,7 +289,6 @@ class GeofenceManager {
     final places = await (db.select(db.places)
           ..where((tbl) => tbl.isActive.equals(true)))
         .get();
-    await db.close();
     return places.map((p) => GeofenceRegion.fromPlace(p)).toList();
   }
 

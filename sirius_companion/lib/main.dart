@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'core/storage/database/database.dart';
 import 'core/sync/sync_worker.dart';
+import 'core/network/api_client.dart';
 import 'features/pairing/presentation/pairing_screen.dart';
 import 'features/home/presentation/home_screen.dart';
 import 'core/device_identity.dart';
@@ -36,6 +37,8 @@ class _SiriusCompanionAppState extends ConsumerState<SiriusCompanionApp> {
 
   Future<void> _initApp() async {
     await _db.customSelect('SELECT 1').get();
+    // Point the API at the PC saved during QR pairing (if any).
+    await ApiClient.instance.restoreSavedBaseUrl();
     await initWorkManager();
 
     const androidSettings = AndroidInitializationSettings('@mipmap/ic_launcher');
@@ -101,7 +104,6 @@ class _SiriusCompanionAppState extends ConsumerState<SiriusCompanionApp> {
 
   @override
   void dispose() {
-    _db.close();
     super.dispose();
   }
 

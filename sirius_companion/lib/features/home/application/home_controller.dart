@@ -47,13 +47,11 @@ class HomeState {
 }
 
 class HomeController extends StateNotifier<HomeState> {
-  final AppDatabase _db;
   final SyncRepository _syncRepo;
   Timer? _refreshTimer;
 
-  HomeController() 
-    : _db = AppDatabase(),
-      _syncRepo = SyncRepository(AppDatabase()),
+  HomeController()
+    : _syncRepo = SyncRepository(AppDatabase()),
       super(HomeState()) {
     _init();
   }
@@ -63,17 +61,22 @@ class HomeController extends StateNotifier<HomeState> {
     _startPeriodicRefresh();
   }
 
+  /// Refreshes counters/timestamps only. Never touches [HomeState.isSyncing]:
+  /// that flag belongs exclusively to [triggerManualSync], since the worker
+  /// runs inline in this isolate now.
   Future<void> loadStatus() async {
-    final status = await SyncStatus.current();
-    final pendingItems = await _syncRepo.getPending(limit: 20);
-    state = state.copyWith(
-      isSyncing: status.isSyncing,
-      pendingCount: status.pendingCount,
-      failedCount: status.failedCount,
-      lastSync: status.lastSync,
-      lastError: status.lastError,
-      recentCommands: pendingItems.cast<sync_model.SyncItem>(),
-    );
+    try {
+      final status = await SyncStatus.current();
+      final pendingItems = await _syncRepo.getPending(limit: 20);
+      state = state.copyWith(
+        pendingCount: status.pendingCount,
+        failedCount: status.failedCount,
+        lastSync: status.lastSync,
+        recentCommands: pendingItems.cast<sync_model.SyncItem>(),
+      );
+    } catch (e) {
+      state = state.copyWith(lastError: e.toString());
+    }
   }
 
   void _startPeriodicRefresh() {
@@ -83,10 +86,21 @@ class HomeController extends StateNotifier<HomeState> {
     });
   }
 
+  /// Runs the sync inline (same isolate as the UI) so [HomeState.isSyncing]
+  /// reflects the real operation instead of a cross-isolate static that was
+  /// always false here. The spinner can never get stuck: [isSyncing] is
+  /// guaranteed to be reset in the finally block.
   Future<void> triggerManualSync() async {
-    state = state.copyWith(isSyncing: true);
-    await SyncWorker.triggerSync();
-    await loadStatus();
+    if (state.isSyncing) return;
+    state = state.copyWith(isSyncing: true, lastError: null);
+    try {
+      await SyncWorker.performSync();
+    } catch (e) {
+      state = state.copyWith(lastError: e.toString());
+    } finally {
+      await loadStatus();
+      state = state.copyWith(isSyncing: false);
+    }
   }
 
   Future<void> unpair() async {
@@ -96,7 +110,6 @@ class HomeController extends StateNotifier<HomeState> {
   @override
   void dispose() {
     _refreshTimer?.cancel();
-    _db.close();
     super.dispose();
   }
 }

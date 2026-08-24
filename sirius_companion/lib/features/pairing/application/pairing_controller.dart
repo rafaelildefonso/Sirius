@@ -70,6 +70,12 @@ class PairingController extends StateNotifier<PairingState> {
         return;
       }
 
+      // The QR carries the PC origin (scheme://host:port). Persist and apply
+      // it BEFORE pairing so every request targets the right server instead
+      // of the hardcoded default.
+      await DeviceIdentity.saveServerUrl(uri.origin);
+      _apiClient.setBaseUrl(uri.origin);
+
       state = state.copyWith(
         status: PairingStatus.connecting,
         message: 'Conectando...',

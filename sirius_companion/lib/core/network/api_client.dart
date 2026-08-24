@@ -3,6 +3,7 @@ import 'package:dio/dio.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:device_info_plus/device_info_plus.dart';
+import '../config/constants.dart';
 import '../device_identity.dart';
 
 class ApiClient {
@@ -10,7 +11,7 @@ class ApiClient {
   static ApiClient get instance => _instance ??= ApiClient._();
   
   late final Dio _dio;
-  String _baseUrl = 'http://192.168.1.3:8000';
+  String _baseUrl = AppConstants.defaultBaseUrl;
   String? _deviceToken;
   final Connectivity _connectivity = Connectivity();
   PackageInfo? _packageInfo;
@@ -117,6 +118,15 @@ class ApiClient {
   void setBaseUrl(String url) {
     _baseUrl = url;
     _dio.options.baseUrl = url;
+  }
+
+  /// Applies the PC URL persisted during QR pairing. Call once at app boot,
+  /// before any request goes out; keeps the hardcoded default when absent.
+  Future<void> restoreSavedBaseUrl() async {
+    final saved = await DeviceIdentity.getServerUrl();
+    if (saved != null && saved != _baseUrl) {
+      setBaseUrl(saved);
+    }
   }
   
   void setDeviceToken(String token) {

@@ -88,49 +88,56 @@ class SyncWorker {
   }
   
   /// Main sync logic
+  ///
+  /// Safe to call from any isolate: the WorkManager dispatcher calls it on
+  /// background cycles and [HomeController] calls it inline for manual syncs.
   static Future<void> performSync() async {
     if (_isSyncing) return;
     _isSyncing = true;
-    
-    // Create database and repositories
+
+    // AppDatabase is a singleton; creating it here never opens a new
+    // connection, so this can safely live outside the try/catch below.
     final db = AppDatabase();
     final syncRepo = SyncRepository(db);
     final placeRepo = PlaceRepository(db);
-    
+
     try {
+      // Ensure the persisted PC URL is applied — WorkManager runs this in a
+      // fresh isolate where the ApiClient singleton starts from the default.
+      await _apiClient.restoreSavedBaseUrl();
+
       // Check if paired
       final isPaired = await DeviceIdentity.isPaired();
       if (!isPaired) {
         print('[SyncWorker] Not paired, skipping sync');
         return;
       }
-      
+
       // Check server reachable
       final reachable = await _apiClient.checkServerReachable();
       if (!reachable) {
         print('[SyncWorker] Server not reachable');
         return;
       }
-      
+
       // 1. Push pending items
       await _pushPendingItems(syncRepo);
-      
+
       // 2. Pull updates from server
       await _pullFromServer(syncRepo, placeRepo);
-      
+
       // 3. Clean old synced items
       await syncRepo.clearSynced();
-      
+
       // 4. Persist last sync timestamp
       await _saveLastSync();
-      
+
       print('[SyncWorker] Sync completed successfully');
     } catch (e, stack) {
       print('[SyncWorker] Sync failed: $e');
       print(stack);
     } finally {
       _isSyncing = false;
-      await db.close();
     }
   }
   
@@ -245,18 +252,14 @@ class SyncStatus {
   static Future<SyncStatus> current() async {
     final db = AppDatabase();
     final syncRepo = SyncRepository(db);
-    try {
-      final pending = await syncRepo.getPendingCount();
-      final failed = await syncRepo.getFailedCount();
-      final lastSync = await SyncWorker._loadLastSync();
-      return SyncStatus(
-        isSyncing: SyncWorker._isSyncing,
-        pendingCount: pending,
-        failedCount: failed,
-        lastSync: lastSync,
-      );
-    } finally {
-      await db.close();
-    }
+    final pending = await syncRepo.getPendingCount();
+    final failed = await syncRepo.getFailedCount();
+    final lastSync = await SyncWorker._loadLastSync();
+    return SyncStatus(
+      isSyncing: SyncWorker._isSyncing,
+      pendingCount: pending,
+      failedCount: failed,
+      lastSync: lastSync,
+    );
   }
 }

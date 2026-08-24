@@ -86,8 +86,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             const SizedBox(height: 16),
             _RecentCommandsSection(commands: state.recentCommands),
             const SizedBox(height: 16),
-            if (state.lastSync != null)
-              _LastSyncInfo(lastSync: state.lastSync!, lastError: state.lastError),
+            if (state.lastSync != null || state.lastError != null)
+              _LastSyncInfo(lastSync: state.lastSync, lastError: state.lastError),
           ],
         ),
       ),
@@ -485,10 +485,10 @@ class _CommandTile extends StatelessWidget {
 }
 
 class _LastSyncInfo extends StatelessWidget {
-  final DateTime lastSync;
+  final DateTime? lastSync;
   final String? lastError;
 
-  const _LastSyncInfo({required this.lastSync, this.lastError});
+  const _LastSyncInfo({this.lastSync, this.lastError});
 
   @override
   Widget build(BuildContext context) {
@@ -514,7 +514,9 @@ child: Column(
           ),
           const SizedBox(height: 8),
           Text(
-            '${lastSync.day}/${lastSync.month}/${lastSync.year} ${lastSync.hour.toString().padLeft(2, '0')}:${lastSync.minute.toString().padLeft(2, '0')}',
+            lastSync != null
+                ? '${lastSync!.day}/${lastSync!.month}/${lastSync!.year} ${lastSync!.hour.toString().padLeft(2, '0')}:${lastSync!.minute.toString().padLeft(2, '0')}'
+                : 'Nunca sincronizado',
             style: const TextStyle(fontSize: 13, color: Color(0xFF9CA3AF)),
           ),
           lastError != null
@@ -716,7 +718,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               Navigator.pop(ctx);
               final db = AppDatabase();
               await db.deleteAll();
-              await db.close();
               ScaffoldMessenger.of(context).showSnackBar(
                 const SnackBar(content: Text('Dados locais limpos')),
               );

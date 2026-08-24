@@ -1,4 +1,5 @@
 import 'package:drift/drift.dart';
+import '../../config/constants.dart';
 import '../database/database.dart';
 import '../models/sync_item.dart' as model;
 
@@ -27,9 +28,14 @@ class SyncRepository {
     });
   }
 
-  Future<List<model.SyncItem>> getPending({int limit = 100}) async {
+  Future<List<model.SyncItem>> getPending({
+    int limit = 100,
+    int maxRetries = AppConstants.deadLetterRetries,
+  }) async {
     final driftItems = await (db.select(db.syncItems)
-          ..where((tbl) => tbl.syncedAt.isNull())
+          ..where((tbl) =>
+              tbl.syncedAt.isNull() &
+              tbl.retryCount.isSmallerOrEqualValue(maxRetries))
           ..orderBy([(tbl) => OrderingTerm.asc(tbl.createdAt)])
           ..limit(limit))
         .get();
@@ -72,17 +78,23 @@ class SyncRepository {
   }
 
   Future<int> getPendingCount() async {
-    return await (db.selectOnly(db.syncItems)
-          ..addColumns([db.syncItems.id.count()])
+    final countExp = db.syncItems.id.count();
+    final row = await (db.selectOnly(db.syncItems)
+          ..addColumns([countExp])
           ..where(db.syncItems.syncedAt.isNull()))
-        .getSingle() as int;
+        .getSingle();
+    return row.read(countExp) ?? 0;
   }
 
-  Future<int> getFailedCount({int maxRetries = 3}) async {
-    return await (db.selectOnly(db.syncItems)
-          ..addColumns([db.syncItems.id.count()])
-          ..where(db.syncItems.syncedAt.isNull() & db.syncItems.retryCount.isBiggerThanValue(maxRetries)))
-        .getSingle() as int;
+  Future<int> getFailedCount({int? maxRetries}) async {
+    final effectiveMax = maxRetries ?? AppConstants.deadLetterRetries;
+    final countExp = db.syncItems.id.count();
+    final row = await (db.selectOnly(db.syncItems)
+          ..addColumns([countExp])
+          ..where(db.syncItems.syncedAt.isNull() &
+              db.syncItems.retryCount.isBiggerThanValue(effectiveMax)))
+        .getSingle();
+    return row.read(countExp) ?? 0;
   }
 
   Future<void> clearSynced({Duration olderThan = const Duration(days: 7)}) async {
