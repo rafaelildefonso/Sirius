@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import type { PermissionItem } from "../hooks/useWebSocket";
+import { RotateCcw } from "./Icons";
 
 interface SettingsModalProps {
   onClose: () => void;
@@ -17,6 +18,7 @@ interface SettingsModalProps {
   googleAuthLoading?: boolean;
   onCheckGoogleStatus?: () => void;
   onRunGoogleAuth?: () => void;
+  obsidianStatus?: "idle" | "connecting" | "connected" | "error";
   send?: (msg: Record<string, unknown>) => void;
 }
 
@@ -46,6 +48,7 @@ function SettingsModal({
   googleAuthLoading,
   onCheckGoogleStatus,
   onRunGoogleAuth,
+  obsidianStatus,
   send,
 }: SettingsModalProps) {
   const [tab, setTab] = useState<SettingsTab>("general");
@@ -74,7 +77,7 @@ function SettingsModal({
 
   // Atividade
   type ActivityDay = { day: string; minutes: number };
-  type ActivityApp = { name: string; minutes: number };
+  type ActivityApp = { name: string; minutes: number; icon?: string };
   const [activityStats, setActivityStats] = useState<{ days: ActivityDay[]; avg_daily_minutes: number; top_apps: ActivityApp[] } | null>(null);
   const [activityLoading, setActivityLoading] = useState(false);
   const [activityError, setActivityError] = useState<string | null>(null);
@@ -318,6 +321,13 @@ function SettingsModal({
       fetchActivity();
     }
   }, [tab, fetchActivity]);
+
+  // Sync Obsidian connection status when the integrations tab opens
+  useEffect(() => {
+    if (tab === "integrations") {
+      send?.({ type: "get_obsidian_status" });
+    }
+  }, [tab, send]);
 
   const tabs: { id: SettingsTab; label: string }[] = [
     { id: "general", label: "General" },
@@ -695,6 +705,21 @@ function SettingsModal({
                     <span className="text-[9px] font-mono text-sirius-text-dim self-center">{pickerPath || "(raiz)"}</span>
                   )}
                 </div>
+                {obsidianStatus === "connecting" && (
+                  <p className="text-sirius-text-dim text-[10px] font-mono">Conectando ao Obsidian...</p>
+                )}
+                {obsidianStatus === "error" && (
+                  <div className="flex items-center gap-2">
+                    <p className="text-sirius-red text-[10px] font-mono">Erro ao conectar ao Obsidian</p>
+                    <button
+                      onClick={() => send?.({ type: "obsidian_retry_connect" })}
+                      title="Tentar novamente"
+                      className="text-sirius-text-dim hover:text-sirius-pri border border-sirius-border hover:border-sirius-pri rounded p-1 transition-colors"
+                    >
+                      <RotateCcw size="sm" />
+                    </button>
+                  </div>
+                )}
                 {pickerOpen && (
                   <div className="border border-sirius-border rounded p-2 max-h-32 overflow-y-auto space-y-0.5">
                     {pickerLoading ? (
@@ -793,10 +818,19 @@ function SettingsModal({
                     </p>
                     {activityStats.top_apps.length > 0 && (
                       <div className="space-y-0.5">
-                        <p className="text-[9px] font-mono text-sirius-text-dim uppercase tracking-wider">Top apps</p>
+                        <p className="text-[9px] font-mono text-sirius-text-dim uppercase tracking-wider">Mais usados na semana</p>
                         {activityStats.top_apps.map((app) => (
                           <div key={app.name} className="flex items-center justify-between">
-                            <span className="text-[10px] font-mono text-sirius-text">{app.name}</span>
+                            <div className="flex items-center gap-2 min-w-0">
+                              {app.icon ? (
+                                <img src={app.icon} alt={app.name} className="w-3.5 h-3.5 rounded-sm shrink-0" />
+                              ) : (
+                                <span className="w-3.5 h-3.5 rounded-sm bg-sirius-border text-sirius-text-dim text-[8px] font-mono flex items-center justify-center shrink-0">
+                                  {(app.name || "?").charAt(0).toUpperCase()}
+                                </span>
+                              )}
+                              <span className="text-[10px] font-mono text-sirius-text truncate">{app.name}</span>
+                            </div>
                             <span className="text-[9px] font-mono text-sirius-text-dim">{app.minutes}min</span>
                           </div>
                         ))}

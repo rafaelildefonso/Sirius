@@ -28,31 +28,143 @@ _HERE = Path(__file__).resolve().parent
 _server_ready = threading.Event()
 
 
-def reload_obsidian_data() -> None:
-    """Re-scan the configured Obsidian vault and index notes/tasks in the DB.
+# ── Obsidian vault connection (retry-aware for slow Google Drive mounts) ──────
 
-    Runs in a background thread (safe to call from the WS loop).
+_OBSIDIAN_ATTEMPTS = 3
+_OBSIDIAN_RETRY_DELAY = 180  # seconds between attempts (G: may take minutes to mount)
+
+_last_obsidian_status: dict[str, Any] = {"status": "idle"}
+
+
+def _set_obsidian_status(status: str, attempt: int | None = None, message: str = "") -> None:
+    """Cache and broadcast the current Obsidian connection status."""
+    entry: dict[str, Any] = {"status": status}
+    if attempt is not None:
+        entry["attempt"] = attempt
+    if message:
+        entry["message"] = message
+    _last_obsidian_status.clear()
+    _last_obsidian_status.update(entry)
+    manager.broadcast_sync(WsMessage("obsidian_status", entry))
+
+
+class ObsidianConnector:
+    """Owns the vault watcher and retries the connection when the drive is slow.
+
+    Google Drive virtual drives (e.g. G:) can take minutes to mount after login,
+    so connecting runs up to N attempts spaced apart instead of failing once and
+    giving up. The configured vault path is never cleared on failure — the UI
+    shows 'erro ao conectar ao obsidian' plus a retry button instead.
     """
-    def _run() -> None:
-        try:
-            from core.config_loader import get_config
-            vault = get_config("obsidian_vault_path", "")
-            if not vault:
-                print("[Obsidian] No vault path configured; skipping reload.")
-                return
-            vp = Path(vault)
-            if not vp.is_dir():
-                print(f"[Obsidian] Vault path not found, skipping reload: {vp}")
-                return
-            from actions.obsidian_notes import load_notes_from_vault
-            from actions.obsidian_tasks import load_tasks_from_vault
-            load_tasks_from_vault(vp, tasks_subpath=get_config("obsidian_tasks_subpath", "Tarefas"))
-            load_notes_from_vault(vp, notes_subpath=get_config("obsidian_notes_subpath", "Anotações"))
-            print("[Obsidian] Notes/tasks reloaded from vault.")
-        except Exception as e:
-            print(f"[Obsidian] Reload failed: {e}")
 
-    threading.Thread(target=_run, daemon=True).start()
+    def __init__(self) -> None:
+        self._watcher: Any = None
+        self._lock = threading.Lock()
+        self._generation = 0
+
+    def stop_watcher(self) -> None:
+        if self._watcher is not None:
+            try:
+                self._watcher.stop()
+            except Exception:
+                pass
+            self._watcher = None
+
+    def _try_connect(self) -> Path | None:
+        """Single attempt: check reachability and run the initial indexing."""
+        from core.config_loader import get_config
+        vault = get_config("obsidian_vault_path", "")
+        if not vault:
+            print("[Obsidian] No vault path configured; skipping connect.")
+            return None
+        vp = Path(vault)
+        if not vp.is_dir():
+            print(f"[Obsidian] Vault not reachable yet (drive may still be mounting): {vp}")
+            return None
+        from actions.obsidian_notes import load_notes_from_vault
+        from actions.obsidian_tasks import load_tasks_from_vault
+        load_tasks_from_vault(vp, tasks_subpath=get_config("obsidian_tasks_subpath", "Tarefas"))
+        load_notes_from_vault(vp, notes_subpath=get_config("obsidian_notes_subpath", "Anotações"))
+        return vp
+
+    def _start_watcher(self, vp: Path) -> None:
+        from actions.obsidian_notes import load_notes_from_vault
+        from actions.obsidian_tasks import load_tasks_from_vault
+        from actions.obsidian_watcher import ObsidianWatcher
+        from core.config_loader import get_config
+        tasks_subpath = get_config("obsidian_tasks_subpath", "Tarefas") or "Tarefas"
+        notes_subpath = get_config("obsidian_notes_subpath", "Anotações") or "Anotações"
+        self.stop_watcher()
+        watcher = ObsidianWatcher(vp, tasks_subpath=tasks_subpath, notes_subpath=notes_subpath)
+        watcher.start(
+            on_task_change=lambda fp: load_tasks_from_vault(vp, tasks_subpath=tasks_subpath),
+            on_note_change=lambda fp: load_notes_from_vault(vp, notes_subpath=notes_subpath),
+        )
+        self._watcher = watcher
+
+    def connect_with_retry(self, attempts: int = _OBSIDIAN_ATTEMPTS,
+                           delay_seconds: float = _OBSIDIAN_RETRY_DELAY) -> None:
+        """Run the connect/retry cycle in a daemon thread (safe to call from WS loop).
+
+        A new call cancels any previous running cycle (generation counter).
+        """
+        def _run() -> None:
+            from core.config_loader import get_config
+            if not get_config("obsidian_vault_path", ""):
+                print("[Obsidian] No vault path configured; skipping retry loop.")
+                return
+            with self._lock:
+                self._generation += 1
+                gen = self._generation
+                self.stop_watcher()
+
+            def _stale() -> bool:
+                with self._lock:
+                    return gen != self._generation
+
+            print(f"[Obsidian] Connecting to vault (up to {attempts} attempts, {delay_seconds:.0f}s apart)...")
+            for attempt in range(1, attempts + 1):
+                if _stale():
+                    return
+                _set_obsidian_status("connecting", attempt=attempt)
+                try:
+                    vp = self._try_connect()
+                except Exception as e:
+                    print(f"[Obsidian] Connect attempt {attempt}/{attempts} failed: {e}")
+                    vp = None
+                if vp is not None:
+                    try:
+                        self._start_watcher(vp)
+                    except Exception as e:
+                        print(f"[Obsidian] Watcher failed to start on {vp}: {e}")
+                        vp = None
+                if vp is not None:
+                    _set_obsidian_status("connected")
+                    print(f"[Obsidian] Vault connected on attempt {attempt}: {vp}")
+                    return
+                if attempt < attempts and not _stale():
+                    deadline = time.monotonic() + delay_seconds
+                    while time.monotonic() < deadline:
+                        if _stale():
+                            return
+                        time.sleep(1.0)
+            if _stale():
+                return
+            # All attempts failed — vault path stays untouched in config; UI shows
+            # the error plus a retry button.
+            _set_obsidian_status("error", message="erro ao conectar ao obsidian")
+            print("[Obsidian] Could not connect after all attempts; vault path kept in config.")
+
+        threading.Thread(target=_run, daemon=True, name="obsidian-connect").start()
+
+
+obsidian_connector = ObsidianConnector()
+
+
+def connect_obsidian_with_retry(attempts: int = _OBSIDIAN_ATTEMPTS,
+                                delay_seconds: float = _OBSIDIAN_RETRY_DELAY) -> None:
+    """Start (or restart) the background vault connect/retry cycle."""
+    obsidian_connector.connect_with_retry(attempts=attempts, delay_seconds=delay_seconds)
 
 
 def show_windows_notification(title: str, message: str) -> None:
@@ -420,6 +532,12 @@ async def _handler(ws: websockets.asyncio.server.ServerConnection) -> None:
             elif msg_type == "request_activity_data":  # noqa: F823
                 try:
                     stats = Repository().get_weekly_stats()
+                    top_apps = stats.get("top_apps") or []
+                    if top_apps:
+                        from core.app_icons import get_app_icons
+                        icons = get_app_icons([a.get("name", "") for a in top_apps])
+                        for a in top_apps:
+                            a["icon"] = icons.get((a.get("name") or "").strip().lower())
                     await ws.send(json.dumps({"type": "activity_data", "stats": stats}))
                 except Exception as e:
                     traceback.print_exc()
@@ -475,7 +593,7 @@ async def _handler(ws: websockets.asyncio.server.ServerConnection) -> None:
                 await ws.send(json.dumps({"type": "config_saved", "ok": True}))
                 # Re-index Obsidian vault if a path is configured now
                 if payload.get("obsidian_vault_path"):
-                    reload_obsidian_data()
+                    connect_obsidian_with_retry()
                 # Reload assistant with new config
                 try:
                     from main import request_restart
@@ -646,10 +764,18 @@ async def _handler(ws: websockets.asyncio.server.ServerConnection) -> None:
                     if sirius_subpath:
                         set_config("obsidian_sirius_subpath", sirius_subpath)
                     print(f"[WS] Obsidian vault path set to {vault_path}")
-                    reload_obsidian_data()
+                    connect_obsidian_with_retry()
                     await ws.send(json.dumps({"type": "obsidian_set_path_ok", "ok": True}))
                 else:
                     await ws.send(json.dumps({"type": "obsidian_set_path_ok", "ok": False, "error": "empty path"}))
+
+            elif msg_type == "obsidian_retry_connect":
+                # User pressed the retry button — restart the full attempt cycle.
+                connect_obsidian_with_retry()
+                await ws.send(json.dumps({**_last_obsidian_status, "type": "obsidian_status"}))
+
+            elif msg_type == "get_obsidian_status":
+                await ws.send(json.dumps({**_last_obsidian_status, "type": "obsidian_status"}))
 
             elif msg_type == "obsidian_set_retention":
                 days = data.get("days", "")

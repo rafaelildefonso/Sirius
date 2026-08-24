@@ -57,6 +57,7 @@ function App() {
     googleAuthLoading,
     checkGoogleStatus,
     runGoogleAuth,
+    obsidianStatus,
     cameraFrame,
     audioBins,
     suggestion,
@@ -484,6 +485,7 @@ function App() {
           googleAuthLoading={googleAuthLoading}
           onCheckGoogleStatus={checkGoogleStatus}
           onRunGoogleAuth={runGoogleAuth}
+          obsidianStatus={obsidianStatus}
           send={send}
         />
       )}

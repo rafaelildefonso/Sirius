@@ -39,7 +39,6 @@ from google.genai import types
 
 # -- UI backend: WebSocket server for the Tauri/React frontend ----------------
 import ws_server as _ws
-from actions.obsidian_watcher import ObsidianWatcher
 from ws_server import WsUI as SiriusUI
 
 _DASHBOARD: 'DashboardServer | None' = None  # noqa: F821 — imported lazily below
@@ -48,29 +47,14 @@ _ws.start()
 from core.activity_monitor import is_monitor_enabled, start_monitor
 
 start_monitor()
-from actions.obsidian_notes import load_notes_from_vault
-from actions.obsidian_tasks import load_tasks_from_vault
 from core.config_loader import get_all_config
 
 cfg = get_all_config()
 vault_path = cfg.get("obsidian_vault_path")
 if vault_path:
-    vault = Path(vault_path)
-    watcher = ObsidianWatcher(vault,
-                              tasks_subpath=cfg.get("obsidian_tasks_subpath", "Tarefas"),
-                              notes_subpath=cfg.get("obsidian_notes_subpath", "Anotações"))
-    watcher.start(
-        on_task_change=lambda fp: load_tasks_from_vault(vault,
-                                                      tasks_subpath=cfg.get("obsidian_tasks_subpath", "Tarefas")),
-        on_note_change=lambda fp: load_notes_from_vault(vault,
-                                                      notes_subpath=cfg.get("obsidian_notes_subpath", "Anotações")),
-    )
-    # Initial load
-    load_tasks_from_vault(vault,
-                          tasks_subpath=cfg.get("obsidian_tasks_subpath", "Tarefas"))
-    load_notes_from_vault(vault,
-                          notes_subpath=cfg.get("obsidian_notes_subpath", "Anotações"))
-    print(f"[Main] Obsidian integration initialized with vault at {vault}")
+    # Google Drive (G:) pode demorar minutos para montar; conecta em background
+    # com retry (3 tentativas, 3 min de intervalo) em vez de bloquear a inicialização.
+    _ws.connect_obsidian_with_retry()
 else:
     print("[Main] No obsidian vault path configured; skipping initialization.")
 
@@ -1371,14 +1355,37 @@ class SiriusLive:
         )
         self.ui.write_log("SYS: Briefing greeting enviado após dismiss.")
 
-        # Atividade: resumo semanal se monitoramento estiver ativo
-        if is_monitor_enabled():
+        # Espera o Gemini TERMINAR de falar o greeting antes do resumo de uso.
+        # send_client_content só envia o prompt; sem essa espera o TTS local
+        # disparava antes/por cima da voz do Gemini.
+        if self._turn_done_event:
+            try:
+                await asyncio.wait_for(self._turn_done_event.wait(), timeout=90)
+            except asyncio.TimeoutError:
+                self.ui.write_log("SYS: Timeout aguardando fim do greeting.")
+
+        # Atividade: resumo semanal falado pela própria voz do Gemini
+        if is_monitor_enabled() and self.session:
             from persistence.repository import Repository
             repo = Repository()
             stats = repo.get_weekly_stats()
-            summary = (f"Na última semana você ficou {stats['avg_daily_minutes']:.0f} min por dia em média. "
-                       f"Os apps mais usados foram: {', '.join(a['name'] for a in stats['top_apps'])}.")
-            self._tts_queue.put(summary)
+            top_apps = [a.get("name", "") for a in (stats.get("top_apps") or []) if a.get("name")]
+            avg = float(stats.get("avg_daily_minutes") or 0)
+            if avg > 0 and top_apps and is_monitor_enabled():
+                usage_text = (
+                    "Sem usar nenhuma ferramenta, comente brevemente e de forma natural "
+                    f"o uso de apps do usuário na semana: média de {avg:.0f} minutos por dia; "
+                    f"apps mais usados: {', '.join(top_apps)}."
+                )
+                if self._turn_done_event:
+                    self._turn_done_event.clear()
+                try:
+                    await self.session.send_client_content(
+                        turns={"parts": [{"text": usage_text}]},
+                        turn_complete=True,
+                    )
+                except Exception as e:
+                    self.ui.write_log(f"ERR: resumo de uso via Gemini — {e}")
 
     async def _run_proactive_mode(self) -> None:
         while True:

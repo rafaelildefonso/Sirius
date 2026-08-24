@@ -81,6 +81,8 @@ export function useWebSocket() {
   const [googleAuthMsg, setGoogleAuthMsg] = useState<string | null>(null);
   const [googleAuthLoading, setGoogleAuthLoading] = useState(false);
 
+  const [obsidianStatus, setObsidianStatus] = useState<"idle" | "connecting" | "connected" | "error">("idle");
+
   const [cameraFrame, setCameraFrame] = useState<string | null>(null);
   const [audioBins, setAudioBins] = useState<{ bins: number[]; source: string } | null>(null);
   const [suggestion, setSuggestion] = useState<string | null>(null);
@@ -346,6 +348,13 @@ export function useWebSocket() {
           setPermissionsList(list);
           break;
         }
+        case "obsidian_status": {
+          const s = String(data.status ?? "idle");
+          if (s === "connecting" || s === "connected" || s === "error" || s === "idle") {
+            setObsidianStatus(s);
+          }
+          break;
+        }
         case "obsidian_list_dirs_ok":
         case "obsidian_list_drives_ok":
         case "obsidian_list_children_ok":
@@ -503,6 +512,7 @@ export function useWebSocket() {
     googleAuthLoading,
     checkGoogleStatus,
     runGoogleAuth,
+    obsidianStatus,
     cameraFrame,
     audioBins,
     suggestion,

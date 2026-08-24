@@ -37,6 +37,8 @@ class ActivityMonitor:
     def disable(self) -> None:
         self._enabled = False
         self._stop_event.set()
+        # persist usage of apps still open so no time is lost on shutdown/toggle-off
+        self._flush_active()
         # optionally record shutdown event
         try:
             boot = psutil.boot_time() * 1000
@@ -44,12 +46,27 @@ class ActivityMonitor:
         except Exception:
             pass
 
+    def _flush_active(self) -> None:
+        now = datetime.now().timestamp() * 1000  # ms
+        for pid, (app_name, title, start_ts) in list(self._active.items()):
+            try:
+                duration = max(0, now - start_ts)
+                self._repo.add_activity("app_end", app_name, title, now, duration)
+            except Exception:
+                pass
+        self._active.clear()
+
     # ------------------------------------------------------------------
     # Main loop
     # ------------------------------------------------------------------
     def _get_blocked_processes(self) -> list[str]:
-        cfg = get_all_config()
-        return cfg.get("activity_monitor", {}).get("blocked_processes", [])
+        # activity_monitor pode ser dict legado {"enabled":..., "blocked_processes":[...]}
+        # ou a string "true"/"false" escrita pelo ws_server — nunca quebrar a thread aqui.
+        cfg = get_all_config().get("activity_monitor")
+        if isinstance(cfg, dict):
+            blocked = cfg.get("blocked_processes", [])
+            return blocked if isinstance(blocked, list) else []
+        return []
 
     def _is_blocked(self, name: str) -> bool:
         for pattern in self._get_blocked_processes():
@@ -92,44 +109,49 @@ class ActivityMonitor:
             current_pids = set(pid_titles.keys()) | set(self._active.keys())
 
             for pid in list(current_pids):
-                title = pid_titles.get(pid, "").strip()
-                app_name = psutil.Process(pid).name() if pid else "unknown"
+                try:
+                    title = pid_titles.get(pid, "").strip()
+                    # psutil.Process pode levantar NoSuchProcess para pid já morto
+                    app_name = psutil.Process(pid).name() if pid else "unknown"
 
-                # skip blocked processes
-                if self._is_blocked(app_name):
-                    # still track but do not record start/end events? We'll just ignore.
-                    # Remove from active if it was there to avoid stale entries.
-                    self._active.pop(pid, None)
+                    # skip blocked processes
+                    if self._is_blocked(app_name):
+                        self._active.pop(pid, None)
+                        continue
+
+                    if pid not in self._active:
+                        # new process start
+                        self._active[pid] = (app_name, title, now)
+                        self._repo.add_activity(
+                            "app_start",
+                            app_name,
+                            title,
+                            now,
+                        )
+                    else:
+                        # update window title if changed
+                        old_name, old_title, start_ts = self._active[pid]
+                        if title != old_title:
+                            self._active[pid] = (app_name, title, start_ts)
+                except Exception:
                     continue
-
-                if pid not in self._active:
-                    # new process start
-                    self._active[pid] = (app_name, title, now)
-                    self._repo.add_activity(
-                        "app_start",
-                        app_name,
-                        title,
-                        now,
-                    )
-                else:
-                    # update window title if changed
-                    old_name, old_title, start_ts = self._active[pid]
-                    if title != old_title:
-                        # record end of old title and start of new? For simplicity just update title.
-                        self._active[pid] = (app_name, title, start_ts)
 
             # --- processes that disappeared ---
             vanished = set(self._active.keys()) - set(pid_titles.keys())
-            for pid in vanished:
-                app_name, title, start_ts = self._active.pop(pid)
-                duration = now - start_ts
-                self._repo.add_activity(
-                    "app_end",
-                    app_name,
-                    title,
-                    now,
-                    duration,
-                )
+            for pid in list(vanished):
+                try:
+                    app_name, title, start_ts = self._active.pop(pid)
+                    duration = max(0, now - start_ts)
+                    self._repo.add_activity(
+                        "app_end",
+                        app_name,
+                        title,
+                        now,
+                        duration,
+                    )
+                except Exception:
+                    self._active.pop(pid, None)
+                    continue
 
     def start(self) -> threading.Thread:
         """Start the monitoring thread. Returns the thread object."""
