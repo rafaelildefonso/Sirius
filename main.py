@@ -1012,6 +1012,8 @@ class SiriusLive:
         import queue as _queue
         self.ui             = ui
         self.session        = None
+        self._resumption_handle = None     # last Live API resumption handle (survives rotations)
+        self._reconnect_attempts = 0       # consecutive failed connects (drives backoff)
         self.audio_in_queue = None
         self.out_queue      = None
         self._loop          = None
@@ -1282,6 +1284,12 @@ class SiriusLive:
                     )
                 )
             ),
+            session_resumption=types.SessionResumptionConfig(
+                handle=self._resumption_handle
+            ),
+            context_window_compression=types.ContextWindowCompressionConfig(
+                sliding_window=types.SlidingWindow()
+            ),
         )
 
     def _on_briefing_dismiss(self) -> None:
@@ -1298,6 +1306,9 @@ class SiriusLive:
           4. Send greeting via Gemini Live
         """
         if not self.session:
+            return
+        if not (self.ui.has_client and getattr(self.ui, '_window_visible', False)):
+            print("[SIRIUS] Briefing skipped — no visible UI")
             return
         memory = load_memory()
         identity = memory.get("identity", {})
@@ -1423,7 +1434,7 @@ class SiriusLive:
                 import google.generativeai as genai
                 genai.configure(api_key=_get_api_key())
                 m = genai.GenerativeModel("gemini-2.5-flash")
-                result = m.generate_content(prompt).text.strip()
+                result = (await asyncio.to_thread(m.generate_content, prompt)).text.strip()
                 if result:
                     print(f"[Proactive] Gemini: {result[:80]}...")
                     self.ui.write_log(f"SYS: {result[:80]}...")
@@ -1838,6 +1849,16 @@ class SiriusLive:
             while True:
                 async for response in self.session.receive():
 
+                    if response.session_resumption_update:
+                        upd = response.session_resumption_update
+                        if upd.resumable and upd.new_handle:
+                            if upd.new_handle != self._resumption_handle:
+                                self._resumption_handle = upd.new_handle
+                                print("[SIRIUS] Resumption handle updated")
+
+                    if response.go_away:
+                        print("[SIRIUS] go_away received — server will rotate session soon")
+
                     if response.data:
                         if self._interrupted:
                             continue  # discard: interrupted
@@ -2117,9 +2138,9 @@ class SiriusLive:
             self._dashboard_ready.set()
 
         while True:
+            session_started = _time.monotonic()
             try:
                 print("[SIRIUS] Connecting...")
-                self.ui.set_state("THINKING")
                 self._gemini_turn.clear()
                 self._tts_busy.clear()
                 config = self._build_config()
@@ -2133,9 +2154,11 @@ class SiriusLive:
                     self.audio_in_queue = asyncio.Queue()
                     self.out_queue      = asyncio.Queue(maxsize=10)
                     self._turn_done_event = asyncio.Event()
+                    self._reconnect_attempts = 0
 
                     print("[SIRIUS] Connected.")
-                    self.ui.write_log("SYS: SIRIUS online.")
+                    if self._first_run:
+                        self.ui.write_log("SYS: SIRIUS online.")
 
                     self._allow_mic = asyncio.Event()
 
@@ -2154,28 +2177,32 @@ class SiriusLive:
 
                     if self._first_run:
                         self._first_run = False
-                        if hasattr(self.ui, 'set_startup_progress'):
-                            self.ui.set_startup_progress(5, 5, "SIRIUS pronto!")
-                        if hasattr(self.ui, 'set_startup_status'):
-                            self.ui.set_startup_status("* SIRIUS online")
                         if hasattr(self.ui, 'hide_startup_panel'):
                             self.ui.hide_startup_panel()
 
-                        # Startup chime
-                        from core.sounds import play_init_sound
-                        tg.create_task(asyncio.to_thread(play_init_sound))
+                        # Greeting/chime/briefing only when a VISIBLE UI is attached.
+                        # Headless/hidden starts (autostart, background) stay silent and
+                        # never fire the greeting later in this process.
+                        if self.ui.has_client and getattr(self.ui, '_window_visible', False):
+                            if hasattr(self.ui, 'set_startup_progress'):
+                                self.ui.set_startup_progress(5, 5, "SIRIUS pronto!")
+                            if hasattr(self.ui, 'set_startup_status'):
+                                self.ui.set_startup_status("* SIRIUS online")
 
-                        # Morning briefing — fires once per process
-                        if not self._briefing_sent:
-                            from memory.config_manager import get_speak_briefing_enabled
-                            if get_speak_briefing_enabled():
-                                self._briefing_sent = True
-                                tg.create_task(self._send_startup_briefing())
+                            from core.sounds import play_init_sound
+                            tg.create_task(asyncio.to_thread(play_init_sound))
 
-                        if self.ui.has_client:
+                            if not self._briefing_sent:
+                                from memory.config_manager import get_speak_briefing_enabled
+                                if get_speak_briefing_enabled():
+                                    self._briefing_sent = True
+                                    tg.create_task(self._send_startup_briefing())
+
                             self.ui.write_log("SYS: SIRIUS online. Pronto para ouvir.")
                         else:
-                            print("[SIRIUS] No client — greeting skipped")
+                            self._briefing_sent = True
+                            print("[SIRIUS] No visible UI — greeting/chime/briefing suppressed")
+
                         self._allow_mic.set()
                         self.ui.set_state("LISTENING")
                     else:
@@ -2193,13 +2220,26 @@ class SiriusLive:
                 print(f"[SIRIUS] Session interrupted (ExceptionGroup): {e}")
                 traceback.print_exc()
             self.set_speaking(False)
-            self.ui.set_state("THINKING")
-            self.ui.write_log("SYS: Reconectando...")
+            self.session = None
+
             if self._dashboard:
                 self._dashboard._assistant_running = False
                 await self._dashboard.broadcast({"type": "status", "state": "sleeping"})
-            print("[SIRIUS] Reconnecting in 3s...")
-            await asyncio.sleep(3)
+
+            lasted = _time.monotonic() - session_started
+            if lasted >= 60:
+                # Routine server-side rotation (~10 min connection limit).
+                # Resumption handle keeps context; invisible to the user.
+                self._reconnect_attempts = 0
+                print("[SIRIUS] Session rotated — reconnecting silently")
+                await asyncio.sleep(1)
+            else:
+                self._reconnect_attempts += 1
+                delay = min(60, 3 * (2 ** (self._reconnect_attempts - 1)))
+                self.ui.set_state("THINKING")
+                self.ui.write_log("SYS: Reconectando...")
+                print(f"[SIRIUS] Reconnecting in {delay}s...")
+                await asyncio.sleep(delay)
 
 # ---------------------------------------------------------------------------
 # Convert Gemini-style declarations to OpenAI/Ollama format
