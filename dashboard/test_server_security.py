@@ -4,7 +4,6 @@ Runs against an isolated SIRIUS_DATA_DIR so it never touches the real config.
 Run: python dashboard/test_server_security.py
 """
 import base64
-import hashlib
 import json
 import os
 import sys
@@ -18,7 +17,7 @@ os.environ.setdefault("SIRIUS_DATA_DIR", tempfile.mkdtemp(prefix="sirius-test-")
 
 from fastapi.testclient import TestClient  # noqa: E402
 
-from dashboard.server import DashboardServer, _derive_key, _encrypt_cbc, _decrypt_cbc  # noqa: E402
+from dashboard.server import DashboardServer, _decrypt_cbc, _derive_key, _encrypt_cbc  # noqa: E402
 
 
 def main() -> int:
@@ -66,7 +65,6 @@ def main() -> int:
     man_info = ds._trusted_devices["dev-manual"]
     check("manual device has session_key+token", bool(man_info.get("session_key")) and bool(man_info.get("token")))
     man_token = man_info["token"]
-    man_sk = man_info["session_key"]
 
     # -- 3. pair with VALID key -> auto-approved ------------------------------
     key = ds.new_key(expiry_secs=120)
