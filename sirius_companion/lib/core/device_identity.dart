@@ -20,6 +20,7 @@ class DeviceIdentity {
   static const _keyPairedDeviceId = 'sirius_paired_device_id';
   static const _keyPairedAt = 'sirius_paired_at';
   static const _keyServerUrl = 'sirius_server_url';
+  static const _keySessionKey = 'sirius_session_key';
   
   /// Get or create the unique device ID (persists in Keystore/Keychain)
   static Future<String> getOrCreateId() async {
@@ -60,10 +61,20 @@ class DeviceIdentity {
   static Future<void> savePairing({
     required String deviceToken,
     required String serverDeviceId,
+    String? sessionKey,
   }) async {
     await _storage.write(key: _keyPairedDeviceToken, value: deviceToken);
     await _storage.write(key: _keyPairedDeviceId, value: serverDeviceId);
+    if (sessionKey != null && sessionKey.isNotEmpty) {
+      await _storage.write(key: _keySessionKey, value: sessionKey);
+    }
     await _storage.write(key: _keyPairedAt, value: DateTime.now().toIso8601String());
+  }
+
+  /// Get the AES session key issued at pairing time (null on legacy pairings).
+  static Future<String?> getSessionKey() async {
+    final sk = await _storage.read(key: _keySessionKey);
+    return (sk != null && sk.isNotEmpty) ? sk : null;
   }
 
   /// Persist the PC base URL (origin) extracted from the pairing QR code.
@@ -114,7 +125,8 @@ class DeviceIdentity {
     await _storage.delete(key: _keyPairedDeviceId);
     await _storage.delete(key: _keyPairedAt);
     await _storage.delete(key: _keyServerUrl);
-  }  
+    await _storage.delete(key: _keySessionKey);
+  }
   /// Clear everything (factory reset)
   static Future<void> clearAll() async {
     await _storage.deleteAll();

@@ -1,10 +1,11 @@
 import 'dart:async';
 import 'package:workmanager/workmanager.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import '../../core/network/api_client.dart';
+import '../../core/config/constants.dart';
 import '../../core/storage/repositories/sync_repository.dart';
 import '../../core/storage/repositories/place_repository.dart';
-import '../../core/storage/models/sync_item.dart' as model;
 import '../../core/storage/models/place.dart' as place_model;
 import '../../core/device_identity.dart';
 import '../../core/storage/database/database.dart';
@@ -190,7 +191,7 @@ class SyncWorker {
     
     // Process new commands from PC
     for (final cmdJson in pullResult.commands) {
-      await _processIncomingCommand(syncRepo, cmdJson);
+      await _processIncomingCommand(cmdJson);
     }
     
     // Process new/updated places
@@ -215,20 +216,31 @@ class SyncWorker {
     // }
   }
   
-  static Future<void> _processIncomingCommand(SyncRepository syncRepo, Map<String, dynamic> cmdJson) async {
-    // Convert to local command format and process
+  static Future<void> _processIncomingCommand(Map<String, dynamic> cmdJson) async {
+    // Commands pulled from the PC (e.g. "enviar pro meu celular") are shown
+    // as a local notification. They must NOT be re-enqueued into the sync
+    // queue — that would push them straight back to the PC next cycle.
     final text = cmdJson['text'] as String?;
-    if (text != null && text.isNotEmpty) {
-      // Create a local command item for processing
-      final item = model.SyncItem.createCommand(
-        text: text,
-        timestamp: DateTime.parse(cmdJson['timestamp'] as String? ?? DateTime.now().toIso8601String()),
+    if (text == null || text.isEmpty) return;
+
+    try {
+      final notifications = FlutterLocalNotificationsPlugin();
+      const androidDetails = AndroidNotificationDetails(
+        AppConstants.pcMessageChannelId,
+        AppConstants.pcMessageChannelName,
+        channelDescription: 'Mensagens enviadas pelo SIRIUS no PC',
+        importance: Importance.high,
+        priority: Priority.high,
       );
-      await syncRepo.enqueue(
-        type: item.type,
-        payloadJson: item.payloadJson,
-        clientId: item.clientId,
+      const details = NotificationDetails(android: androidDetails);
+      await notifications.show(
+        id: DateTime.now().millisecondsSinceEpoch ~/ 1000 % 2147483647,
+        title: 'SIRIUS',
+        body: text,
+        notificationDetails: details,
       );
+    } catch (e) {
+      print('[SyncWorker] Failed to show PC command notification: $e');
     }
   }
 }

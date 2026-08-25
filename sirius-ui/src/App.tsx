@@ -8,6 +8,7 @@ import LogPanel from "./components/LogPanel";
 import SettingsModal from "./components/SettingsModal";
 import StartupPanel from "./components/StartupPanel";
 import PermissionDialog from "./components/PermissionDialog";
+import PairRequestDialog from "./components/PairRequestDialog";
 import FileDropZone from "./components/FileDropZone";
 import RemoteKeyOverlay from "./components/RemoteKeyOverlay";
 import RadarPanel from "./components/RadarPanel";
@@ -32,6 +33,8 @@ function App() {
     setMuted,
     permissionRequest,
     sendPermissionResponse,
+    pairRequest,
+    sendPairResponse,
     startupInfo,
     notification,
     clearNotification,
@@ -507,6 +510,16 @@ function App() {
           label={permissionRequest.label}
           toolName={permissionRequest.tool_name}
           onResponse={sendPermissionResponse}
+        />
+      )}
+
+      {pairRequest && (
+        <PairRequestDialog
+          deviceId={pairRequest.device_id}
+          name={pairRequest.name}
+          model={pairRequest.model}
+          platform={pairRequest.platform}
+          onResponse={(approve) => sendPairResponse(pairRequest.device_id, approve)}
         />
       )}
 

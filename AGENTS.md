@@ -48,6 +48,7 @@ The project uses a **dual-process architecture**: a Tauri v2 + React frontend (`
 - **Started in:** daemon thread in `main()` (early dashboard thread)
 - **Key endpoints:** `/` (app.html), `/login` (PIN entry), `/auto-login?key=XXX` (QR code target), `/api/command`, `/ws` (WebSocket), `/ws/phone-audio`
 - **Known issue:** PyInstaller onefile mode can give `PermissionError` reading `login.html`/`app.html` from temp. The `_read()` function has retry logic + `sys._MEIPASS` fallback.
+- **Celular ↔ PC:** veja **[docs/SYNC.md](docs/SYNC.md)** — arquitetura completa da sincronização (pareamento seguro, AES do sync, timings do app Flutter, push PC→celular).
 
 ## 6. Build System
 

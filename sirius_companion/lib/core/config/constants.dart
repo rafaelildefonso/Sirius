@@ -38,6 +38,9 @@ class AppConstants {
   /// existing channel, so switching to silent required a fresh channel id.
   static const String taskAlarmChannelId = 'task_alarm_channel_v2';
   static const String taskAlarmChannelName = 'Lembretes de Tarefas';
+  /// Messages pushed by SIRIUS from the PC ("enviar pro meu celular").
+  static const String pcMessageChannelId = 'sirius_pc_channel';
+  static const String pcMessageChannelName = 'Mensagens do SIRIUS';
   
   // Gemma
   static const String gemmaModelFileName = 'Gemma3-1B-IT_multi-prefill-seq_q4_block128_ekv1280.task';
@@ -60,7 +63,6 @@ class AppConstants {
 
 enum SyncItemType {
   command('command'),
-  locationLog('location_log'),
   placeConfirmation('place_confirmation'),
   gemmaFallback('gemma_fallback'),
   quickTask('quick_task'),

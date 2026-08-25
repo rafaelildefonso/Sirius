@@ -64,33 +64,6 @@ class SyncItem {
     );
   }
 
-  static SyncItem createLocationLog({
-    required double latitude,
-    required double longitude,
-    required double accuracy,
-    required DateTime timestamp,
-    String? placeId,
-    String? placeName,
-    required GeofenceEventType eventType,
-  }) {
-    final clientId = Uuid().v4();
-    return SyncItem(
-      id: 0,
-      type: SyncItemType.locationLog.value,
-      payloadJson: jsonEncode({
-        'latitude': latitude,
-        'longitude': longitude,
-        'accuracy': accuracy,
-        'timestamp': timestamp.toIso8601String(),
-        'place_id': placeId,
-        'place_name': placeName,
-        'event_type': eventType.value,
-      }),
-      createdAt: timestamp,
-      clientId: clientId,
-    );
-  }
-
   static SyncItem createPlaceConfirmation({
     required String placeId,
     required double latitude,

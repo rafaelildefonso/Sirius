@@ -67,6 +67,12 @@ export function useWebSocket() {
     qr_data_url?: string;
   } | null>(null);
   const [remoteKeyError, setRemoteKeyError] = useState<string | null>(null);
+  const [pairRequest, setPairRequest] = useState<{
+    device_id: string;
+    name: string;
+    model: string;
+    platform: string;
+  } | null>(null);
   const [config, setConfig] = useState<Record<string, string> | null>(null);
 
   const [onboardingNeeded, setOnboardingNeeded] = useState(false);
@@ -315,6 +321,15 @@ export function useWebSocket() {
           setRemoteKeyData(null);
           break;
         }
+        case "pair_request": {
+          setPairRequest({
+            device_id: String(data.device_id ?? ""),
+            name: String(data.name ?? "Dispositivo"),
+            model: String(data.model ?? ""),
+            platform: String(data.platform ?? ""),
+          });
+          break;
+        }
         case "config": {
           setConfig(data as unknown as Record<string, string>);
           if (configResolveRef.current) {
@@ -492,6 +507,14 @@ export function useWebSocket() {
     remoteKeyData,
     remoteKeyError,
     clearRemoteKeyError: () => setRemoteKeyError(null),
+    pairRequest,
+    sendPairResponse: useCallback(
+      (deviceId: string, approve: boolean) => {
+        send({ type: "pair_approve", device_id: deviceId, approve });
+        setPairRequest(null);
+      },
+      [send]
+    ),
     sendCommand,
     send,
     onCommandRef,

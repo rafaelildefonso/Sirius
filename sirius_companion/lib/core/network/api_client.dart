@@ -4,6 +4,7 @@ import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 import '../config/constants.dart';
+import '../crypto/aes_cipher.dart';
 import '../device_identity.dart';
 
 class ApiClient {
@@ -178,15 +179,19 @@ class ApiClient {
     }
   }
   
-  /// Pair with Sirius PC
+  /// Pair with Sirius PC.
+  ///
+  /// [pairKey] is the one-time code from the PC's QR code — when valid, the
+  /// server auto-approves. Without it the device goes to pending approval
+  /// (HTTP 409) until someone approves on the PC.
   Future<PairingResult> pairDevice({
     required String deviceName,
-    String? qrCodeData,
+    String? pairKey,
   }) async {
     final deviceId = await DeviceIdentity.getOrCreateId();
     final platform = _androidInfo?.model ?? 'Android';
     final androidVersion = _androidInfo?.version.release ?? 'Unknown';
-    
+
     final response = await _dio.post(
       '/api/device/pair',
       data: {
@@ -196,16 +201,19 @@ class ApiClient {
         'platform_version': androidVersion,
         'app_version': _packageInfo?.version ?? '1.0.0',
         'model': platform,
+        if (pairKey != null && pairKey.isNotEmpty) 'pair_key': pairKey,
       },
     );
-    
+
     if (response.statusCode == 200 && response.data['ok'] == true) {
       if (response.data['paired'] == true) {
         final token = response.data['device_token'] as String?;
+        final sessionKey = response.data['session_key'] as String?;
         if (token != null) {
           await DeviceIdentity.savePairing(
             deviceToken: token,
             serverDeviceId: deviceId,
+            sessionKey: sessionKey,
           );
           _deviceToken = token;
         }
@@ -214,31 +222,30 @@ class ApiClient {
         return PairingResult.pendingApproval(message: response.data['message'] as String?);
       }
     } else if (response.statusCode == 409) {
-      return PairingResult.pendingApproval(message: response.data['message'] as String?);
+      return PairingResult.pendingApproval(
+        message: response.data['message'] as String?,
+        nonce: response.data['nonce'] as String?,
+      );
+    } else if (response.statusCode == 401) {
+      return PairingResult.error(
+          message: response.data['error'] as String? ?? 'Código inválido ou expirado');
     }
-    
+
     return PairingResult.error(message: response.data['error'] as String? ?? 'Pairing failed');
   }
   
-  /// Pair using a code from QR
-  Future<PairingResult> pairWithCode(String code) async {
-    final deviceName = await DeviceIdentity.getDeviceName();
-    
-    // Try auto-login with the key
-    final autoLoginResponse = await _dio.get('/auto-login', queryParameters: {'key': code});
-    
-    if (autoLoginResponse.statusCode == 200) {
-      // Now call the pair endpoint
-      return await pairDevice(deviceName: deviceName);
-    }
-    
-    return PairingResult.error(message: 'Invalid or expired code');
-  }
-  
-  /// Check pairing status (polling)
-  Future<PairingStatus> checkPairingStatus() async {
+  /// Check pairing status (polling while pending approval).
+  /// [nonce] proves this device originated the pair request.
+  Future<PairingStatus> checkPairingStatus({String? nonce}) async {
     try {
-      final response = await _dio.get('/api/device/pair/status');
+      final deviceId = await DeviceIdentity.getOrCreateId();
+      final response = await _dio.get(
+        '/api/device/pair/status',
+        queryParameters: {
+          'device_id': deviceId,
+          if (nonce != null && nonce.isNotEmpty) 'nonce': nonce,
+        },
+      );
       if (response.statusCode == 200) {
         final status = response.data['status'] as String?;
         switch (status) {
@@ -247,7 +254,8 @@ class ApiClient {
             if (token != null) {
               await DeviceIdentity.savePairing(
                 deviceToken: token,
-                serverDeviceId: await DeviceIdentity.getOrCreateId(),
+                serverDeviceId: deviceId,
+                sessionKey: response.data['session_key'] as String?,
               );
               _deviceToken = token;
             }
@@ -288,25 +296,41 @@ class ApiClient {
     return PingResult(success: false, error: 'Unexpected response');
   }
   
-  /// Sync batch of items to server
+  /// Sync batch of items to server.
+  ///
+  /// When a session key was issued at pairing time, every item payload is
+  /// AES-256-CBC encrypted (`"enc": true`, base64 IV||ciphertext).
   Future<SyncResult> syncBatch(List<SyncBatchItem> items) async {
     if (items.isEmpty) return SyncResult.success(processed: 0);
-    
+
     final deviceId = await DeviceIdentity.getOrCreateId();
+    final cipher = await _cipher();
+
     final payload = {
       'device_id': deviceId,
-      'items': items.map((e) => e.toJson()).toList(),
+      'items': items.map((item) {
+        final json = item.toJson();
+        if (cipher != null) {
+          return {
+            'client_id': json['client_id'],
+            'type': json['type'],
+            'payload': cipher.encryptJson(json['payload'] as Map<String, dynamic>),
+            'enc': true,
+          };
+        }
+        return json;
+      }).toList(),
     };
-    
+
     try {
       final response = await _dio.post('/api/sync/batch', data: payload);
-      
+
       if (response.statusCode == 200 && response.data['ok'] == true) {
         final processed = response.data['processed'] as int? ?? 0;
         final results = (response.data['results'] as List?)
             ?.map((r) => SyncItemResult.fromJson(r as Map<String, dynamic>))
             .toList() ?? [];
-        
+
         return SyncResult.success(processed: processed, results: results);
       }
     } catch (e) {
@@ -314,24 +338,61 @@ class ApiClient {
     }
     return SyncResult.error(error: 'Unexpected response');
   }
-  
-  /// Pull new commands/tasks from server
+
+  /// Pull new commands/tasks from server.
+  ///
+  /// Items arrive encrypted when the device has a session key; they are
+  /// transparently decrypted here so callers always see plain maps.
   Future<PullResult> pullUpdates() async {
     try {
       final response = await _dio.get('/api/device/sync/pull');
-      
+
       if (response.statusCode == 200 && response.data['ok'] == true) {
+        final encrypted = response.data['enc'] == true;
+        final cipher = encrypted ? await _cipher() : null;
+
+        List<Map<String, dynamic>> decodeList(dynamic list) {
+          return (list as List?)
+                  ?.map((entry) {
+                    final map = entry as Map<String, dynamic>;
+                    if (encrypted && map['enc'] == true && cipher != null) {
+                      return cipher.decryptJson(map['payload'] as String);
+                    }
+                    return Map<String, dynamic>.from(map);
+                  })
+                  .whereType<Map<String, dynamic>>()
+                  .toList() ??
+              [];
+        }
+
         return PullResult(
           success: true,
-          commands: (response.data['commands'] as List?)?.map((c) => c as Map<String, dynamic>).toList() ?? [],
-          places: (response.data['places'] as List?)?.map((p) => p as Map<String, dynamic>).toList() ?? [],
-          tasks: (response.data['tasks'] as List?)?.map((t) => Map<String, dynamic>.from(t as Map)).toList() ?? [],
+          commands: decodeList(response.data['commands']),
+          places: (response.data['places'] as List?)
+                  ?.map((p) => p as Map<String, dynamic>)
+                  .toList() ??
+              [],
+          tasks: decodeList(response.data['tasks']),
         );
       }
     } catch (e) {
       return PullResult(success: false, error: e.toString());
     }
     return PullResult(success: false, error: 'Unexpected response');
+  }
+
+  /// Cipher for the paired device's session key, or null when unpaired/legacy.
+  SiriusCipher? _cachedCipher;
+  String? _cachedSessionKey;
+
+  Future<SiriusCipher?> _cipher() async {
+    final sk = await DeviceIdentity.getSessionKey();
+    if (sk == null) return null;
+    if (_cachedCipher == null || _cachedSessionKey != sk) {
+      _cachedCipher = SiriusCipher(sk);
+      _cachedSessionKey = sk;
+    }
+    return _cachedCipher;
   }
 }
 
@@ -342,17 +403,21 @@ class PairingResult {
   final String? token;
   final String? message;
   final String? error;
-  
+
+  /// Proof-of-identity for pair/status polling while pending approval.
+  final String? nonce;
+
   PairingResult._({
     required this.success,
     this.pendingApproval = false,
     this.token,
     this.message,
     this.error,
+    this.nonce,
   });
-  
+
   factory PairingResult.success({String? token}) = _PairingSuccess;
-  factory PairingResult.pendingApproval({String? message}) = _PairingPending;
+  factory PairingResult.pendingApproval({String? message, String? nonce}) = _PairingPending;
   factory PairingResult.error({String? message}) = _PairingError;
 }
 
@@ -361,7 +426,8 @@ class _PairingSuccess extends PairingResult {
 }
 
 class _PairingPending extends PairingResult {
-  _PairingPending({String? message}) : super._(success: false, pendingApproval: true, message: message);
+  _PairingPending({String? message, String? nonce})
+      : super._(success: false, pendingApproval: true, message: message, nonce: nonce);
 }
 
 class _PairingError extends PairingResult {
@@ -386,7 +452,7 @@ class PingResult {
 
 class SyncBatchItem {
   final String clientId;
-  final String type; // 'command', 'location_log', 'place_confirmation'
+  final String type; // 'command', 'place_confirmation', 'gemma_fallback', ...
   final Map<String, dynamic> payload;
   
   SyncBatchItem({

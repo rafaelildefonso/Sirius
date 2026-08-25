@@ -77,11 +77,6 @@ class GeofenceTriggerEvent {
   });
 }
 
-class RawLocationLog {
-  final Position position;
-  RawLocationLog(this.position);
-}
-
 class StartTracking {
   final List<GeofenceRegion> geofences;
   StartTracking(this.geofences);
@@ -94,11 +89,9 @@ class GeofenceManager {
   SendPort? _isolatePort;
   StreamSubscription? _isolateSubscription;
   final StreamController<GeofenceTriggerEvent> _triggerController = StreamController.broadcast();
-  final StreamController<RawLocationLog> _rawLogController = StreamController.broadcast();
   final _notifications = FlutterLocalNotificationsPlugin();
 
   Stream<GeofenceTriggerEvent> get triggerStream => _triggerController.stream;
-  Stream<RawLocationLog> get rawLogStream => _rawLogController.stream;
 
   Future<void> initialize() async {
     final granted = await _requestLocationPermissions();
@@ -147,8 +140,6 @@ class GeofenceManager {
         _triggerController.add(message);
         _showLocalNotification(message);
         _notifyTrigger(message);
-      } else if (message is RawLocationLog) {
-        // Save raw location log
       }
     });
   }

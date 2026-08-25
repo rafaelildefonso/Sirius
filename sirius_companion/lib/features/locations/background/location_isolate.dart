@@ -100,15 +100,5 @@ Future<void> _startBackgroundTracking(_GeofenceState state, SendPort mainPort) a
         }
       }
     }
-
-    // Send raw location log periodically (every 5 min)
-    if (now.difference(_lastRawLog) > const Duration(minutes: 5)) {
-      mainPort.send(RawLocationLog(pos));
-      _lastRawLog = now;
-    }
   }
-
-  state._isRunning = false;
 }
-
-DateTime _lastRawLog = DateTime.fromMillisecondsSinceEpoch(0);

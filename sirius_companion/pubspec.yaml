@@ -61,6 +61,10 @@ dependencies:
   package_info_plus: ^10.2.1
   device_info_plus: ^13.2.0
 
+  # Crypto (AES sync encryption, matches dashboard AES-256-CBC scheme)
+  crypto: ^3.0.3
+  encrypt: ^5.0.3
+
   # Logging
   logger: ^2.7.0
 

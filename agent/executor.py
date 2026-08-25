@@ -185,6 +185,10 @@ def _call_tool(tool: str, parameters: dict, speak: Callable | None) -> str:
         from actions.reminder import reminder
         return reminder(parameters=parameters, player=None) or "Done."
 
+    elif tool == "send_to_phone":
+        from actions.send_to_phone import send_to_phone
+        return send_to_phone(parameters=parameters, player=None) or "Done."
+
     elif tool == "youtube_video":
         from actions.youtube_video import youtube_video
         return youtube_video(parameters=parameters, player=None) or "Done."

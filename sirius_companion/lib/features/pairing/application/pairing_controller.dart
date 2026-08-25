@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import '../../../core/network/api_client.dart';
+import '../../../core/network/api_client.dart' as api;
 import '../../../core/device_identity.dart';
 
 final pairingControllerProvider = StateNotifierProvider<PairingController, PairingState>((ref) {
@@ -45,8 +45,7 @@ enum PairingStatus {
 }
 
 class PairingController extends StateNotifier<PairingState> {
-  final ApiClient _apiClient = ApiClient.instance;
-  Timer? _pollingTimer;
+  final api.ApiClient _apiClient = api.ApiClient.instance;
 
   PairingController() : super(PairingState());
 
@@ -94,7 +93,8 @@ class PairingController extends StateNotifier<PairingState> {
   Future<void> _completePairingWithKey(String key) async {
     try {
       final deviceName = await DeviceIdentity.getDeviceName();
-      final pairResult = await _apiClient.pairDevice(deviceName: deviceName);
+      final pairResult =
+          await _apiClient.pairDevice(deviceName: deviceName, pairKey: key);
 
       if (pairResult.success) {
         state = state.copyWith(
@@ -102,6 +102,9 @@ class PairingController extends StateNotifier<PairingState> {
           message: 'Pareado com sucesso!',
           deviceToken: pairResult.token,
         );
+      } else if (pairResult.pendingApproval) {
+        // Key expired between QR scan and pairing: fall back to approval flow.
+        await _waitForApproval(pairResult.nonce, pairResult.message);
       } else {
         state = state.copyWith(
           status: PairingStatus.error,
@@ -122,42 +125,21 @@ class PairingController extends StateNotifier<PairingState> {
       message: 'Solicitando pareamento...',
     );
 
-    final result = await _apiClient.pairDevice(deviceName: deviceName);
-
-    if (result.success) {
-      state = state.copyWith(
-        status: PairingStatus.paired,
-        message: 'Pareado com sucesso!',
-        deviceToken: result.token,
-      );
-    } else {
-      state = state.copyWith(
-        status: PairingStatus.error,
-        message: result.error ?? 'Falha no pareamento',
-      );
-    }
-  }
-
-  Future<void> pairWithCode(String code) async {
-    state = state.copyWith(
-      status: PairingStatus.connecting,
-      message: 'Conectando com código...',
-    );
-
     try {
-      final deviceName = await DeviceIdentity.getDeviceName();
-      final pairResult = await _apiClient.pairDevice(deviceName: deviceName);
+      final result = await _apiClient.pairDevice(deviceName: deviceName);
 
-      if (pairResult.success) {
+      if (result.success) {
         state = state.copyWith(
           status: PairingStatus.paired,
           message: 'Pareado com sucesso!',
-          deviceToken: pairResult.token,
+          deviceToken: result.token,
         );
+      } else if (result.pendingApproval) {
+        await _waitForApproval(result.nonce, result.message);
       } else {
         state = state.copyWith(
           status: PairingStatus.error,
-          message: pairResult.error ?? 'Falha no pareamento',
+          message: result.error ?? 'Falha no pareamento',
         );
       }
     } catch (e) {
@@ -168,13 +150,20 @@ class PairingController extends StateNotifier<PairingState> {
     }
   }
 
-  void _startPolling(String deviceName) {
-    _pollingTimer?.cancel();
-    _pollingTimer = Timer.periodic(const Duration(seconds: 3), (timer) async {
-      final status = await _apiClient.checkPairingStatus();
-      final statusName = status.name;
+  /// Polls /api/device/pair/status while waiting for PC-side approval.
+  Future<void> _waitForApproval(String? nonce, String? message) async {
+    state = state.copyWith(
+      status: PairingStatus.pendingApproval,
+      message: message ?? 'Aguardando aprovação no PC...',
+    );
 
-      if (statusName == 'paired') {
+    Timer.periodic(const Duration(seconds: 3), (timer) async {
+      if (state.status != PairingStatus.pendingApproval) {
+        timer.cancel();
+        return;
+      }
+      final status = await _apiClient.checkPairingStatus(nonce: nonce);
+      if (status == api.PairingStatus.paired) {
         timer.cancel();
         final token = await DeviceIdentity.getDeviceToken();
         state = state.copyWith(
@@ -182,7 +171,7 @@ class PairingController extends StateNotifier<PairingState> {
           message: 'Pareado com sucesso!',
           deviceToken: token,
         );
-      } else if (statusName == 'rejected') {
+      } else if (status == api.PairingStatus.rejected) {
         timer.cancel();
         state = state.copyWith(
           status: PairingStatus.error,
@@ -190,12 +179,6 @@ class PairingController extends StateNotifier<PairingState> {
         );
       }
     });
-  }
-
-  @override
-  void dispose() {
-    _pollingTimer?.cancel();
-    super.dispose();
   }
 }
 

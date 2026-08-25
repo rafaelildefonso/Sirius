@@ -80,6 +80,7 @@ from actions.open_app import open_app
 from actions.reminder import reminder
 from actions.screen_processor import screen_process
 from actions.send_message import send_message
+from actions.send_to_phone import send_to_phone
 from actions.weather_report import weather_action
 from actions.web_search import _news as _fetch_news_sync
 from actions.web_search import web_search as web_search_action
@@ -413,6 +414,21 @@ TOOL_DECLARATIONS = [
                 "message": {"type": "STRING", "description": "Reminder message text"}
             },
             "required": ["date", "time", "message"]
+        }
+    },
+    {
+        "name": "send_to_phone",
+        "description": (
+            "Sends a message/notification to the user's phone (SIRIUS companion app). "
+            "Use when the user asks to send something to their phone/celular, or to "
+            "deliver a note they'll see away from the PC."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "message": {"type": "STRING", "description": "Message text to deliver"}
+            },
+            "required": ["message"]
         }
     },
     {
@@ -1130,6 +1146,22 @@ class SiriusLive:
         self.ui.write_log("SYS: Phone connected via Remote Dashboard.")
         self.ui.notify_phone_connected()
 
+    def _on_pair_request(self, info: dict) -> None:
+        """Companion app requested manual pairing — show prompt in the React UI."""
+        try:
+            _ws.notify_pair_request(info)
+            self.ui.write_log(
+                f"SYS: Pareamento solicitado por {info.get('name', 'dispositivo')} — aprove no popup."
+            )
+        except Exception as e:
+            print(f"[Dashboard] notify pair_request failed: {e}")
+
+    def _on_pair_decision(self, device_id: str, approve: bool) -> None:
+        """React UI answered a pair_request (approve/reject)."""
+        dash = getattr(self, "_dashboard", None) or _DASHBOARD
+        if dash is not None:
+            dash.schedule_pair_approval(device_id, approve)
+
     def _on_text_command(self, text: str):
         self.ui.write_log(f"You: {text}")
         if not self._loop or not self.session:
@@ -1586,6 +1618,10 @@ class SiriusLive:
             elif name == "reminder":
                 r = await loop.run_in_executor(None, lambda: reminder(parameters=args, response=None, player=self.ui))
                 result = r or "Reminder set."
+
+            elif name == "send_to_phone":
+                r = await loop.run_in_executor(None, lambda: send_to_phone(parameters=args, player=self.ui))
+                result = r or "Message sent to your phone."
 
             elif name == "youtube_video":
                 r = await loop.run_in_executor(None, lambda: youtube_video(parameters=args, response=None, player=self.ui))
@@ -2129,6 +2165,8 @@ class SiriusLive:
                         self._dashboard_ready.set()
                 task.add_done_callback(_on_dashboard_done)
             self._dashboard.set_connect_callback(self._on_phone_connected)
+            self._dashboard.set_pair_request_callback(self._on_pair_request)
+            _ws.manager.on_pair_response = self._on_pair_decision
             asyncio.ensure_future(self._process_dashboard_commands())
             self.ui.write_log("SYS: Remote dashboard started.")
         except Exception as e:
@@ -2492,6 +2530,10 @@ class SiriusLocal:
             elif name == "reminder":
                 r = reminder(parameters=args, response=None, player=self.ui)
                 result = r or "Reminder set."
+
+            elif name == "send_to_phone":
+                r = send_to_phone(parameters=args, player=self.ui)
+                result = r or "Message sent to your phone."
 
             elif name == "youtube_video":
                 r = youtube_video(parameters=args, response=None, player=self.ui)

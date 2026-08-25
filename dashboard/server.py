@@ -167,6 +167,18 @@ def _decrypt_cbc(aes_key: bytes, enc_b64: str) -> str:
     return (unpadder.update(padded) + unpadder.finalize()).decode('utf-8')
 
 
+def _encrypt_cbc(aes_key: bytes, plaintext: str) -> str:
+    """Encrypt to base64(IV[16] || ciphertext) with AES-256-CBC + PKCS7."""
+    from cryptography.hazmat.primitives import padding as sym_pad
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+    iv       = secrets.token_bytes(16)
+    padder   = sym_pad.PKCS7(128).padder()
+    padded   = padder.update(plaintext.encode('utf-8')) + padder.finalize()
+    enc      = Cipher(algorithms.AES(aes_key), modes.CBC(iv)).encryptor()
+    ct       = enc.update(padded) + enc.finalize()
+    return base64.b64encode(iv + ct).decode('ascii')
+
+
 # -- CryptoJS (auto-download once, served locally) -----------------------------
 _CRYPTOJS_CDN  = ("https://cdnjs.cloudflare.com/ajax/libs/"
                   "crypto-js/4.2.0/crypto-js.min.js")
@@ -850,7 +862,6 @@ class DashboardServer:
         self._clients: set[WebSocket]     = set()
         self._history: list[dict]         = []
         self._command_queue               = asyncio.Queue()
-        self._wake_callback               = None
         self._connect_callback            = None
         self._pending_keys: dict[str, float] = {}
         self._device_sessions: dict[str, dict] = {}  # device_token -> {session_key}
@@ -864,9 +875,57 @@ class DashboardServer:
         self._trusted_devices: dict[str, dict] = {}  # device_id -> {name, token, paired_at, last_seen}
         self._pending_pair: dict[str, dict] = {}     # device_id -> {name, ts}
         self._pending_phone_commands: dict[str, list] = {}  # device_id -> [commands]
+        self._pair_request_callback = None           # fn(dict) -> None (notifies PC UI)
+        self._loop = None                            # running asyncio loop (set in serve())
         self._load_trusted_devices()
 
         self.app                          = self._build_app()
+
+    def set_pair_request_callback(self, fn) -> None:
+        """fn(info_dict) is called when a companion app requests manual pairing."""
+        self._pair_request_callback = fn
+
+    def schedule_pair_approval(self, device_id: str, approve: bool) -> None:
+        """Thread-safe entry point so other threads/loops can answer a pair request."""
+        loop = self._loop
+        if loop is not None and loop.is_running():
+            asyncio.run_coroutine_threadsafe(
+                self.approve_pairing(device_id, approve), loop
+            )
+
+    async def approve_pairing(self, device_id: str, approve: bool):
+        """Core of /api/device/pair/approve — shared by REST and the UI bridge."""
+        if not device_id or device_id not in self._pending_pair:
+            return JSONResponse({"ok": False, "error": "No pending pairing for this device"},
+                                status_code=404)
+
+        if approve:
+            info = self._pending_pair.pop(device_id)
+            session_key = ''.join(secrets.choice(_KEY_CHARS) for _ in range(6))
+            token = secrets.token_urlsafe(32)
+
+            self._trusted_devices[device_id] = {
+                "name": info["name"],
+                "platform": info["platform"],
+                "app_version": info["app_version"],
+                "model": info["model"],
+                "session_key": session_key,
+                "nonce": info.get("nonce", ""),
+                "token": token,
+                "paired_at": time.time(),
+                "last_seen": time.time(),
+            }
+            self._device_sessions[token] = {"session_key": session_key}
+            self._save_trusted_devices()
+            self._aes_key(session_key)
+
+            await self.broadcast(WsMessage("pairing_approved", {"device_id": device_id}))
+
+            return JSONResponse({"ok": True, "device_token": token, "paired": True})
+        else:
+            self._pending_pair.pop(device_id, None)
+            await self.broadcast(WsMessage("pairing_rejected", {"device_id": device_id}))
+            return JSONResponse({"ok": True, "approved": False})
 
     def _load_trusted_devices(self) -> None:
         """Load trusted devices from encrypted config."""
@@ -885,17 +944,12 @@ class DashboardServer:
         except Exception as e:
             print(f"[Dashboard] Failed to save trusted devices: {e}")
 
-    def _issue_device_token(self, device_id: str) -> str:
-        """Issue a new device token for a trusted device."""
-        import secrets
-        token = secrets.token_urlsafe(32)
-        self._device_sessions[token] = {"session_key": list(self._trusted_devices[device_id].keys())[0] if self._trusted_devices[device_id] else ""}
-        # Actually we need to store the session_key
-        if device_id in self._trusted_devices:
-            session_key = self._trusted_devices[device_id].get("session_key", "")
-            if session_key:
-                self._device_sessions[token] = {"session_key": session_key}
-        return token
+    def _device_session_key(self, device_id: str) -> str | None:
+        """Session key shared with a trusted device, used for AES sync encryption."""
+        info = self._trusted_devices.get(device_id)
+        if info and info.get("session_key"):
+            return info["session_key"]
+        return None
 
     def _validate_device_token(self, token: str, device_id: str | None = None) -> bool:
         """Validate a device token and optionally check device_id matches."""
@@ -958,11 +1012,39 @@ class DashboardServer:
 
     # -- callbacks --------------------------------------------------------
 
-    def set_wake_callback(self, fn) -> None:
-        self._wake_callback = fn
-
     def set_connect_callback(self, fn) -> None:
         self._connect_callback = fn
+
+    # -- PC -> phone push ---------------------------------------------------
+
+    def queue_phone_command(self, payload, device_id: str | None = None) -> int:
+        """Queue a command/notification to be pulled by the companion app.
+
+        Args:
+            payload: message content — a plain string or a dict (must contain
+                a "text" field).
+            device_id: target device; None queues for every trusted device.
+        Returns:
+            Number of devices the command was queued for.
+        """
+        if isinstance(payload, str):
+            item = {"text": payload.strip()}
+        elif isinstance(payload, dict):
+            item = dict(payload)
+            item.setdefault("text", "")
+        else:
+            return 0
+        if not item["text"]:
+            return 0
+        if not self._trusted_devices:
+            return 0
+        targets = [device_id] if device_id else list(self._trusted_devices.keys())
+        queued = 0
+        for dev in targets:
+            if dev in self._trusted_devices:
+                self._pending_phone_commands.setdefault(dev, []).append(item)
+                queued += 1
+        return queued
 
     # -- broadcast --------------------------------------------------------
 
@@ -1141,7 +1223,13 @@ sessionStorage.setItem('sirius_token','{tok}');
 
         @app.post("/api/device/pair")
         async def pair_device(req: Request):
-            """Register a new companion device. Returns pending_approval if not trusted."""
+            """Register a companion device.
+
+            With a valid one-time `pair_key` (from the QR code): auto-approves and
+            returns a device token + session_key (for AES sync encryption).
+            Without one: goes to pending approval, confirmed on the PC via
+            /api/device/pair/approve.
+            """
             try:
                 body = await req.json()
             except Exception:
@@ -1152,51 +1240,112 @@ sessionStorage.setItem('sirius_token','{tok}');
             platform = body.get("platform", "android")
             app_version = body.get("app_version", "1.0.0")
             model = body.get("model", "")
+            pair_key = str(body.get("pair_key") or "").strip().upper()
+            nonce = secrets.token_urlsafe(16)  # proof-of-identity for pair/status polling
 
             if not device_id:
                 return JSONResponse({"ok": False, "error": "device_id required"}, status_code=400)
 
-            # Already trusted?
+            # Already trusted? Re-issue token, refresh nonce/session_key.
             if device_id in self._trusted_devices:
                 info = self._trusted_devices[device_id]
                 info["last_seen"] = time.time()
                 info["model"] = model or info.get("model", "")
-                self._save_trusted_devices()
+                info["nonce"] = nonce
+                if not info.get("session_key"):
+                    info["session_key"] = ''.join(secrets.choice(_KEY_CHARS) for _ in range(6))
 
-                # Issue new token
                 token = secrets.token_urlsafe(32)
-                session_key = info.get("session_key", "")
-                if session_key:
-                    self._device_sessions[token] = {"session_key": session_key}
+                session_key = info["session_key"]
+                self._device_sessions[token] = {"session_key": session_key}
                 info["token"] = token
                 self._save_trusted_devices()
 
-                return JSONResponse({"ok": True, "paired": True, "device_token": token})
+                return JSONResponse({
+                    "ok": True, "paired": True,
+                    "device_token": token, "session_key": session_key,
+                })
 
-            # Auto-approve: QR code one-time key was already validated by /auto-login
-            self._trusted_devices[device_id] = {
+            now = time.time()
+            key_valid = (
+                bool(pair_key)
+                and pair_key in self._pending_keys
+                and self._pending_keys[pair_key] > now
+            )
+
+            if key_valid:
+                # QR pairing: consume the one-time key; the key doubles as the
+                # device session_key (same pattern as the browser dashboard).
+                del self._pending_keys[pair_key]
+                session_key = pair_key
+                token = secrets.token_urlsafe(32)
+
+                self._trusted_devices[device_id] = {
+                    "name": device_name,
+                    "token": token,
+                    "platform": platform,
+                    "app_version": app_version,
+                    "model": model,
+                    "session_key": session_key,
+                    "nonce": nonce,
+                    "paired_at": time.time(),
+                    "last_seen": time.time(),
+                }
+                self._device_sessions[token] = {"session_key": session_key}
+                self._save_trusted_devices()
+                self._aes_key(session_key)  # pre-derive & cache
+
+                print(f"[Dashboard] Device paired via QR key: {device_name} ({device_id})")
+                await self.broadcast(WsMessage("sys", {
+                    "text": f"Dispositivo pareado: {device_name} ({model})"
+                }))
+
+                return JSONResponse({
+                    "ok": True,
+                    "paired": True,
+                    "device_token": token,
+                    "session_key": session_key,
+                })
+
+            if pair_key:
+                # A key was provided but is invalid/expired — reject instead of
+                # silently falling through to manual approval.
+                return JSONResponse(
+                    {"ok": False, "error": "Invalid or expired pairing code"},
+                    status_code=401,
+                )
+
+            # Manual pairing (no key): requires explicit approval on the PC.
+            self._pending_pair[device_id] = {
                 "name": device_name,
-                "token": "",
                 "platform": platform,
                 "app_version": app_version,
                 "model": model,
-                "paired_at": time.time(),
-                "last_seen": time.time(),
+                "nonce": nonce,
+                "ts": time.time(),
             }
-            token = self._issue_device_token(device_id)
-            self._trusted_devices[device_id]["token"] = token
-            self._save_trusted_devices()
-
-            print(f"[Dashboard] Device auto-approved: {device_name} ({device_id})")
-            await self.broadcast(WsMessage("sys", {
-                "text": f"Dispositivo pareado: {device_name} ({model})"
-            }))
-
-            return JSONResponse({
-                "ok": True,
-                "paired": True,
-                "device_token": token,
-            })
+            print(f"[Dashboard] Pairing request pending approval: {device_name} ({device_id})")
+            info = {
+                "device_id": device_id,
+                "name": device_name,
+                "model": model,
+                "platform": platform,
+            }
+            asyncio.create_task(self.broadcast(WsMessage("pair_request", info)))
+            if self._pair_request_callback:
+                try:
+                    self._pair_request_callback(info)
+                except Exception as e:
+                    print(f"[Dashboard] pair_request callback failed: {e}")
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "pending_approval": True,
+                    "message": "Aguardando aprovação no PC",
+                    "nonce": nonce,
+                },
+                status_code=409,
+            )
 
         @app.post("/api/device/pair/approve")
         async def approve_pair(req: Request):
@@ -1211,53 +1360,40 @@ sessionStorage.setItem('sirius_token','{tok}');
 
             device_id = body.get("device_id", "").strip()
             approve = body.get("approve", True)
-
-            if not device_id or device_id not in self._pending_pair:
-                return JSONResponse({"ok": False, "error": "No pending pairing for this device"}, status_code=404)
-
-            if approve:
-                info = self._pending_pair.pop(device_id)
-                session_key = ''.join(secrets.choice(_KEY_CHARS) for _ in range(6))
-                token = secrets.token_urlsafe(32)
-
-                self._trusted_devices[device_id] = {
-                    "name": info["name"],
-                    "platform": info["platform"],
-                    "app_version": info["app_version"],
-                    "model": info["model"],
-                    "session_key": session_key,
-                    "token": token,
-                    "paired_at": time.time(),
-                    "last_seen": time.time(),
-                }
-                self._device_sessions[token] = {"session_key": session_key}
-                self._save_trusted_devices()
-
-                await self.broadcast(WsMessage("pairing_approved", {"device_id": device_id}))
-
-                return JSONResponse({"ok": True, "device_token": token, "paired": True})
-            else:
-                self._pending_pair.pop(device_id, None)
-                await self.broadcast(WsMessage("pairing_rejected", {"device_id": device_id}))
-                return JSONResponse({"ok": True, "approved": False})
+            return await self.approve_pairing(device_id, approve)
 
         @app.get("/api/device/pair/status")
-        async def pair_status(device_id: str = ""):
-            """Check pairing status for a device (polling from phone)."""
+        async def pair_status(device_id: str = "", nonce: str = ""):
+            """Check pairing status for a device (polling from phone).
+
+            Requires the `nonce` handed out at pair-request time, so an attacker
+            who only knows/guesses a device_id cannot harvest its token.
+            """
             if not device_id:
                 return JSONResponse({"ok": False, "error": "device_id required"}, status_code=400)
 
             if device_id in self._trusted_devices:
                 info = self._trusted_devices[device_id]
+                stored_nonce = info.get("nonce", "")
+                if stored_nonce and nonce != stored_nonce:
+                    return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
                 token = info.get("token", secrets.token_urlsafe(32))
                 info["token"] = token
                 info["last_seen"] = time.time()
                 if "session_key" in info:
                     self._device_sessions[token] = {"session_key": info["session_key"]}
                 self._save_trusted_devices()
-                return JSONResponse({"ok": True, "status": "paired", "device_token": token})
+                return JSONResponse({
+                    "ok": True,
+                    "status": "paired",
+                    "device_token": token,
+                    "session_key": info.get("session_key", ""),
+                })
 
             if device_id in self._pending_pair:
+                info = self._pending_pair[device_id]
+                if info.get("nonce") and nonce != info.get("nonce"):
+                    return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
                 return JSONResponse({"ok": True, "status": "pending"})
 
             return JSONResponse({"ok": True, "status": "unknown"})
@@ -1292,7 +1428,11 @@ sessionStorage.setItem('sirius_token','{tok}');
 
         @app.post("/api/sync/batch")
         async def sync_batch(req: Request):
-            """Receive batch of items from companion app (commands, locations, etc.)."""
+            """Receive batch of items from companion app (commands, locations, etc.).
+
+            Items may carry `"enc": true` with `payload` as base64(IV||ciphertext)
+            of the JSON payload, encrypted with the device session_key.
+            """
             # Auth via headers
             device_id = req.headers.get("X-Device-ID", "").strip()
             token = req.headers.get("Authorization", "").removeprefix("Bearer ").strip()
@@ -1308,31 +1448,38 @@ sessionStorage.setItem('sirius_token','{tok}');
             items = body.get("items", [])
             results = []
 
+            def _item_payload(item: dict) -> tuple[dict | None, str | None]:
+                """Return (payload_dict, error). Decrypts when item['enc'] is set."""
+                payload = item.get("payload", {})
+                if not item.get("enc"):
+                    return (payload if isinstance(payload, dict) else {}), None
+                sk = self._device_session_key(device_id)
+                if not sk:
+                    return None, "Encrypted payload but no session_key"
+                try:
+                    raw = _decrypt_cbc(self._aes_key(sk), str(payload))
+                    decoded = json.loads(raw)
+                except Exception:
+                    return None, "Decryption failed"
+                return (decoded if isinstance(decoded, dict) else {}), None
+
             for item in items:
                 try:
                     client_id = item.get("client_id", "")
                     itype = item.get("type", "")
-                    payload = item.get("payload", {})
+                    payload, dec_err = _item_payload(item)
+                    if dec_err:
+                        results.append({"client_id": client_id, "status": "failed", "error": dec_err})
+                        continue
 
                     if itype == "command":
                         text = payload.get("text", "").strip()
                         if text:
                             # Queue command for assistant processing
                             await self._command_queue.put(text)
-                            if self._wake_callback:
-                                self._wake_callback()
                             results.append({"client_id": client_id, "status": "processed", "server_id": f"cmd_{int(time.time()*1000)}"})
                         else:
                             results.append({"client_id": client_id, "status": "failed", "error": "Empty command"})
-
-                    elif itype == "location_log":
-                        # Store location log (could save to persistence layer)
-                        lat = payload.get("latitude")
-                        lng = payload.get("longitude")
-                        if lat is not None and lng is not None:
-                            results.append({"client_id": client_id, "status": "processed", "server_id": f"loc_{int(time.time()*1000)}"})
-                        else:
-                            results.append({"client_id": client_id, "status": "failed", "error": "Invalid coordinates"})
 
                     elif itype == "place_confirmation":
                         # User confirmed presence at a place
@@ -1347,8 +1494,6 @@ sessionStorage.setItem('sirius_token','{tok}');
                         text = payload.get("text", "").strip()
                         if text:
                             await self._command_queue.put(text)
-                            if self._wake_callback:
-                                self._wake_callback()
                             results.append({"client_id": client_id, "status": "processed", "server_id": f"fallback_{int(time.time()*1000)}"})
                         else:
                             results.append({"client_id": client_id, "status": "failed", "error": "Empty fallback command"})
@@ -1414,9 +1559,26 @@ sessionStorage.setItem('sirius_token','{tok}');
             except Exception as e:
                 print(f"[Tasks] Pull failed: {e}")
 
+            # When the device has a session_key, encrypt each item's JSON as
+            # base64(IV||ciphertext) so tasks/commands never travel in plaintext.
+            sk = self._device_session_key(device_id)
+            if sk:
+                aes = self._aes_key(sk)
+                if pending_commands:
+                    pending_commands = [
+                        {"enc": True, "payload": _encrypt_cbc(aes, json.dumps(c, ensure_ascii=False))}
+                        for c in pending_commands
+                    ]
+                if tasks:
+                    tasks = [
+                        {"enc": True, "payload": _encrypt_cbc(aes, json.dumps(t, ensure_ascii=False))}
+                        for t in tasks
+                    ]
+
             # Pull places configured on PC (currently empty — can be populated via UI later)
             return JSONResponse({
                 "ok": True,
+                "enc": bool(sk),
                 "commands": pending_commands,
                 "places": [],
                 "tasks": tasks,
@@ -1493,16 +1655,13 @@ sessionStorage.setItem('sirius_token','{tok}');
                 text = (body.get("text") or "").strip()
             if text:
                 await self._command_queue.put(text)
-                if self._wake_callback:
-                    self._wake_callback()
             return JSONResponse({"ok": True})
 
         @app.post("/api/wake")
         async def wake_ep(req: Request):
             if not _auth(req):
                 return JSONResponse({"error": "Unauthorized"}, status_code=401)
-            if self._wake_callback:
-                self._wake_callback()
+            await self.broadcast(WsMessage("wake", {}))
             return JSONResponse({"ok": True})
 
         # -- Phone mic real-time audio -> Gemini Live --------------------------
@@ -1717,8 +1876,6 @@ sessionStorage.setItem('sirius_token','{tok}');
                         t   = self._decrypt(tok, enc) if enc else (data.get("text") or "").strip()
                         if t:
                             await self._command_queue.put(t)
-                            if self._wake_callback:
-                                self._wake_callback()
             except WebSocketDisconnect:
                 pass
             finally:
@@ -1767,6 +1924,7 @@ sessionStorage.setItem('sirius_token','{tok}');
     async def serve(self) -> None:
         try:
             print("[DEBUG DashboardServer.serve] Starting server...")
+            self._loop = asyncio.get_running_loop()
             print(f"[DEBUG DashboardServer.serve] _DEPS_OK={_DEPS_OK}, app={self.app is not None}")
             print(f"[DEBUG DashboardServer.serve] Detected IP: {self._ip}")
             print("[DEBUG DashboardServer.serve] Firewall setup starting in executor...")

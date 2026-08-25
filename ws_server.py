@@ -230,6 +230,15 @@ def show_sticky_task_notification(
     return False
 
 
+def notify_pair_request(info: dict) -> None:
+    """Broadcast a companion-app pairing request to the React UI.
+
+    Payload: {device_id, name, model, platform}. The UI shows an
+    Approve/Reject prompt and answers with {type: "pair_approve"}.
+    """
+    manager.broadcast_sync(WsMessage("pair_request", dict(info)))
+
+
 def notify_task_alarm(task: dict) -> None:
     """Fire a due scheduled task: sticky toast on PC + broadcast to React UI.
 
@@ -360,6 +369,8 @@ class ConnectionManager:
         self.on_remote_key_request: Callable | None = None
         self.on_interrupt: Callable[[], None] | None = None
         self.on_briefing_dismiss: Callable[[], None] | None = None
+        # Companion app pairing decision from the React UI (device_id, approve)
+        self.on_pair_response: Callable[[str, bool], None] | None = None
 
     def set_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         self._loop = loop
@@ -740,6 +751,16 @@ async def _handler(ws: websockets.asyncio.server.ServerConnection) -> None:
                         "type": "remote_key_error",
                         "message": "Remote control not initialized.",
                     }))
+
+            elif msg_type == "pair_approve":
+                device_id = str(data.get("device_id", "")).strip()
+                approve = bool(data.get("approve", True))
+                if manager.on_pair_response and device_id:
+                    try:
+                        manager.on_pair_response(device_id, approve)
+                    except Exception as e:
+                        print(f"[WS] pair_approve callback failed: {e}")
+                        traceback.print_exc()
 
             elif msg_type == "radar_scan":
                 from threading import Thread

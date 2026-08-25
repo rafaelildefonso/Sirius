@@ -101,6 +101,7 @@ TOOL_TO_PERMISSION: dict[str, str] = {
     "notion_calendar":    "access_personal_accounts",
     "send_message":       "send_messages",
     "reminder":           "send_messages",
+    "send_to_phone":      "send_messages",
 }
 
 _DEFAULTS: dict[str, bool] = {k: True for k in PERMISSION_META}
