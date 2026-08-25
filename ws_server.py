@@ -1044,7 +1044,7 @@ def _run_radar_scan(keywords: str, max_jobs: int, sources: list[str]) -> None:
             if "linkedin" in sources:
                 manager.broadcast_sync(WsMessage("radar_log", {"text": "Iniciando scraper do LinkedIn..."}))
                 try:
-                    from core.linkedin_scraper import scrape_linkedin_jobs
+                    from core.intel.linkedin_scraper import scrape_linkedin_jobs
                     new_jobs = loop.run_until_complete(scrape_linkedin_jobs(keywords, max_jobs=max_jobs))
                     total_new += new_jobs
                     manager.broadcast_sync(WsMessage("radar_log", {"text": f"LinkedIn finalizado. {new_jobs} novas vagas."}))
@@ -1054,7 +1054,7 @@ def _run_radar_scan(keywords: str, max_jobs: int, sources: list[str]) -> None:
             if "google_jobs" in sources:
                 manager.broadcast_sync(WsMessage("radar_log", {"text": "Procurando vagas no Google Jobs..."}))
                 try:
-                    from core.google_jobs_scraper import scrape_google_jobs
+                    from core.intel.google_jobs_scraper import scrape_google_jobs
                     new_jobs = loop.run_until_complete(scrape_google_jobs(keywords, max_jobs=max_jobs))
                     total_new += new_jobs
                     manager.broadcast_sync(WsMessage("radar_log", {"text": f"Google Jobs finalizado. {new_jobs} novas vagas."}))
@@ -1064,7 +1064,7 @@ def _run_radar_scan(keywords: str, max_jobs: int, sources: list[str]) -> None:
             if total_new >= 0:
                 manager.broadcast_sync(WsMessage("radar_log", {"text": "Analisando compatibilidade..."}))
                 try:
-                    from core.job_analyzer import analyze_all_jobs
+                    from core.intel.job_analyzer import analyze_all_jobs
                     analyzed = analyze_all_jobs()
                     manager.broadcast_sync(WsMessage("radar_log", {"text": f"Análise finalizada. {analyzed} vagas analisadas."}))
                 except Exception as e:

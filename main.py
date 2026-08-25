@@ -104,7 +104,8 @@ from memory.memory_manager import (
 )
 
 BASE_DIR        = get_base_dir()
-PROMPT_PATH     = BASE_DIR / "core" / "prompt.txt"
+PROMPT_RELPATH  = Path("assets") / "prompts" / "system_prompt.txt"
+PROMPT_PATH     = BASE_DIR / PROMPT_RELPATH
 LIVE_MODEL          = "models/gemini-2.5-flash-native-audio-preview-12-2025"
 CHANNELS            = 1
 SEND_SAMPLE_RATE    = 16000
@@ -270,12 +271,23 @@ def _load_system_prompt() -> str:
         _system_prompt_cache = PROMPT_PATH.read_text(encoding="utf-8")
         return _system_prompt_cache
     except Exception:
-        _system_prompt_cache = (
-            "You are SIRIUS, a powerful and minimalist AI assistant. "
-            "Be concise, direct, and always use the provided tools to complete tasks. "
-            "Never simulate or guess results — always call the appropriate tool."
-        )
-        return _system_prompt_cache
+        # Frozen (PyInstaller onefile) fallback: bundled under sys._MEIPASS.
+        pass
+    try:
+        import sys as _sys
+
+        meipass = getattr(_sys, "_MEIPASS", None)
+        if meipass:
+            _system_prompt_cache = (Path(meipass) / PROMPT_RELPATH).read_text(encoding="utf-8")
+            return _system_prompt_cache
+    except Exception:
+        pass
+    _system_prompt_cache = (
+        "You are SIRIUS, a powerful and minimalist AI assistant. "
+        "Be concise, direct, and always use the provided tools to complete tasks. "
+        "Never simulate or guess results — always call the appropriate tool."
+    )
+    return _system_prompt_cache
 
 _CTRL_RE = re.compile(r"<ctrl\d+>", re.IGNORECASE)
 

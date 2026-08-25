@@ -8,7 +8,7 @@ from bs4 import BeautifulSoup
 
 from core.cache import api_cache, search_cache
 from core.config_loader import get_all_config
-from or_client import client as or_client
+from core.or_client import client as or_client
 
 
 def _load_api_keys() -> dict:

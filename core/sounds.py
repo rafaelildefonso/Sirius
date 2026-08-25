@@ -14,19 +14,26 @@ import numpy as np
 import sounddevice as sd
 
 _BASE_DIR = Path(__file__).resolve().parent.parent
-INIT_SOUND = "init_sound.wav"
+INIT_SOUND = "init_sound.wav"  # resolved under assets/sounds/
 _INIT_GAIN = 0.25  # soft volume — startup chime shouldn't startle anyone
 
 
 def _resolve_sound_path(name: str) -> Path | None:
-    """Locate a bundled sound file (dev tree or PyInstaller onefile)."""
+    """Locate a bundled sound file (dev tree or PyInstaller onefile).
+
+    Looks under assets/sounds/ first, then the repo/exe root for
+    compatibility with older layouts.
+    """
     candidates: list[Path] = []
     if getattr(sys, "frozen", False):
         meipass = getattr(sys, "_MEIPASS", None)
         if meipass:
-            candidates.append(Path(meipass) / name)
-        candidates.append(Path(sys.executable).parent / name)
-    candidates.append(_BASE_DIR / name)
+            candidates.append(Path(meipass) / "assets" / "sounds" / name)
+            candidates.append(Path(meipass) / name)          # legacy flat bundle
+        candidates.append(Path(sys.executable).parent / "assets" / "sounds" / name)
+        candidates.append(Path(sys.executable).parent / name)  # legacy flat bundle
+    candidates.append(_BASE_DIR / "assets" / "sounds" / name)
+    candidates.append(_BASE_DIR / name)                        # legacy flat layout
     for p in candidates:
         if p.is_file():
             return p

@@ -107,7 +107,7 @@ class Extractor:
 
     def _llm_extract(self, text: str, memory_type: MemoryType, source: str, context: Optional[dict] = None) -> Event:
         try:
-            from or_client import client
+            from core.or_client import client
             context_str = json.dumps(context or {})
             prompt = (
                 f"{_SYSTEM_PROMPT}\n\n"

@@ -32,7 +32,7 @@ def business_radar(parameters: dict, player=None, speak=None) -> str:
 
     elif action == "analyze":
         def run_analysis():
-            from core.business_analyzer import analyze_all_businesses
+            from core.intel.business_analyzer import analyze_all_businesses
             analyze_all_businesses()
 
         threading.Thread(target=run_analysis, daemon=True).start()

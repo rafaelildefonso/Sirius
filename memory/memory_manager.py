@@ -266,7 +266,7 @@ def should_extract_memory(user_text: str, sirius_text: str, api_key: str = "") -
     if not get_secret("openrouter_api_key"):
         return False
     try:
-        from or_client import client
+        from core.or_client import client
         combined = f"User: {user_text[:300]}\nSirius: {sirius_text[:1000]}"
         result = client.chat(
             f"Does this conversation contain ANY of the following?\n"
@@ -292,7 +292,7 @@ def extract_memory(user_text: str, sirius_text: str, api_key: str = "") -> dict:
     if not get_secret("openrouter_api_key"):
         return {}
     try:
-        from or_client import client
+        from core.or_client import client
         combined = f"User: {user_text[:600]}\nSirius: {sirius_text[:300]}"
         raw = client.chat(
             f"Extract ALL memorable personal facts from this conversation. Any language.\n"

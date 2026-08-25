@@ -35,7 +35,7 @@ def linkedin_jobs_radar(parameters: dict, player=None, speak=None) -> str:
 
     elif action == "analyze":
         def run_analysis():
-            from core.job_analyzer import analyze_all_jobs
+            from core.intel.job_analyzer import analyze_all_jobs
             analyze_all_jobs()
 
         threading.Thread(target=run_analysis, daemon=True).start()

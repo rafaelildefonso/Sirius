@@ -1,7 +1,7 @@
 """Integration smoke-test for the new pairing/sync security flow.
 
 Runs against an isolated SIRIUS_DATA_DIR so it never touches the real config.
-Run: python dashboard/test_server_security.py
+Run: python tests/test_server_security.py
 """
 import base64
 import json

@@ -22,7 +22,7 @@ DEFAULT_WHATSAPP_MSG = (
 
 def _call_maps_scraper(segmentos, cidade, max_por_seg, mostrar_navegador, log_func=None):
     """Wrapper para rodar o maps scraper (síncrono) em thread."""
-    from core.google_maps_scraper import scrape_google_maps
+    from core.intel.google_maps_scraper import scrape_google_maps
     return scrape_google_maps(
         segmentos=segmentos,
         cidade=cidade,
@@ -79,7 +79,7 @@ def _salvar_resultados(objetivo, maps_result, dr_result):
     arquivos = []
 
     if maps_result and maps_result["todos"]:
-        from core.google_maps_scraper import salvar_csv, salvar_whatsapp_messages
+        from core.intel.google_maps_scraper import salvar_csv, salvar_whatsapp_messages
 
         csv_path = DOWNLOADS_DIR / f"maps_prospeccao_{ts}.csv"
         salvar_csv(maps_result["todos"], str(csv_path))

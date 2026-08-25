@@ -68,7 +68,7 @@ class Classifier:
 
     def _llm_classify(self, text: str) -> MemoryType:
         try:
-            from or_client import client
+            from core.or_client import client
             result = client.chat(
                 f"{_SYSTEM_PROMPT}\n\nUser message: {text[:500]}\n\nCategory code (C0-C11):",
                 system=_SYSTEM_PROMPT,

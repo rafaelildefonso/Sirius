@@ -30,13 +30,16 @@ The project uses a **dual-process architecture**: a Tauri v2 + React frontend (`
 
 | Directory | Contents |
 |-----------|----------|
-| `core/` | Config loader, LLM client, STT, TTS, Google auth, scrapers |
+| `core/` | Config loader, LLM clients (`llm_client.py`, `or_client.py`), STT, TTS, Google auth, plugin loader |
+| `core/intel/` | Scrapers & business intelligence (LinkedIn/Google Jobs/Maps scrapers, business/job analyzers, scoring engine) |
+| `assets/` | Non-code assets: `sounds/init_sound.wav`, `prompts/system_prompt.txt` (bundled by the PyInstaller spec) |
 | `actions/` | All tool/action modules (computer control, browser, files, web search, Gmail, Calendar, etc.) |
 | `agent/` | Executor, planner, task queue, error handler |
 | `dashboard/` | `server.py` + `static/` (login.html, app.html, crypto-js) |
 | `persistence/` | SQLite + Fernet encryption: database, repository, models, embedding, retriever |
 | `config/` | JSON configs: `configs.json`, `api_keys.json`, `permissions.json`, etc. |
 | `memory/` | `memory_manager.py`, `config_manager.py`, `sirius.db` |
+| `tests/` | Pytest suite (`test_persistence.py`) + integration tests (`test_server_security.py`) |
 | `sirius-ui/` | React 19 + TypeScript + Vite + Tailwind CSS frontend + Tauri v2 |
 | `sirius_companion/` | Flutter app companion para celular (controla o SIRIUS via dashboard) |
 
