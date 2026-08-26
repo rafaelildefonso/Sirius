@@ -1219,6 +1219,7 @@ class _TaskQuickAddCard extends StatefulWidget {
 class _TaskQuickAddCardState extends State<_TaskQuickAddCard> {
   final TextEditingController _controller = TextEditingController();
   DateTime? _selectedTime;
+  DateTime? _selectedDate;
   bool _saving = false;
 
   @override
@@ -1229,25 +1230,59 @@ class _TaskQuickAddCardState extends State<_TaskQuickAddCard> {
 
   static String _labelFor(DateTime t) {
     final now = DateTime.now();
-    if (t.day == now.day && t.month == now.month) {
-      return 'Hoje ${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
+    final today = DateTime(now.year, now.month, now.day);
+    final target = DateTime(t.year, t.month, t.day);
+    final diff = target.difference(today).inDays;
+    String dayLabel;
+    if (diff == 0) {
+      dayLabel = 'Hoje';
+    } else if (diff == 1) {
+      dayLabel = 'Amanhã';
+    } else {
+      dayLabel = '${t.day.toString().padLeft(2, '0')}/${t.month.toString().padLeft(2, '0')}';
     }
-    if (t.day == now.day + 1) {
-      return 'Amanhã ${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
-    }
-    return '${t.day.toString().padLeft(2, '0')}/${t.month.toString().padLeft(2, '0')} '
-        '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
+    return '$dayLabel ${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
+  }
+
+  static String _dateLabel(DateTime d) {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final target = DateTime(d.year, d.month, d.day);
+    final diff = target.difference(today).inDays;
+    if (diff == 0) return 'Hoje';
+    if (diff == 1) return 'Amanhã';
+    return '${d.day.toString().padLeft(2, '0')}/${d.month.toString().padLeft(2, '0')}';
+  }
+
+  Future<void> _pickCustomDate() async {
+    final now = DateTime.now();
+    final date = await showDatePicker(
+      context: context,
+      initialDate: _selectedDate ?? now,
+      firstDate: now,
+      lastDate: now.add(const Duration(days: 365)),
+    );
+    if (date == null) return;
+    setState(() {
+      _selectedDate = DateTime(date.year, date.month, date.day);
+      if (_selectedTime != null) {
+        _selectedTime = DateTime(
+          date.year, date.month, date.day,
+          _selectedTime!.hour, _selectedTime!.minute,
+        );
+      }
+    });
   }
 
   Future<void> _pickCustomTime() async {
-    final now = DateTime.now();
+    final base = _selectedDate ?? DateTime.now();
     final time = await showTimePicker(
       context: context,
-      initialTime: TimeOfDay.fromDateTime(now.add(const Duration(hours: 1))),
+      initialTime: TimeOfDay.fromDateTime(base.add(const Duration(hours: 1))),
     );
     if (time == null) return;
-    var picked = DateTime(now.year, now.month, now.day, time.hour, time.minute);
-    if (!picked.isAfter(now)) {
+    var picked = DateTime(base.year, base.month, base.day, time.hour, time.minute);
+    if (picked.isBefore(DateTime.now())) {
       picked = picked.add(const Duration(days: 1));
     }
     setState(() => _selectedTime = picked);
@@ -1262,7 +1297,10 @@ class _TaskQuickAddCardState extends State<_TaskQuickAddCard> {
       await TaskAlarmService.createQuickTask(title, dueAt);
       if (!mounted) return;
       _controller.clear();
-      setState(() => _selectedTime = null);
+      setState(() {
+        _selectedTime = null;
+        _selectedDate = null;
+      });
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('Tarefa agendada para ${_labelFor(dueAt)}'),
@@ -1329,17 +1367,35 @@ class _TaskQuickAddCardState extends State<_TaskQuickAddCard> {
                     backgroundColor: const Color(0xFFFFFFFF).withOpacity(0.06),
                     side: BorderSide(color: const Color(0xFF6366F1).withOpacity(0.4)),
                     onPressed: () {
-                      final now = DateTime.now();
+                      final base = _selectedDate ?? DateTime.now();
                       DateTime t;
                       if (preset.$2 != null) {
-                        t = now.add(preset.$2!);
+                        t = base.add(preset.$2!);
                       } else {
-                        t = DateTime(now.year, now.month, now.day, 9);
-                        if (!t.isAfter(now)) t = t.add(const Duration(days: 1));
+                        t = DateTime(base.year, base.month, base.day, 9);
+                        if (t.isBefore(DateTime.now())) t = t.add(const Duration(days: 1));
                       }
                       setState(() => _selectedTime = t);
                     },
                   ),
+                ActionChip(
+                  avatar: Icon(
+                    Icons.calendar_today_rounded,
+                    size: 16,
+                    color: _selectedDate != null ? const Color(0xFF22C55E) : Colors.white70,
+                  ),
+                  label: Text(
+                    _selectedDate == null ? 'Hoje' : _dateLabel(_selectedDate!),
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: _selectedDate != null ? const Color(0xFF22C55E) : Colors.white,
+                      fontWeight: _selectedDate != null ? FontWeight.w700 : FontWeight.w400,
+                    ),
+                  ),
+                  backgroundColor: const Color(0xFFFFFFFF).withOpacity(0.06),
+                  side: BorderSide(color: const Color(0xFF6366F1).withOpacity(0.4)),
+                  onPressed: _pickCustomDate,
+                ),
                 ActionChip(
                   avatar: Icon(
                     Icons.schedule_rounded,
