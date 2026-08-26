@@ -229,6 +229,7 @@ class SyncWorker {
         AppConstants.pcMessageChannelId,
         AppConstants.pcMessageChannelName,
         channelDescription: 'Mensagens enviadas pelo SIRIUS no PC',
+        icon: 'ic_stat_face',
         importance: Importance.high,
         priority: Priority.high,
       );

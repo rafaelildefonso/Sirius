@@ -121,6 +121,7 @@ class GeofenceManager {
         foregroundServiceTypes: [AndroidForegroundType.location],
         notificationChannelId: _geofenceChannelId,
         initialNotificationTitle: 'SIRIUS Companion',
+        initialNotificationContent: 'Inicializando...',
         foregroundServiceNotificationId: 888,
       ),
     );
@@ -170,6 +171,7 @@ class GeofenceManager {
       'geofence_channel',
       'Geofence Alerts',
       channelDescription: 'Notificações ao entrar/sair de lugares salvos',
+      icon: 'ic_stat_face',
       importance: Importance.high,
       priority: Priority.high,
       actions: [
@@ -292,6 +294,11 @@ class GeofenceManager {
 @pragma('vm:entry-point')
 void onStart(ServiceInstance service) async {
   if (service is AndroidServiceInstance) {
+    service.setForegroundNotificationInfo(
+      title: 'SIRIUS Companion',
+      content: 'Monitoramento ativo',
+    );
+
     service.on('setAsForeground').listen((event) {
       service.setAsForegroundService();
     });
@@ -299,6 +306,10 @@ void onStart(ServiceInstance service) async {
       service.setAsBackgroundService();
     });
   }
+
+  service.on('stopService').listen((event) {
+    service.stopSelf();
+  });
 }
 
 // Riverpod providers for reactive UI

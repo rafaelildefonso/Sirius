@@ -68,7 +68,7 @@ class TaskAlarmService {
   static Future<void> _ensureBackgroundReady() async {
     if (_initialized || _bgInitialized) return;
     const settings = InitializationSettings(
-      android: AndroidInitializationSettings('@mipmap/ic_launcher'),
+      android: AndroidInitializationSettings('@drawable/ic_stat_face'),
     );
     await _plugin.initialize(settings: settings);
     try {
@@ -435,6 +435,7 @@ class TaskAlarmService {
       AppConstants.taskAlarmChannelId,
       AppConstants.taskAlarmChannelName,
       channelDescription: 'Lembretes em tela cheia (silencioso, com vibração)',
+      icon: 'ic_stat_face',
       importance: Importance.max,
       priority: Priority.max,
       category: AndroidNotificationCategory.alarm,

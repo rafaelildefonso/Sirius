@@ -50,7 +50,7 @@ class _SiriusCompanionAppState extends ConsumerState<SiriusCompanionApp> {
     await ApiClient.instance.restoreSavedBaseUrl();
     await initWorkManager();
 
-    const androidSettings = AndroidInitializationSettings('@mipmap/ic_launcher');
+    const androidSettings = AndroidInitializationSettings('@drawable/ic_stat_face');
     const initSettings = InitializationSettings(android: androidSettings);
     await _notificationPlugin.initialize(
       settings: initSettings,
