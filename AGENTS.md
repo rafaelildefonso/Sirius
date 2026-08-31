@@ -112,3 +112,62 @@ python setup.py
 - WS server fails? Check port 8765 is free.
 - Tauri window shows white screen? Run frontend build manually: `cd sirius-ui && npm run build`
 - Configs not loading? Check `SIRIUS_DATA_DIR` env var or `%LOCALAPPDATA%\SIRIUS\config\`.
+
+## 11. Browser Control Actions
+
+`actions/browser_control.py` is the main module for web automation via Playwright. The AI uses `browser_control` tool for all web interactions.
+
+### Basic Actions
+
+| Action | Description | Key Params |
+|--------|-------------|------------|
+| `go_to` | Navigate to URL | `url`, `browser` |
+| `search` | Search on engine | `query`, `engine` (google/bing/duckduckgo) |
+| `click` | Click element | `selector` or `text` |
+| `type` | Type text | `selector`, `text`, `clear_first` |
+| `smart_click` | Click by description | `description` (role/text/placeholder match) |
+| `smart_type` | Type by description | `description`, `text` |
+| `scroll` | Scroll page | `direction` (up/down), `amount` |
+| `fill_form` | Fill multiple fields | `fields` (dict: selector→value) |
+| `press` | Press key | `key` (Enter, Escape, F5...) |
+| `get_text` | Get page text | - |
+| `get_url` | Get current URL | - |
+| `screenshot` | Save screenshot | `path` |
+
+### Advanced Actions (New)
+
+| Action | Description | Key Params |
+|--------|-------------|------------|
+| `upload` | Upload file to `<input type="file">` | `selector`, `path` (file path) |
+| `wait` | Wait for element/text | `selector` or `text`, `state`, `timeout` |
+| `download` | Download file via click | `selector` |
+| `script` | Run multi-step workflow | `steps` (array of action objects) |
+
+### Session & Browser Management
+
+| Action | Description |
+|--------|-------------|
+| `new_tab` / `close_tab` | Tab management |
+| `back` / `forward` / `reload` | Navigation |
+| `switch` / `list_browsers` | Switch between browsers |
+| `close` / `close_all` | Close sessions |
+
+### Headless Mode
+
+Pass `"headless": true` to run the browser invisibly (for scraping). Default is `false` (visible UI).
+
+### Script Action Example
+
+```json
+{
+  "action": "script",
+  "steps": [
+    {"action": "go_to", "url": "https://tiktok.com/upload"},
+    {"action": "wait", "selector": "input[type=file]", "timeout": 10000},
+    {"action": "upload", "selector": "input[type=file]", "path": "C:/Videos/video.mp4"},
+    {"action": "wait", "selector": "textarea", "timeout": 10000},
+    {"action": "type", "selector": "textarea", "text": "My video description"},
+    {"action": "click", "text": "Post"}
+  ]
+}
+```

@@ -514,25 +514,56 @@ TOOL_DECLARATIONS = [
             "Always pass the 'browser' parameter when the user specifies a browser (e.g. 'Brave', 'Edge'). "
             "If the browser is already open, it will use the active session. "
             "CRITICAL: When the user wants to buy something, use browser_control to navigate "
-            "to a shopping site (e.g. Mercado Livre, Amazon, Buscapé) showing the products and prices directly on screen."
+            "to a shopping site (e.g. Mercado Livre, Amazon, Buscapé) showing the products "
+            "and prices directly on screen. "
+            "NEW ACTIONS: 'upload' for file uploads (input[type=file]), 'wait' to wait for "
+            "elements, 'download' to download files, 'script' to run multi-step workflows "
+            "in one call. "
+            "Use 'headless: true' for invisible scraping tasks, 'headless: false' (default) "
+            "for visible UI automation."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "action":      {"type": "STRING", "description": "go_to | search | click | type | scroll | fill_form | smart_click | smart_type | get_text | get_url | press | new_tab | close_tab | screenshot | back | forward | reload | switch | list_browsers | close | close_all"},
-                "browser":     {"type": "STRING", "description": "Target browser: chrome | edge | firefox | opera | operagx | brave | vivaldi | safari. Omit to use the currently active browser."},
+                "action":      {"type": "STRING", "description": (
+                    "go_to | search | click | type | scroll | fill_form | "
+                    "smart_click | smart_type | get_text | get_url | press | "
+                    "new_tab | close_tab | screenshot | back | forward | reload | "
+                    "switch | list_browsers | close | close_all | upload | wait | "
+                    "download | script"
+                )},
+                "browser":     {"type": "STRING", "description": (
+                    "Target browser: chrome | edge | firefox | opera | "
+                    "operagx | brave | vivaldi | safari. "
+                    "Omit to use the currently active browser."
+                )},
                 "url":         {"type": "STRING", "description": "URL for go_to / new_tab action"},
                 "query":       {"type": "STRING", "description": "Search query for search action"},
-                "engine":      {"type": "STRING", "description": "Search engine: google | bing | duckduckgo | yandex (default: google)"},
-                "selector":    {"type": "STRING", "description": "CSS selector for click/type"},
+                "engine":      {"type": "STRING", "description": (
+                    "Search engine: google | bing | duckduckgo | yandex (default: google)"
+                )},
+                "selector":    {"type": "STRING", "description": "CSS selector for click/type/upload/download/wait"},
                 "text":        {"type": "STRING", "description": "Text to click or type"},
                 "description": {"type": "STRING", "description": "Element description for smart_click/smart_type"},
                 "direction":   {"type": "STRING", "description": "up | down for scroll"},
                 "amount":      {"type": "INTEGER", "description": "Scroll amount in pixels (default: 500)"},
                 "key":         {"type": "STRING", "description": "Key name for press action (e.g. Enter, Escape, F5)"},
-                "path":        {"type": "STRING", "description": "Save path for screenshot"},
+                "path":        {"type": "STRING", "description": (
+                    "Save path for screenshot OR file path for upload action"
+                )},
                 "incognito":   {"type": "BOOLEAN", "description": "Open in private/incognito mode"},
                 "clear_first": {"type": "BOOLEAN", "description": "Clear field before typing (default: true)"},
+                "headless":    {"type": "BOOLEAN", "description": (
+                    "Run browser invisible (default: false). Use true for scraping."
+                )},
+                "state":       {"type": "STRING", "description": (
+                    "Element state for wait action: visible | hidden | attached | detached (default: visible)"
+                )},
+                "timeout":     {"type": "INTEGER", "description": "Timeout in ms for wait action (default: 30000)"},
+                "steps":       {"type": "ARRAY", "description": (
+                    "Array of step objects for script action. "
+                    "Each step: {action, url, selector, text, path, ...}"
+                ), "items": {"type": "OBJECT"}},
             },
             "required": ["action"]
         }
@@ -1081,6 +1112,7 @@ class SiriusLive:
         self.ui.on_visibility = self._on_visibility_from_ws
         self._fft_mic_counter = 0
         self._fft_tts_counter = 0
+        self._last_user_speech = 0.0
 
         # Proactive engine 2.0 (context rotation, time-of-day, monitors)
         from actions.proactive import ProactiveEngine
@@ -1844,6 +1876,13 @@ class SiriusLive:
                     break
                 await asyncio.sleep(0.1)
 
+            # Don't open mic if UI is muted/hidden
+            if self.ui.muted:
+                print("[SIRIUS] Mic not opened — UI muted/hidden, waiting for visibility...")
+                while self.ui.muted:
+                    await asyncio.sleep(0.5)
+                print("[SIRIUS] UI visible, opening mic")
+
             stream = sd.InputStream(
                 samplerate=SEND_SAMPLE_RATE,
                 channels=CHANNELS,
@@ -1855,12 +1894,12 @@ class SiriusLive:
             self._audio_stream = stream
             print("[SIRIUS] Mic stream open")
 
-            # Always start active; visibility/mute changes handled by polling loop below
-            was_active = True
+            # Start inactive; wait for explicit visibility confirmation
+            was_active = False
             if not was_active:
                 stream.stop()
                 self.ui.set_voice_level(0.0)
-                print("[SIRIUS] Mic stream paused initially (inactive UI or muted)")
+                print("[SIRIUS] Mic stream paused initially (waiting for visibility)")
 
             while True:
                 if self._restart_event.is_set():
@@ -2227,13 +2266,17 @@ class SiriusLive:
 
                     if self._first_run:
                         self._first_run = False
-                        if hasattr(self.ui, 'hide_startup_panel'):
-                            self.ui.hide_startup_panel()
 
                         # Greeting/chime/briefing only when a VISIBLE UI is attached.
                         # Headless/hidden starts (autostart, background) stay silent and
                         # never fire the greeting later in this process.
-                        if self.ui.has_client and getattr(self.ui, '_window_visible', False):
+                        # Wait for visibility confirmation from frontend (up to 5s)
+                        for _ in range(50):
+                            if getattr(self.ui, '_visibility_set', False) and not self.ui.muted:
+                                break
+                            await asyncio.sleep(0.1)
+
+                        if self.ui.has_client and getattr(self.ui, '_window_visible', False) and not self.ui.muted:
                             if hasattr(self.ui, 'set_startup_progress'):
                                 self.ui.set_startup_progress(5, 5, "SIRIUS pronto!")
                             if hasattr(self.ui, 'set_startup_status'):
@@ -2252,6 +2295,10 @@ class SiriusLive:
                         else:
                             self._briefing_sent = True
                             print("[SIRIUS] No visible UI — greeting/chime/briefing suppressed")
+
+                        # Hide startup panel LAST so it stays hidden on reconnect
+                        if hasattr(self.ui, 'hide_startup_panel'):
+                            self.ui.hide_startup_panel()
 
                         self._allow_mic.set()
                         self.ui.set_state("LISTENING")
@@ -2702,7 +2749,7 @@ class SiriusLocal:
             {"role": "system", "content": self._build_system_prompt()}
         ] + list(self._conversation)
 
-        _NEEDS_LLM_ROUND = {"web_search", "screen_process", "agent_task"}
+        _NEEDS_LLM_ROUND = {"web_search", "screen_process", "agent_task", "browser_control"}
         plugin_decls  = self._plugin_registry.get_tool_declarations()
         ollama_tools  = _to_ollama_tools(TOOL_DECLARATIONS + plugin_decls)
 

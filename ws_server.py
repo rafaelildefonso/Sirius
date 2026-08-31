@@ -1124,6 +1124,7 @@ def _release_port(port: int) -> None:
 
 async def _run_server() -> None:
     global _server_instance, _server_started
+    print(f"[WS] _run_server() starting on 127.0.0.1:{_PORT}")
     try:
         async with ws_serve(_handler, "127.0.0.1", _PORT) as server:
             _server_instance = server
@@ -1131,11 +1132,12 @@ async def _run_server() -> None:
             _server_ready.set()
             print(f"[WS] UI WebSocket server started on ws://127.0.0.1:{_PORT}")
             await asyncio.Event().wait()
-    except OSError:
-        print(f"[WS] Port {_PORT} already in use — another backend instance is already running. Giving up.")
+    except OSError as e:
+        print(f"[WS] Port {_PORT} already in use — another backend instance is already running. Giving up. Error: {e}")
         _server_started = False
         _server_ready.set()
-    except Exception:
+    except Exception as e:
+        print(f"[WS] _run_server() FAILED with exception: {e}")
         traceback.print_exc()
         _server_started = False
         _server_ready.set()
@@ -1149,6 +1151,7 @@ def was_started() -> bool:
 def start() -> tuple[asyncio.AbstractEventLoop, threading.Thread | None]:
     """Start the WebSocket server in a background thread. Returns (loop, thread)."""
     global _loop, _server_started
+    print(f"[WS] start() called - releasing port {_PORT}")
     _release_port(_PORT)
     _loop = asyncio.new_event_loop()
     manager.set_loop(_loop)
@@ -1156,15 +1159,24 @@ def start() -> tuple[asyncio.AbstractEventLoop, threading.Thread | None]:
     _server_ready.clear()
 
     def _start() -> None:
+        print("[WS] Background thread starting, setting event loop")
         asyncio.set_event_loop(_loop)
         try:
             _loop.run_until_complete(_run_server())
-        except (KeyboardInterrupt, RuntimeError, asyncio.CancelledError):
+        except (KeyboardInterrupt, RuntimeError, asyncio.CancelledError) as e:
+            print(f"[WS] Thread exception: {type(e).__name__}: {e}")
+            _server_ready.set()
+        except Exception as e:
+            print(f"[WS] Thread FAILED with unexpected exception: {e}")
+            traceback.print_exc()
             _server_ready.set()
 
     t = threading.Thread(target=_start, daemon=True, name="ws-server")
+    print("[WS] Starting ws-server thread")
     t.start()
+    print("[WS] Waiting for server_ready event (timeout=5s)")
     _server_ready.wait(timeout=5)
+    print(f"[WS] start() returning, server_started={_server_started}")
     return _loop, t
 
 
@@ -1200,7 +1212,7 @@ class WsUI:
     def __init__(self):
         self._muted = False
         self._muted_by_user = False
-        self._window_visible = False
+        self._window_visible = True
         self._visibility_set = False
         self._current_state = "INITIALISING"
         self._current_file_path: str | None = None
@@ -1251,14 +1263,19 @@ class WsUI:
         """Send hide_interface message to frontend (thread-safe)."""
         manager.broadcast_sync(WsMessage("hide_interface"))
 
-    async def wait_for_client_async(self) -> None:
+    async def wait_for_client_async(self, timeout: float = 30.0) -> None:
         """Block until at least one frontend WebSocket client connects (async)."""
         if manager.has_connections():
             return
         manager._client_event = threading.Event()
         try:
+            start = time.monotonic()
             while not manager.has_connections():
-                manager._client_event.wait(timeout=0.5)
+                remaining = timeout - (time.monotonic() - start)
+                if remaining <= 0:
+                    print("[WS] Timeout waiting for frontend client — proceeding anyway")
+                    break
+                manager._client_event.wait(timeout=min(0.5, remaining))
         finally:
             manager._client_event = None
 
@@ -1331,19 +1348,19 @@ class WsUI:
         if self._on_text_command:
             self._on_text_command(text)
 
+    def _recalc_muted(self) -> None:
+        """Single source of truth: muted = user_intent OR window_hidden."""
+        self._muted = self._muted_by_user or not self._window_visible
+
     def _on_mute_from_ws(self, muted: bool) -> None:
         self._muted_by_user = muted
-        self._muted = muted
+        self._recalc_muted()
         manager.broadcast_sync(WsMessage("muted", {"muted": self.muted}))
 
     def _on_visibility_from_ws(self, visible: bool) -> None:
         self._window_visible = visible
         self._visibility_set = True
-        if visible:
-            self._muted = self._muted_by_user
-        else:
-            self._muted_by_user = self._muted
-            self._muted = True
+        self._recalc_muted()
         manager.broadcast_sync(WsMessage("muted", {"muted": self.muted}))
         cb = getattr(self, "on_visibility", None)
         if cb:
@@ -1351,9 +1368,8 @@ class WsUI:
 
     def _on_toggle_mute_from_ws(self) -> None:
         self._muted_by_user = not self._muted_by_user
-        if self._window_visible:
-            self._muted = self._muted_by_user
-            manager.broadcast_sync(WsMessage("muted", {"muted": self.muted}))
+        self._recalc_muted()
+        manager.broadcast_sync(WsMessage("muted", {"muted": self.muted}))
 
     def _on_reconnect(self) -> None:
         """Called when a new frontend client connects while another already exists (reconnect)."""

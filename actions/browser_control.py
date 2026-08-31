@@ -10,6 +10,7 @@ import subprocess
 import threading
 from pathlib import Path
 from typing import Optional
+from urllib.parse import quote_plus
 
 from playwright.async_api import (
     BrowserContext,
@@ -74,6 +75,9 @@ def _normalize_url(url: str) -> str:
         return "about:blank"
     if "://" in url:
         return url
+    for scheme in ("data:", "javascript:", "blob:", "file:", "about:"):
+        if url.lower().startswith(scheme):
+            return url
     # No dot at all -> assume .com  (e.g. "instagram" -> "instagram.com")
     if "." not in url:
         url = url + ".com"
@@ -427,9 +431,10 @@ class _BrowserSession:
     All browsers launch via launch_persistent_context on the real user profile.
     """
 
-    def __init__(self, browser_name: str):
+    def __init__(self, browser_name: str, headless: bool = False):
         self.browser_name = browser_name
         self._spec        = _resolve_browser(browser_name)
+        self._headless    = headless
 
         self._loop:    asyncio.AbstractEventLoop | None = None
         self._thread:  threading.Thread | None          = None
@@ -460,7 +465,7 @@ class _BrowserSession:
     async def _async_init(self):
         self._pw = await async_playwright().start()
 
-    def run(self, coro, timeout: int = 60) -> str:
+    def run(self, coro, timeout: int = 120) -> str:
         if not self._loop:
             raise RuntimeError(f"Session for '{self.browser_name}' not started.")
         future = asyncio.run_coroutine_threadsafe(coro, self._loop)
@@ -476,6 +481,12 @@ class _BrowserSession:
                 await self._context.close()
             except Exception:
                 pass
+        if getattr(self, '_browser_obj', None):
+            try:
+                await self._browser_obj.close()
+            except Exception:
+                pass
+            self._browser_obj = None
         if self._pw:
             try:
                 await self._pw.stop()
@@ -521,7 +532,7 @@ class _BrowserSession:
                 Path.home() / ".sirius_profiles" / "firefox"
             )
             kwargs: dict = {
-                "headless":    False,
+                "headless":    self._headless,
                 "slow_mo":     0,
                 "viewport":    None,
                 "no_viewport": True,
@@ -545,7 +556,7 @@ class _BrowserSession:
             safari_profile = str(Path.home() / ".sirius_profiles" / "safari")
             Path(safari_profile).mkdir(parents=True, exist_ok=True)
             kwargs = {
-                "headless":    False,
+                "headless":    self._headless,
                 "slow_mo":     0,
                 "viewport":    None,
                 "no_viewport": True,
@@ -557,9 +568,12 @@ class _BrowserSession:
             return
 
         profile = _real_profile_dir(self.browser_name)
+        if self._headless:
+            profile = str(Path.home() / ".sirius_profiles" / f"{self.browser_name}_headless")
+            Path(profile).mkdir(parents=True, exist_ok=True)
 
         kwargs = {
-            "headless":    False,
+            "headless":    self._headless,
             "slow_mo":     0,
             "viewport":    None,
             "no_viewport": True,
@@ -593,13 +607,17 @@ class _BrowserSession:
             return
         except Exception as e:
             err_msg = str(e).lower()
-            is_lock = any(k in err_msg for k in ["lock", "in use", "used by another", "is_open"])
+            is_lock = any(k in err_msg for k in [
+                "lock", "in use", "used by another", "is_open",
+                "user data directory", "could not connect",
+                "failed to launch", "already running", "being used",
+                "target page", "browser has been closed",
+            ])
 
             if is_lock:
-                print(f"[Browser] [WARN]  Profile locked for {label}: {e}")
-                raise e
-
-            print(f"[Browser] [WARN]  Launch failed for {label}: {e}")
+                print(f"[Browser] [WARN]  Profile locked for {label}, trying SIRIUS profile: {e}")
+            else:
+                print(f"[Browser] [WARN]  Launch failed for {label}: {e}")
 
             sirius_profile = str(Path.home() / ".sirius_profiles" / self.browser_name)
             Path(sirius_profile).mkdir(parents=True, exist_ok=True)
@@ -612,11 +630,30 @@ class _BrowserSession:
                 self._page    = pg
                 print(f"[Browser] [OK] Launched [{label}] with SIRIUS profile")
             except Exception as e2:
-                # Cleanup if partially opened
-                if 'ctx' in locals():
-                    try: await ctx.close()
-                    except Exception: pass
-                raise RuntimeError(f"Could not launch {self.browser_name}: {e2}") from e2
+                print(f"[Browser] [WARN]  SIRIUS profile also failed: {e2}")
+                print(f"[Browser] Falling back to non-persistent context for {label}")
+                try:
+                    browser_obj = await engine_obj.launch(
+                        headless=self._headless,
+                        args=kwargs.get("args", []),
+                        slow_mo=0,
+                    )
+                    ctx = await browser_obj.new_context(
+                        viewport=None,
+                        no_viewport=True,
+                    )
+                    pg = await ctx.new_page()
+                    self._context = ctx
+                    self._page    = pg
+                    self._browser_obj = browser_obj
+                    print(f"[Browser] [OK] Launched [{label}] with non-persistent context")
+                except Exception as e3:
+                    if 'ctx' in locals():
+                        try:
+                            await ctx.close()
+                        except Exception:
+                            pass
+                    raise RuntimeError(f"Could not launch {self.browser_name}: {e3}") from e3
 
 
     async def _get_page(self) -> Page:
@@ -640,7 +677,10 @@ class _BrowserSession:
             if "lock" in str(e).lower() or "in use" in str(e).lower() or "used by another" in str(e).lower():
                 exe = self._spec.get("exe") if self._spec else None
                 if _system_open(url, exe):
-                    return f"Browser '{self.browser_name}' was already open. URL opened in existing instance via system."
+                    return (
+                        f"Browser '{self.browser_name}' was already open. "
+                        f"URL opened in existing instance via system."
+                    )
             raise e
 
         prev_url = page.url
@@ -679,7 +719,7 @@ class _BrowserSession:
             "yandex":     "https://yandex.com/search/?text=",
         }
         base = _engines.get(engine.lower(), _engines["google"])
-        return await self.go_to(base + query.replace(" ", "+"))
+        return await self.go_to(base + quote_plus(query))
 
     async def click(self, selector: str = None, text: str = None) -> str:
         page = await self._get_page()
@@ -848,6 +888,115 @@ class _BrowserSession:
         except Exception as e:
             return f"Reload error: {e}"
 
+    async def upload_file(self, selector: str, file_path: str) -> str:
+        page = await self._get_page()
+        try:
+            path = Path(file_path).resolve()
+            if not path.exists():
+                return f"File not found: {file_path}"
+            if not path.is_file():
+                return f"Not a file: {file_path}"
+            await page.set_input_files(selector, str(path))
+            return f"File uploaded: {path.name} -> {selector}"
+        except Exception as e:
+            return f"Upload error: {e}"
+
+    async def wait_for(self, selector: str = None, text: str = None,
+                       state: str = "visible", timeout: int = 30_000) -> str:
+        page = await self._get_page()
+        try:
+            if selector:
+                await page.wait_for_selector(selector, state=state, timeout=timeout)
+                return f"Element ready: {selector}"
+            if text:
+                await page.wait_for_function(
+                    f"document.body.innerText.includes({text!r})",
+                    timeout=timeout,
+                )
+                return f"Text found: '{text}'"
+            return "Provide selector or text to wait for."
+        except PlaywrightTimeout:
+            return f"Timeout waiting for ({selector or text}) [{timeout}ms]"
+        except Exception as e:
+            return f"Wait error: {e}"
+
+    async def download_file(self, selector: str) -> str:
+        page = await self._get_page()
+        try:
+            async with page.expect_download(timeout=30_000) as download_info:
+                await page.click(selector)
+            download = await download_info.value
+            save_dir = Path.home() / "Downloads"
+            save_dir.mkdir(exist_ok=True)
+            path = await download.path()
+            if path:
+                dest = save_dir / download.suggested_filename
+                import shutil
+                shutil.copy2(path, dest)
+                return f"Downloaded: {dest}"
+            return "Download failed (no path)."
+        except PlaywrightTimeout:
+            return "Download timed out."
+        except Exception as e:
+            return f"Download error: {e}"
+
+    async def run_script(self, steps: list) -> str:
+        results = []
+        for i, step in enumerate(steps):
+            action = step.get("action", "")
+            try:
+                if action == "go_to":
+                    r = await self.go_to(step.get("url", ""))
+                elif action == "click":
+                    r = await self.click(step.get("selector"), step.get("text"))
+                elif action == "type":
+                    r = await self.type_text(
+                        step.get("selector"),
+                        step.get("text", ""),
+                        step.get("clear_first", True),
+                    )
+                elif action == "smart_click":
+                    r = await self.smart_click(step.get("description", ""))
+                elif action == "smart_type":
+                    r = await self.smart_type(step.get("description", ""), step.get("text", ""))
+                elif action == "scroll":
+                    r = await self.scroll(step.get("direction", "down"), int(step.get("amount", 500)))
+                elif action == "press":
+                    r = await self.press(step.get("key", "Enter"))
+                elif action == "wait":
+                    r = await self.wait_for(step.get("selector"), step.get("text"),
+                                            step.get("state", "visible"),
+                                            int(step.get("timeout", 30_000)))
+                elif action == "upload":
+                    r = await self.upload_file(step.get("selector", ""), step.get("path", ""))
+                elif action == "download":
+                    r = await self.download_file(step.get("selector", ""))
+                elif action == "fill_form":
+                    r = await self.fill_form(step.get("fields", {}))
+                elif action == "get_text":
+                    r = await self.get_text()
+                elif action == "get_url":
+                    r = await self.get_url()
+                elif action == "screenshot":
+                    r = await self.screenshot(step.get("path"))
+                elif action == "new_tab":
+                    r = await self.new_tab(step.get("url", ""))
+                elif action == "close_tab":
+                    r = await self.close_tab()
+                elif action == "back":
+                    r = await self.back()
+                elif action == "forward":
+                    r = await self.forward()
+                elif action == "reload":
+                    r = await self.reload()
+                else:
+                    r = f"Unknown step action: '{action}'"
+                results.append(f"[{i}] {action}: {r}")
+            except Exception as e:
+                results.append(f"[{i}] {action} FAILED: {e}")
+                break
+        return "\n".join(results)
+
     async def close_browser(self) -> str:
         await self._async_close()
         return f"{self.browser_name} closed."
@@ -860,16 +1009,16 @@ class _SessionRegistry:
         self._active_browser: str                        = ""
         self._lock            = threading.Lock()
 
-    def _get_or_create(self, browser_name: str) -> _BrowserSession:
+    def _get_or_create(self, browser_name: str, headless: bool = False) -> _BrowserSession:
         with self._lock:
             if browser_name not in self._sessions:
-                sess = _BrowserSession(browser_name)
+                sess = _BrowserSession(browser_name, headless=headless)
                 sess.start()
                 self._sessions[browser_name] = sess
                 print(f"[Registry] New session: {browser_name}")
             return self._sessions[browser_name]
 
-    def get(self, browser_name: str | None = None) -> _BrowserSession:
+    def get(self, browser_name: str | None = None, headless: bool = False) -> _BrowserSession:
         if not browser_name:
             # Prioritize a browser that is ALREADY RUNNING
             running_browser = None
@@ -884,7 +1033,7 @@ class _SessionRegistry:
             browser_name = running_browser or self._active_browser or _detect_default_browser()
 
         browser_name = _ALIASES.get(browser_name.lower().strip(), browser_name.lower().strip())
-        sess = self._get_or_create(browser_name)
+        sess = self._get_or_create(browser_name, headless=headless)
         self._active_browser = browser_name
         return sess
 
@@ -939,6 +1088,7 @@ def browser_control(
     params  = parameters or {}
     action  = params.get("action", "").lower().strip()
     browser = params.get("browser", "").lower().strip() or None
+    headless = params.get("headless", False)
     result  = "Unknown action."
 
     if action == "switch":
@@ -958,7 +1108,7 @@ def browser_control(
         return result
 
     try:
-        sess = _registry.get(browser)
+        sess = _registry.get(browser, headless=headless)
     except Exception as e:
         result = f"Could not start browser session: {e}"
         _log(player, result)
@@ -1000,6 +1150,18 @@ def browser_control(
             result = sess.run(sess.forward())
         elif action == "reload":
             result = sess.run(sess.reload())
+        elif action == "upload":
+            result = sess.run(sess.upload_file(
+                params.get("selector", ""), params.get("path", "")))
+        elif action == "wait":
+            result = sess.run(sess.wait_for(
+                params.get("selector"), params.get("text"),
+                params.get("state", "visible"),
+                int(params.get("timeout", 30_000))))
+        elif action == "download":
+            result = sess.run(sess.download_file(params.get("selector", "")))
+        elif action == "script":
+            result = sess.run(sess.run_script(params.get("steps", [])))
         elif action == "close":
             target = browser or _registry._active_browser
             result = _registry.close_one(target) if target else "No browser specified."

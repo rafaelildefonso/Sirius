@@ -31,6 +31,11 @@ if sys.platform == "win32":
     except Exception:
         pass
 
+# Fix Windows console encoding for Unicode output (browser automation, etc.)
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+
 
 def _migrate_from_roaming(data_dir: Path):
     """Copy existing data from old Roaming location to new Local location."""

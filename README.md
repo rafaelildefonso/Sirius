@@ -1,8 +1,6 @@
 ﻿# 🤖 SIRIUS
 ### The Ultimate Cross-Platform Personal AI Assistant — By Rafael Ildefonso
 
-> 📺 **[Watch the full setup video on YouTube](https://youtu.be/ej1f5OE3SNQ?si=lCxDhJix9ungq1Ry)**
-
 A real-time voice AI that can hear, see, understand, and control your computer — on any OS. Supporting Windows, macOS, and Linux. Local execution. Zero subscriptions. Engineered for total autonomy.
 
 ---
@@ -12,6 +10,18 @@ A real-time voice AI that can hear, see, understand, and control your computer �
 SIRIUS represents the pinnacle of the Sirius series, evolving into a more flexible and robust system. It bridges the gap between the operating system and human intent. Through natural dialogue, Sirius 39 analyzes your screen, processes uploaded documents, and executes complex workflows with a brand-new, adaptive interface.
 
 It's not just an assistant — it's an extension of your digital life.
+
+---
+
+## QUICKLY RUN
+
+```bash
+# app windows
+python build_backend.py;cd sirius-ui;npx tauri build
+
+# app mobile
+cd sirius_companion; flutter build apk --debug
+```
 
 ---
 
@@ -313,15 +323,3 @@ Na primeira vez que você usar um comando do Google (ex: "O que eu tenho para ho
 
 Personal and non-commercial use only.
 Licensed under **[Creative Commons BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/)**.
-
----
-
-## 👤 Connect with the Creator
-
-Engineered by a developer building a real-world JARVIS-style assistant.
-⭐ **Star the repository to support the journey to Mark 100.**
-
-| Platform | Link |
-|---|---|
-| YouTube | [@FatihMakes](https://www.youtube.com/@FatihMakes) |
-| Instagram | [@fatihmakes](https://www.instagram.com/fatihmakes) |
