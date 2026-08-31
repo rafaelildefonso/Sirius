@@ -664,19 +664,20 @@ class Repository:
     ) -> dict:
         """Return weekly usage stats: daily minutes, avg daily, top apps."""
         if start_ts is None:
-            # approximate start of week (Monday 00:00)
+            # start of week = Sunday 00:00
             from datetime import datetime, timedelta
             today = datetime.now()
-            monday = today - timedelta(days=today.weekday())
-            start_ts = monday.timestamp() * 1000
+            sunday = today - timedelta(days=(today.weekday() + 1) % 7)
+            sunday = sunday.replace(hour=0, minute=0, second=0, microsecond=0)
+            start_ts = sunday.timestamp() * 1000
         if end_ts is None:
             end_ts = datetime.now().timestamp() * 1000
 
-        # daily minutes for last 7 days
+        # daily minutes for last 7 days (Sunday..Saturday)
         days = []
-        for i in range(6, -1, -1):
+        for i in range(7):
             day_start = start_ts + i * 24 * 3600 * 1000
-            day_end = day_start + 24 * 3600 * 1000
+            day_end = min(day_start + 24 * 3600 * 1000, end_ts)
             rows = self.db.fetchall(
                 "SELECT SUM(duration) FROM activity_log "
                 "WHERE event_type = 'app_end' AND timestamp >= ? AND timestamp < ?",
@@ -694,7 +695,8 @@ class Repository:
             "FROM activity_log WHERE event_type = 'app_end' "
             "GROUP BY app_name ORDER BY total_ms DESC LIMIT 5"
         )
-        top_apps = [{"name": r[0] or "Desconhecido", "minutes": r[1] // 60000} for r in top_rows]
+        from core.app_names import normalize_app_name
+        top_apps = [{"name": normalize_app_name(r[0] or "Desconhecido"), "minutes": r[1] // 60000} for r in top_rows]
 
         return {
             "days": days,

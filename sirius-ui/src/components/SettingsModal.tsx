@@ -36,6 +36,15 @@ const SECRET_KEYS = [
   "notion_database_id",
 ];
 
+function formatTime(mins: number): string {
+  if (mins >= 60) {
+    const h = Math.floor(mins / 60);
+    const m = mins % 60;
+    return m > 0 ? `${h}h ${m}min` : `${h}h`;
+  }
+  return `${mins}min`;
+}
+
 function SettingsModal({
   onClose,
   onSaveConfig,
@@ -809,12 +818,12 @@ function SettingsModal({
                               style={{ width: `${Math.min((d.minutes / (Math.max(...activityStats.days.map((x) => x.minutes), 1))) * 100, 100)}%` }}
                             />
                           </div>
-                          <span className="text-[9px] font-mono text-sirius-text-dim w-10 text-right">{d.minutes}min</span>
+                          <span className="text-[9px] font-mono text-sirius-text-dim w-10 text-right">{formatTime(d.minutes)}</span>
                         </div>
                       ))}
                     </div>
                     <p className="text-[9px] font-mono text-sirius-text-dim">
-                      Media diaria: {Math.round(activityStats.avg_daily_minutes)} min
+                      Media diaria: {formatTime(Math.round(activityStats.avg_daily_minutes))}
                     </p>
                     {activityStats.top_apps.length > 0 && (
                       <div className="space-y-0.5">
@@ -831,7 +840,7 @@ function SettingsModal({
                               )}
                               <span className="text-[10px] font-mono text-sirius-text truncate">{app.name}</span>
                             </div>
-                            <span className="text-[9px] font-mono text-sirius-text-dim">{app.minutes}min</span>
+                            <span className="text-[9px] font-mono text-sirius-text-dim">{formatTime(app.minutes)}</span>
                           </div>
                         ))}
                       </div>
