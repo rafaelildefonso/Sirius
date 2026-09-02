@@ -1092,10 +1092,10 @@ class SiriusLive:
         self._briefing_dismissed_event: asyncio.Event | None = None
         self._turn_done_event: asyncio.Event | None = None
         self._allow_mic: asyncio.Event | None = None
-        self._tts           = None
+        self._tts           = None                  # LOCAL TTS DISABLED in Live mode — Gemini handles all voice
         self._tts_queue     = _queue.Queue()
         self._tts_ready     = threading.Event()
-        self._tts_busy       = threading.Event()   # set while local TTS is actively speaking
+        self._tts_busy       = threading.Event()   # UNUSED in Live mode — kept for API compat
         self._gemini_turn    = threading.Event()   # set while Gemini is producing audio for a turn
         self._conv_id        = None                # DB conversation id for current session
         self._restart_event  = threading.Event()   # set to force session restart
@@ -1129,8 +1129,8 @@ class SiriusLive:
             bundled_module_names=_BUNDLED_PLUGIN_MODULES,
         )
 
-        threading.Thread(target=self._lazy_init_tts, daemon=True).start()
-        threading.Thread(target=self._tts_worker, daemon=True).start()
+        # LOCAL TTS DISABLED — Gemini Live provides all voice output natively.
+        # Do NOT start _lazy_init_tts or _tts_worker threads here.
 
     def _make_remote_key(self):
         """Generate remote key + QR data. Uses shared dashboard if available, else fallback."""
@@ -1271,9 +1271,11 @@ class SiriusLive:
             self.ui.set_state("LISTENING")
 
     def speak(self, text: str):
-        if not text or not self._tts:
-            return
-        self._tts_queue.put(text)
+        # LOCAL TTS DISABLED in Live mode — Gemini handles all voice output.
+        # Tools call speak() for progress updates; we silently ignore them
+        # to avoid a second (local TTS) voice overlapping with Gemini's.
+        if text:
+            self.ui.write_log(f"[SIRIUS] {text}")
 
     def interrupt(self) -> None:
         """Stop the assistant mid-speech. Drains audio queue and resets state."""
