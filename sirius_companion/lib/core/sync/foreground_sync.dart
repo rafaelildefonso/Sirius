@@ -9,6 +9,9 @@ import 'sync_worker.dart';
 /// resumed, plus a catch-up whenever connectivity returns. This shrinks the
 /// PC→phone latency for newly created tasks from up to ~15 min (WorkManager
 /// minimum period) to seconds while the user has the app in the foreground.
+///
+/// Background sync is handled separately by the foreground service in
+/// [GeofenceManager] — that isolate survives app backgrounding.
 class ForegroundSyncService with WidgetsBindingObserver {
   ForegroundSyncService._();
 
@@ -31,25 +34,20 @@ class ForegroundSyncService with WidgetsBindingObserver {
     });
     // Catch-up for anything that arrived while the app was closed.
     SyncWorker.performSync();
+    // Start the periodic timer immediately.  When the app is backgrounded the
+    // main isolate is frozen by the OS so the timer naturally stops firing;
+    // background sync is handled by the foreground service.
+    _timer = Timer.periodic(
+      _foregroundInterval,
+      (_) => SyncWorker.performSync(),
+    );
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    switch (state) {
-      case AppLifecycleState.resumed:
-        SyncWorker.performSync();
-        _timer ??= Timer.periodic(
-          _foregroundInterval,
-          (_) => SyncWorker.performSync(),
-        );
-      case AppLifecycleState.paused:
-      case AppLifecycleState.detached:
-      case AppLifecycleState.hidden:
-        _timer?.cancel();
-        _timer = null;
-      case AppLifecycleState.inactive:
-        break;
-    }
+    // No-op: the timer is always running in the main isolate.  When the app is
+    // backgrounded the OS freezes the isolate so the timer naturally pauses.
+    // Background sync is handled by the foreground service.
   }
 
   void dispose() {

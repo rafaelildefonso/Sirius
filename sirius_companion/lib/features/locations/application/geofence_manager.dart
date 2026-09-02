@@ -11,6 +11,7 @@ import 'package:drift/drift.dart';
 import '../background/location_isolate.dart';
 import '../../../../core/storage/database/database.dart';
 import '../../../../core/storage/repositories/sync_repository.dart';
+import '../../../../core/sync/sync_worker.dart';
 
 final geofenceManagerProvider = Provider<GeofenceManager>((ref) => GeofenceManager());
 
@@ -118,10 +119,13 @@ class GeofenceManager {
         onStart: onStart,
         autoStart: true,
         isForegroundMode: true,
-        foregroundServiceTypes: [AndroidForegroundType.location],
+        foregroundServiceTypes: [
+          AndroidForegroundType.location,
+          AndroidForegroundType.dataSync,
+        ],
         notificationChannelId: _geofenceChannelId,
         initialNotificationTitle: 'SIRIUS Companion',
-        initialNotificationContent: 'Inicializando...',
+        initialNotificationContent: 'Ativo',
         foregroundServiceNotificationId: 888,
       ),
     );
@@ -296,7 +300,7 @@ void onStart(ServiceInstance service) async {
   if (service is AndroidServiceInstance) {
     service.setForegroundNotificationInfo(
       title: 'SIRIUS Companion',
-      content: 'Monitoramento ativo',
+      content: 'Ativo',
     );
 
     service.on('setAsForeground').listen((event) {
@@ -310,6 +314,16 @@ void onStart(ServiceInstance service) async {
   service.on('stopService').listen((event) {
     service.stopSelf();
   });
+
+  // Periodic sync — silent, no notification update.
+  Timer.periodic(const Duration(seconds: 60), (_) async {
+    try {
+      await SyncWorker.performSync();
+    } catch (_) {}
+  });
+
+  // Immediate first sync
+  await SyncWorker.performSync();
 }
 
 // Riverpod providers for reactive UI
