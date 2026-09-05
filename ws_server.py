@@ -21,6 +21,7 @@ from typing import Any, Callable
 import websockets
 from websockets.asyncio.server import serve as ws_serve
 
+from actions.agents import agent_manager
 from persistence.repository import Repository
 
 _PORT = 8765
@@ -452,6 +453,11 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 _current_ui: WsUI | None = None  # Set by WsUI.__init__
+
+# Wire agent_manager to broadcast via WebSocket
+agent_manager.set_broadcast(
+    lambda msg_type, data: manager.broadcast_sync(WsMessage(msg_type, data))
+)
 
 
 # ── WebSocket handler ──────────────────────────────────────────────────────────
@@ -996,6 +1002,14 @@ async def _handler(ws: websockets.asyncio.server.ServerConnection) -> None:
                 from actions.background_monitor import list_monitors
                 topics = list_monitors()
                 await ws.send(json.dumps({"type": "monitors_list", "topics": topics}))
+
+            # ── Agent orchestration messages ──────────────────────────────
+            elif msg_type in ("agent_create_session", "agent_send_prompt",
+                              "agent_switch", "agent_cli_run", "agent_close_session",
+                              "agent_create_pty", "agent_pty_input",
+                              "agent_pty_resize", "agent_close_pty"):
+                from actions.agents import handle_agent_message
+                await handle_agent_message(data, ws.send)
 
     except websockets.exceptions.ConnectionClosed:
         pass

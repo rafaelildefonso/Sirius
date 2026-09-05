@@ -449,6 +449,17 @@ export function useWebSocket() {
             setGoogleConnected(true);
           }
           break;
+        case "agent_session_created":
+        case "agent_response":
+        case "agent_cli_output":
+        case "agent_error":
+        case "agent_switched":
+        case "agent_command_result":
+        case "agent_pty_created":
+        case "agent_pty_output":
+        case "agent_pty_closed":
+          window.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(data) }));
+          break;
       }
     };
 

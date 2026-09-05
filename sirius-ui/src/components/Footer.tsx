@@ -1,6 +1,6 @@
 import { Settings } from "./Icons";
 
-type View = "hud" | "radar";
+type View = "hud" | "radar" | "agents";
 
 interface FooterProps {
   view: View;
@@ -33,6 +33,16 @@ function Footer({ view, onViewChange, onSettingsClick, muted }: FooterProps) {
           }`}
         >
           RADAR
+        </button>
+        <button
+          onClick={() => onViewChange("agents")}
+          className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded transition-colors ${
+            view === "agents"
+              ? "text-sirius-pri bg-sirius-pri-dim/20"
+              : "text-sirius-text-dim hover:text-sirius-white"
+          }`}
+        >
+          AGENTES
         </button>
       </div>
 

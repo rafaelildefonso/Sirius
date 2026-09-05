@@ -12,6 +12,7 @@ import PairRequestDialog from "./components/PairRequestDialog";
 import FileDropZone from "./components/FileDropZone";
 import RemoteKeyOverlay from "./components/RemoteKeyOverlay";
 import RadarPanel from "./components/RadarPanel";
+import AgentsPanel from "./components/AgentsPanel";
 import CameraPreview from "./components/CameraPreview";
 import SuggestionCard from "./components/SuggestionCard";
 import Header from "./components/Header";
@@ -72,7 +73,7 @@ function App() {
     clearCameraFrame,
   } = useWebSocket();
 
-  const [view, setView] = useState<"hud" | "radar">("hud");
+  const [view, setView] = useState<"hud" | "radar" | "agents">("hud");
   const lastVisibilityRef = useRef<boolean | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [showRemote, setShowRemote] = useState(false);
@@ -349,12 +350,14 @@ function App() {
               muted={muted}
               audioBins={audioBins}
             />
-          ) : (
+          ) : view === "radar" ? (
             <RadarPanel
               sendMessage={send}
               radarLog={radarLog}
               radarResults={radarResults}
             />
+          ) : (
+            <AgentsPanel />
           )}
 
           {/* Content panel for news, search results, etc. */}

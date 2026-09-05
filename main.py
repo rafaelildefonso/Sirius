@@ -1063,6 +1063,24 @@ TOOL_DECLARATIONS = [
             "properties": {}
         }
     },
+    {
+        "name": "agents_control",
+        "description": (
+            "Controla terminais interativos de agentes de IA (Claude, Codex, Cursor, OpenCode, Sirius). "
+            "Use para criar terminais, enviar prompts, ou listar terminais ativos. "
+            "Cada terminal roda o CLI do agente em modo interativo."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action":     {"type": "STRING", "description": "create | send_prompt | close | list"},
+                "agent":      {"type": "STRING", "description": "claude | codex | cursor | opencode | sirius (default: claude)"},
+                "prompt":     {"type": "STRING", "description": "Prompt para enviar ao agente (para send_prompt ou create+prompt)"},
+                "session_id": {"type": "STRING", "description": "ID da sessao (para close)"},
+            },
+            "required": ["action"]
+        }
+    },
 ]
 
 class SiriusLive:
@@ -1789,6 +1807,14 @@ class SiriusLive:
             elif name == "obsidian_tasks_list":
                 from actions.obsidian_search import list_tasks
                 result = await loop.run_in_executor(None, list_tasks)
+
+            elif name == "agents_control":
+                from actions.agents import agents_control
+                r = await loop.run_in_executor(
+                    None,
+                    lambda: agents_control(parameters=args, player=self.ui, speak=self.speak),
+                )
+                result = r or "Done."
 
             elif name == "deep_research":
                 r = await loop.run_in_executor(None, lambda: deep_research(parameters=args, player=self.ui))
@@ -2719,6 +2745,10 @@ class SiriusLocal:
                 from actions.background_monitor import list_monitors
                 topics = list_monitors()
                 result = str(topics)
+
+            elif name == "agents_control":
+                from actions.agents import agents_control
+                result = agents_control(parameters=args, player=self.ui, speak=self.speak)
 
             elif self._plugin_registry.has(name):
                 result = self._plugin_registry.run(name, args, player=self.ui, session_memory=None) or "Done."

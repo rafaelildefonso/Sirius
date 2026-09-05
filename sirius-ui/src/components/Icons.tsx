@@ -117,3 +117,47 @@ export function RotateCcw({ size }: { size?: IconSize }) {
     </Icon>
   );
 }
+
+export function Terminal({ size }: { size?: IconSize }) {
+  return (
+    <Icon size={size}>
+      <polyline points="4 17 10 11 4 5" />
+      <line x1="12" y1="19" x2="20" y2="19" />
+    </Icon>
+  );
+}
+
+export function Plus({ size }: { size?: IconSize }) {
+  return (
+    <Icon size={size}>
+      <line x1="12" y1="5" x2="12" y2="19" />
+      <line x1="5" y1="12" x2="19" y2="12" />
+    </Icon>
+  );
+}
+
+export function X({ size }: { size?: IconSize }) {
+  return (
+    <Icon size={size}>
+      <line x1="18" y1="6" x2="6" y2="18" />
+      <line x1="6" y1="6" x2="18" y2="18" />
+    </Icon>
+  );
+}
+
+export function Zap({ size }: { size?: IconSize }) {
+  return (
+    <Icon size={size}>
+      <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+    </Icon>
+  );
+}
+
+export function RotateCw({ size }: { size?: IconSize }) {
+  return (
+    <Icon size={size}>
+      <polyline points="23 4 23 10 17 10" />
+      <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
+    </Icon>
+  );
+}

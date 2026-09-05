@@ -76,6 +76,11 @@ cryptography>=44.0.0                            # Fernet encryption for credenti
 # sentence-transformers                        # Uncomment for real embedding vectors (RAG)
 
 # =============================================================================
+# Terminal / PTY
+# =============================================================================
+pywinpty                                         # ConPTY wrapper for interactive terminals (Windows)
+
+# =============================================================================
 # Development & Testing
 # =============================================================================
 pytest
