@@ -40,9 +40,21 @@ if hasattr(sys.stdout, 'reconfigure'):
 def _migrate_from_roaming(data_dir: Path):
     """Copy existing data from old Roaming location to new Local location."""
     old_dir = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming")) / "SIRIUS"
-    if not old_dir.exists() or not old_dir.is_dir():
+    if old_dir == data_dir:
         return
-    if data_dir.exists():
+    try:
+        old_data_exists = old_dir.is_dir()
+    except OSError as e:
+        print(f"[LAUNCHER] Warning: cannot access legacy data at {old_dir} - {e}")
+        return
+    if not old_data_exists:
+        return
+    try:
+        target_exists = data_dir.exists()
+    except OSError as e:
+        print(f"[LAUNCHER] Warning: cannot inspect data directory {data_dir} - {e}")
+        return
+    if target_exists:
         return
     print(f"[LAUNCHER] Migrating existing data from {old_dir} to {data_dir}")
     try:
@@ -52,14 +64,50 @@ def _migrate_from_roaming(data_dir: Path):
         print(f"[LAUNCHER] Warning: migration failed - {e}")
 
 
+def _usable_data_directory(path: Path) -> bool:
+    """Return whether *path* can be created and listed by this user.
+
+    Some Windows installations retain an old %LOCALAPPDATA%\\SIRIUS directory
+    with an ACL owned by another account or a previous elevated install.  Merely
+    calling ``Path.exists`` on such a directory raises PermissionError and used
+    to prevent the backend from ever starting.
+    """
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        with os.scandir(path):
+            pass
+        return True
+    except OSError as e:
+        print(f"[LAUNCHER] Data directory unavailable: {path} - {e}")
+        return False
+
+
+def _select_data_dir() -> Path:
+    """Choose a persistent writable data directory without requiring elevation."""
+    local = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "SIRIUS"
+    if _usable_data_directory(local):
+        return local
+
+    roaming = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming")) / "SIRIUS"
+    if _usable_data_directory(roaming):
+        print(f"[LAUNCHER] Using fallback data directory: {roaming}")
+        return roaming
+
+    home_fallback = Path.home() / ".sirius"
+    if _usable_data_directory(home_fallback):
+        print(f"[LAUNCHER] Using final fallback data directory: {home_fallback}")
+        return home_fallback
+
+    raise RuntimeError("No writable SIRIUS data directory is available.")
+
+
 def _init_data_dir():
     """Set up persistent data directory (%LOCALAPPDATA%/SIRIUS) for configs and memory.
 
     On first run, copies default configs from the PyInstaller bundle (sys._MEIPASS)
     to the persistent location. Sets SIRIUS_DATA_DIR so config_loader.py picks it up.
     """
-    localappdata = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
-    data_dir = localappdata / "SIRIUS"
+    data_dir = _select_data_dir()
     os.environ["SIRIUS_DATA_DIR"] = str(data_dir)
     print(f"[LAUNCHER] SIRIUS_DATA_DIR={data_dir}")
 
@@ -75,9 +123,13 @@ def _init_data_dir():
     bundle_dir = Path(bundle_dir)
 
     def _needs_populate(d: Path) -> bool:
-        if not d.exists():
-            return True
-        return not any(d.iterdir())
+        try:
+            if not d.exists():
+                return True
+            return not any(d.iterdir())
+        except OSError as e:
+            print(f"[LAUNCHER] Warning: cannot inspect {d} - {e}")
+            return False
 
     for subdir in ("config", "memory"):
         src = bundle_dir / subdir

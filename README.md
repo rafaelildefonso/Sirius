@@ -13,7 +13,7 @@ It's not just an assistant — it's an extension of your digital life.
 
 ---
 
-## QUICKLY RUN
+## QUICKLY BUILD
 
 ```bash
 # app windows

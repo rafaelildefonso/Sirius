@@ -33,9 +33,11 @@ if _platform.system() == "Windows":
     _subprocess.Popen = _Popen
 
 import numpy as np
+import numpy.fft
 import sounddevice as sd
 from google import genai
 from google.genai import types
+from numpy.fft import rfft
 
 # -- UI backend: WebSocket server for the Tauri/React frontend ----------------
 import ws_server as _ws
@@ -115,29 +117,38 @@ FFT_NUM_BINS        = 32
 _SEND_FFT_INTERVAL  = 4  # Send FFT bins every N chunks (~60ms at 16kHz/1024)
 
 def compute_fft_bins(audio_data: np.ndarray, num_bins: int = FFT_NUM_BINS) -> list[float]:
-    samples = audio_data.astype(np.float32).flatten()
-    if len(samples) == 0:
+    try:
+        samples = audio_data.astype(np.float32).flatten()
+        if len(samples) == 0:
+            return [0.0] * num_bins
+        rms = float(np.sqrt(np.mean(samples ** 2)))
+        energy = min(1.0, rms / 0.05)
+        if energy < 0.005:
+            return [0.0] * num_bins
+        window = np.hanning(len(samples))
+        fft = np.abs(rfft(samples * window))
+        n = len(fft)
+        result = []
+        for i in range(num_bins):
+            lo = int((i / num_bins) ** 2 * n) if i > 0 else 0
+            hi = int(((i + 1) / num_bins) ** 2 * n) if i < num_bins - 1 else n
+            lo = min(lo, n - 1)
+            hi = max(hi, lo + 1)
+            hi = min(hi, n)
+            avg = float(np.mean(fft[lo:hi]))
+            result.append(avg)
+        max_val = max(result)
+        if max_val < 1e-6:
+            return [0.0] * num_bins
+        return [min(1.0, (v / max_val) * energy) for v in result]
+    except Exception:
         return [0.0] * num_bins
-    rms = float(np.sqrt(np.mean(samples ** 2)))
-    energy = min(1.0, rms / 0.05)
-    if energy < 0.005:
-        return [0.0] * num_bins
-    window = np.hanning(len(samples))
-    fft = np.abs(np.fft.rfft(samples * window))
-    n = len(fft)
-    result = []
-    for i in range(num_bins):
-        lo = int((i / num_bins) ** 2 * n) if i > 0 else 0
-        hi = int(((i + 1) / num_bins) ** 2 * n) if i < num_bins - 1 else n
-        lo = min(lo, n - 1)
-        hi = max(hi, lo + 1)
-        hi = min(hi, n)
-        avg = float(np.mean(fft[lo:hi]))
-        result.append(avg)
-    max_val = max(result)
-    if max_val < 1e-6:
-        return [0.0] * num_bins
-    return [min(1.0, (v / max_val) * energy) for v in result]
+
+# Eager warmup pass on main thread
+try:
+    compute_fft_bins(np.zeros(1024, dtype=np.float32))
+except Exception:
+    pass
 
 def _get_api_key() -> str:
     from core.config_loader import get_secret
@@ -1081,6 +1092,27 @@ TOOL_DECLARATIONS = [
             "required": ["action"]
         }
     },
+    {
+        "name": "orchestrate_pane",
+        "description": (
+            "Gerencia panes, worktrees e agentes no Pane Desktop. "
+            "Use para criar worktrees, listar panes ativos, ou verificar status de agentes. "
+            "Cada pane é um workspace com seu próprio worktree e agente."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action":   {"type": "STRING", "description": "create_pane | list_panes | list_panels | screen_panel | doctor"},
+                "repo":     {"type": "STRING", "description": "Repositório (default: active)"},
+                "name":     {"type": "STRING", "description": "Nome do pane (para create_pane)"},
+                "agent":    {"type": "STRING", "description": "Agente: claude, codex, aider (para create_pane)"},
+                "prompt":   {"type": "STRING", "description": "Prompt/tarefa para o agente (para create_pane)"},
+                "pane_id":  {"type": "STRING", "description": "ID do pane (para list_panels)"},
+                "panel_id": {"type": "STRING", "description": "ID do painel (para screen_panel)"},
+            },
+            "required": ["action"]
+        }
+    },
 ]
 
 class SiriusLive:
@@ -1872,24 +1904,31 @@ class SiriusLive:
         self._audio_stream = None
 
         def callback(indata, frames, time_info, status):
-            with self._speaking_lock:
-                sirius_speaking = self._is_speaking
-            if not sirius_speaking:
-                data = indata.tobytes()
-                rms = np.sqrt(np.mean(indata**2))
-                level = min(1.0, rms * 15)
-                self.ui.set_voice_level(level)
-                self._fft_mic_counter += 1
-                if self._fft_mic_counter >= _SEND_FFT_INTERVAL:
-                    self._fft_mic_counter = 0
-                    bins = compute_fft_bins(indata)
-                    self.ui.send_audio_bins(bins, "mic")
-                loop.call_soon_threadsafe(
-                    self.out_queue.put_nowait,
-                    {"data": data, "mime_type": "audio/pcm"}
-                )
-            else:
-                self.ui.set_voice_level(0.0)
+            # Exceptions raised inside a PortAudio/CFFI callback surface as a
+            # native error dialog on Windows — nothing may escape it.
+            try:
+                with self._speaking_lock:
+                    sirius_speaking = self._is_speaking
+                if not sirius_speaking:
+                    data = indata.tobytes()
+                    rms = np.sqrt(np.mean(indata**2))
+                    level = min(1.0, rms * 15)
+                    self.ui.set_voice_level(level)
+                    self._fft_mic_counter += 1
+                    if self._fft_mic_counter >= _SEND_FFT_INTERVAL:
+                        self._fft_mic_counter = 0
+                        bins = compute_fft_bins(indata)
+                        self.ui.send_audio_bins(bins, "mic")
+                    loop.call_soon_threadsafe(
+                        self.out_queue.put_nowait,
+                        {"data": data, "mime_type": "audio/pcm"}
+                    )
+                else:
+                    self.ui.set_voice_level(0.0)
+            except Exception:
+                # Dropped frame (e.g. event loop already closing) — never
+                # propagate into the native audio thread.
+                pass
 
         try:
             # Wait for frontend before opening mic
@@ -3248,6 +3287,14 @@ def main():
         print("[DEBUG main] TaskAlarmScheduler started.")
     except Exception as e:
         print(f"[MAIN] Task alarm scheduler disabled: {e}")
+
+    # Start the date-range task notifier (fires at 00:00 daily for tasks with date ranges).
+    try:
+        from core.date_range_notifier import start_notifier
+        start_notifier()
+        print("[DEBUG main] DateRangeNotifier started.")
+    except Exception as e:
+        print(f"[MAIN] Date range notifier disabled: {e}")
 
     def runner():
         # Check WS server status FIRST — before blocking on onboarding

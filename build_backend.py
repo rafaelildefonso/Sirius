@@ -170,7 +170,7 @@ def _compute_backend_hash() -> str:
     ]
 
     # Watch directories recursively
-    for folder in ["core", "actions", "agent"]:
+    for folder in ["core", "actions", "agent", "dashboard"]:
         folder_path = BASE_DIR / folder
         if folder_path.is_dir():
             for root, _, files in os.walk(folder_path):

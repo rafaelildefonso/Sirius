@@ -184,6 +184,17 @@ CREATE TABLE IF NOT EXISTS obsidian_notes (
     updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Idempotency ledger for companion deliveries.  It lets retries be answered
+-- without inspecting or rewriting the target Markdown document.
+CREATE TABLE IF NOT EXISTS companion_note_deliveries (
+    source_uuid TEXT PRIMARY KEY,
+    fingerprint TEXT NOT NULL,
+    target_path TEXT NOT NULL,
+    summary TEXT,
+    tags_json TEXT,
+    delivered_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Activity monitoring
 CREATE TABLE IF NOT EXISTS activity_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -204,17 +215,20 @@ CREATE TABLE IF NOT EXISTS clarifications (
 
 -- Scheduled tasks / reminders (unified: phone quick-add, voice reminder, PC)
 CREATE TABLE IF NOT EXISTS scheduled_tasks (
-    id          TEXT PRIMARY KEY,
-    title       TEXT NOT NULL,
-    notes       TEXT,
-    due_at      DATETIME NOT NULL,
-    status      TEXT NOT NULL DEFAULT 'pending'
-                CHECK(status IN ('pending','notified','done','dismissed')),
-    source      TEXT NOT NULL DEFAULT 'pc',
-    device_id   TEXT,
-    created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    notified_at DATETIME
+    id              TEXT PRIMARY KEY,
+    title           TEXT NOT NULL,
+    notes           TEXT,
+    due_at          DATETIME,
+    status          TEXT NOT NULL DEFAULT 'pending'
+                    CHECK(status IN ('pending','notified','done','dismissed')),
+    source          TEXT NOT NULL DEFAULT 'pc',
+    device_id       TEXT,
+    created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    notified_at     DATETIME,
+    start_date      DATE,
+    end_date        DATE,
+    is_date_range   INTEGER DEFAULT 0
 );
 
 -- Indexes for performance
@@ -234,7 +248,7 @@ CREATE INDEX IF NOT EXISTS idx_credential_service  ON credential(service);
 CREATE INDEX IF NOT EXISTS idx_sched_tasks_due     ON scheduled_tasks(status, due_at);
 """
 
-_SCHEMA_VERSION = 4
+_SCHEMA_VERSION = 6
 
 
 class Database:
@@ -313,7 +327,37 @@ class Database:
             self._migrate(current or 0)
 
     def _migrate(self, from_version: int) -> None:
+        # Re-apply base schema (idempotent for new tables)
         self._conn.executescript(_SQL_SCHEMA)
+
+        # Explicit column additions for existing tables (SQLite doesn't support ADD COLUMN IF NOT EXISTS)
+        if from_version < 5:
+            # Add missing columns to scheduled_tasks for date-range tasks
+            for col, col_type in [
+                ("start_date", "DATE"),
+                ("end_date", "DATE"),
+                ("is_date_range", "INTEGER DEFAULT 0"),
+            ]:
+                try:
+                    self._conn.execute(f"ALTER TABLE scheduled_tasks ADD COLUMN {col} {col_type}")
+                except sqlite3.OperationalError:
+                    pass  # Column already exists
+
+            # Add the date-range index
+            try:
+                self._conn.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_sched_tasks_date_range
+                    ON scheduled_tasks(is_date_range, start_date, end_date)
+                    WHERE is_date_range = 1 AND status IN ('pending','notified')
+                """)
+            except sqlite3.OperationalError:
+                pass
+
+        if from_version < 6:
+            self._conn.execute("""CREATE TABLE IF NOT EXISTS companion_note_deliveries (
+                source_uuid TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, target_path TEXT NOT NULL,
+                summary TEXT, tags_json TEXT, delivered_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
+
         self._conn.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (?)", (_SCHEMA_VERSION,))
         self._conn.commit()
 

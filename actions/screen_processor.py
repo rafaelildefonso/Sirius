@@ -14,8 +14,13 @@ import sounddevice as sd
 try:
     import cv2
     _CV2 = True
-except ImportError:
+except Exception as exc:
+    # A broken/incomplete OpenCV bundle must not prevent the desktop app from
+    # starting. Camera/screen features will report that OpenCV is unavailable,
+    # while the WebSocket UI and the rest of SIRIUS remain usable.
     _CV2 = False
+    cv2 = None
+    print(f"[Vision] OpenCV unavailable: {exc}")
 
 try:
     import mss

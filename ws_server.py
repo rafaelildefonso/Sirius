@@ -193,19 +193,30 @@ def show_sticky_task_notification(
             ToastScenario,
         )
 
+        def _run_action(callback: Callable[[], None], action: str) -> None:
+            try:
+                callback()
+            except Exception as e:
+                print(f"[TaskToast] {action} callback failed: {e}")
+
         def _handle_activated(args):
             action = ""
             try:
-                action = (getattr(args, "arguments", "") or "").lower()
+                action = str(getattr(args, "arguments", "") or "").strip().lower()
             except Exception:
                 pass
-            try:
-                if action == "sirius_snooze" and on_snooze:
-                    on_snooze()
-                elif on_done:
-                    on_done()
-            except Exception as e:
-                print(f"[TaskToast] Action callback failed: {e}")
+
+            callback = on_snooze if action == "sirius_snooze" else on_done
+            if callback:
+                # WinRT invokes this handler on its event thread. Keep the
+                # callback out of that thread so the SQLite update and the
+                # WebSocket broadcast cannot abort toast activation.
+                threading.Thread(
+                    target=_run_action,
+                    args=(callback, action or "done"),
+                    daemon=True,
+                    name="task-toast-action",
+                ).start()
 
         toast = Toast(
             text_fields=[title, message],
@@ -261,8 +272,13 @@ def notify_task_alarm(task: dict) -> None:
     def _done():
         try:
             from persistence.repository import Repository
-            Repository().complete_scheduled_task(task_id)
-            print(f"[TaskAlarm] Task done via toast: {task_id}")
+            completed = Repository().complete_scheduled_task(task_id)
+            print(f"[TaskAlarm] Task done via toast: {task_id} (updated={completed})")
+            if completed:
+                manager.broadcast_sync(WsMessage("task_alarm_resolved", {
+                    "id": task_id,
+                    "action": "done",
+                }))
         except Exception as e:
             print(f"[TaskAlarm] Complete failed for {task_id}: {e}")
 
@@ -288,6 +304,45 @@ def notify_task_alarm(task: dict) -> None:
     except Exception:
         pass
     print(f"[TaskAlarm] Fired: {title} ({due_txt}) [{task_id}]")
+
+
+def notify_date_range_task_alarm(task: dict) -> None:
+    """Fire a date-range task notification at 00:00: sticky toast with ONLY 'Concluir' button."""
+    task_id = str(task.get("id", ""))
+    title = str(task.get("title") or "Tarefa")
+    start_date = str(task.get("start_date") or "")
+    end_date = str(task.get("end_date") or "")
+    message = f"{title} ({start_date} a {end_date})"
+
+    def _done():
+        try:
+            from persistence.repository import Repository
+            completed = Repository().complete_scheduled_task(task_id)
+            print(f"[DateRangeAlarm] Task done via toast: {task_id} (updated={completed})")
+            if completed:
+                manager.broadcast_sync(WsMessage("task_alarm_resolved", {
+                    "id": task_id,
+                    "action": "done",
+                }))
+        except Exception as e:
+            print(f"[DateRangeAlarm] Complete failed for {task_id}: {e}")
+
+    # No snooze for date-range tasks - only "Concluir" button
+    show_sticky_task_notification(
+        "SIRIUS — Tarefa do dia", message, on_done=_done, on_snooze=None
+    )
+
+    try:
+        manager.broadcast_sync(WsMessage("date_range_task_alarm", {
+            "id": task_id,
+            "text": title,
+            "message": message,
+            "start_date": start_date,
+            "end_date": end_date,
+        }))
+    except Exception:
+        pass
+    print(f"[DateRangeAlarm] Fired: {title} ({start_date} a {end_date}) [{task_id}]")
 
 
 def _create_desktop_shortcut() -> None:
@@ -543,8 +598,18 @@ async def _handler(ws: websockets.asyncio.server.ServerConnection) -> None:
                     manager.on_visibility(visible)
 
             elif msg_type == "get_config":
-                from core.config_loader import get_all_config
+                from core.config_loader import get_all_config, get_secret
                 cfg = get_all_config()
+                # Mask API keys for security
+                api_key_fields = {
+                    'gemini_api_key', 'openrouter_api_key', 'tavily_api_key',
+                    'serpapi_key', 'elevenlabs_api_key', 'google_client_id',
+                    'google_client_secret', 'notion_token', 'notion_database_id'
+                }
+                for key in api_key_fields:
+                    val = get_secret(key)
+                    if val:
+                        cfg[key] = val[:4] + "****" if len(val) > 4 else "****"
                 await ws.send(json.dumps({"type": "config", **cfg}))
             elif msg_type == "request_activity_data":  # noqa: F823
                 try:
@@ -1003,6 +1068,44 @@ async def _handler(ws: websockets.asyncio.server.ServerConnection) -> None:
                 topics = list_monitors()
                 await ws.send(json.dumps({"type": "monitors_list", "topics": topics}))
 
+            # ── Pane orchestration messages (for Pane Desktop integration) ────
+            elif msg_type == "pane_command":
+                import threading as _threading
+                def _handle_pane_command():
+                    try:
+                        from actions.orchestrate_pane import orchestrate_pane
+                        command = data.get("command", "")
+                        action = data.get("action", "")
+                        params = data.get("parameters", {})
+                        if not params and command:
+                            params = {"action": "list_panes"}
+                        if action:
+                            params["action"] = action
+                        result = orchestrate_pane(parameters=params)
+                        manager.broadcast_sync(WsMessage("response", {"text": result}))
+                    except Exception as e:
+                        traceback.print_exc()
+                        manager.broadcast_sync(WsMessage("response", {
+                            "text": f"Erro ao processar comando Pane: {e}"
+                        }))
+                _threading.Thread(target=_handle_pane_command, daemon=True).start()
+
+            elif msg_type == "pane_agent_status_request":
+                try:
+                    from orchestrator.pane_client import PaneClient
+                    client = PaneClient()
+                    panes = client.list_panes()
+                    await ws.send(json.dumps({
+                        "type": "pane_agent_status",
+                        "agents": panes,
+                    }))
+                except Exception as e:
+                    await ws.send(json.dumps({
+                        "type": "pane_agent_status",
+                        "agents": [],
+                        "error": str(e),
+                    }))
+
             # ── Agent orchestration messages ──────────────────────────────
             elif msg_type in ("agent_create_session", "agent_send_prompt",
                               "agent_switch", "agent_cli_run", "agent_close_session",
@@ -1010,6 +1113,660 @@ async def _handler(ws: websockets.asyncio.server.ServerConnection) -> None:
                               "agent_pty_resize", "agent_close_pty"):
                 from actions.agents import handle_agent_message
                 await handle_agent_message(data, ws.send)
+
+            # ── Pane Quick Actions: Browser & Web ───────────────────────
+            elif msg_type == "browser_open":
+                def _browser_open():
+                    try:
+                        from actions.browser_control import browser_control
+                        result = browser_control({"action": "go_to", "url": data.get("url", "")})
+                        manager.broadcast_sync(WsMessage("response", {"text": result}))
+                    except Exception as e:
+                        manager.broadcast_sync(WsMessage("response", {"text": f"Erro ao abrir URL: {e}"}))
+                threading.Thread(target=_browser_open, daemon=True).start()
+
+            elif msg_type == "browser_search":
+                def _browser_search():
+                    try:
+                        from actions.browser_control import browser_control
+                        result = browser_control({"action": "search", "query": data.get("query", ""), "engine": data.get("engine", "google")})
+                        manager.broadcast_sync(WsMessage("response", {"text": result}))
+                    except Exception as e:
+                        manager.broadcast_sync(WsMessage("response", {"text": f"Erro ao pesquisar: {e}"}))
+                threading.Thread(target=_browser_search, daemon=True).start()
+
+            elif msg_type == "browser_click":
+                def _browser_click():
+                    try:
+                        from actions.browser_control import browser_control
+                        params = {"action": "click"}
+                        if data.get("selector"):
+                            params["selector"] = data["selector"]
+                        if data.get("text"):
+                            params["text"] = data["text"]
+                        result = browser_control(params)
+                        manager.broadcast_sync(WsMessage("response", {"text": result}))
+                    except Exception as e:
+                        manager.broadcast_sync(WsMessage("response", {"text": f"Erro ao clicar: {e}"}))
+                threading.Thread(target=_browser_click, daemon=True).start()
+
+            elif msg_type == "browser_type":
+                def _browser_type():
+                    try:
+                        from actions.browser_control import browser_control
+                        result = browser_control({"action": "type", "selector": data.get("selector", ""), "text": data.get("text", "")})
+                        manager.broadcast_sync(WsMessage("response", {"text": result}))
+                    except Exception as e:
+                        manager.broadcast_sync(WsMessage("response", {"text": f"Erro ao digitar: {e}"}))
+                threading.Thread(target=_browser_type, daemon=True).start()
+
+            elif msg_type == "browser_screenshot":
+                def _browser_screenshot():
+                    try:
+                        from actions.browser_control import browser_control
+                        result = browser_control({"action": "screenshot", "path": data.get("path", "")})
+                        manager.broadcast_sync(WsMessage("response", {"text": result}))
+                    except Exception as e:
+                        manager.broadcast_sync(WsMessage("response", {"text": f"Erro ao capturar tela: {e}"}))
+                threading.Thread(target=_browser_screenshot, daemon=True).start()
+
+            elif msg_type == "browser_close":
+                def _browser_close():
+                    try:
+                        from actions.browser_control import browser_control
+                        result = browser_control({"action": "close"})
+                        manager.broadcast_sync(WsMessage("response", {"text": result}))
+                    except Exception as e:
+                        manager.broadcast_sync(WsMessage("response", {"text": f"Erro ao fechar browser: {e}"}))
+                threading.Thread(target=_browser_close, daemon=True).start()
+
+            elif msg_type == "web_search":
+                def _web_search():
+                    try:
+                        from actions.web_search import web_search
+                        result = web_search(query=data.get("query", ""), mode=data.get("mode", "search"))
+                        manager.broadcast_sync(WsMessage("response", {"text": result}))
+                    except Exception as e:
+                        manager.broadcast_sync(WsMessage("response", {"text": f"Erro na pesquisa web: {e}"}))
+                threading.Thread(target=_web_search, daemon=True).start()
+
+            elif msg_type == "deep_research":
+                def _deep_research():
+                    try:
+                        from actions.deep_research import deep_research
+                        result = deep_research(query=data.get("query", ""))
+                        manager.broadcast_sync(WsMessage("response", {"text": result}))
+                    except Exception as e:
+                        manager.broadcast_sync(WsMessage("response", {"text": f"Erro na pesquisa profunda: {e}"}))
+                threading.Thread(target=_deep_research, daemon=True).start()
+
+            # ── Pane Quick Actions: System Control ──────────────────────
+            elif msg_type == "system_volume":
+                def _system_volume():
+                    try:
+                        from actions.computer_settings import computer_settings
+                        result = computer_settings(action=data.get("action", "volume_up"), level=data.get("level"))
+                        manager.broadcast_sync(WsMessage("response", {"text": result}))
+                    except Exception as e:
+                        manager.broadcast_sync(WsMessage("response", {"text": f"Erro ao controlar volume: {e}"}))
+                threading.Thread(target=_system_volume, daemon=True).start()
+
+            elif msg_type == "system_brightness":
+                def _system_brightness():
+                    try:
+                        from actions.computer_settings import computer_settings
+                        result = computer_settings(action=data.get("action", "brightness_up"), level=data.get("level"))
+                        manager.broadcast_sync(WsMessage("response", {"text": result}))
+                    except Exception as e:
+                        manager.broadcast_sync(WsMessage("response", {"text": f"Erro ao controlar brilho: {e}"}))
+                threading.Thread(target=_system_brightness, daemon=True).start()
+
+            elif msg_type == "system_wifi":
+                def _system_wifi():
+                    try:
+                        from actions.computer_settings import computer_settings
+                        result = computer_settings(action=data.get("action", "wifi_on"))
+                        manager.broadcast_sync(WsMessage("response", {"text": result}))
+                    except Exception as e:
+                        manager.broadcast_sync(WsMessage("response", {"text": f"Erro ao controlar WiFi: {e}"}))
+                threading.Thread(target=_system_wifi, daemon=True).start()
+
+            elif msg_type == "system_bluetooth":
+                def _system_bluetooth():
+                    try:
+                        from actions.computer_settings import computer_settings
+                        result = computer_settings(action=data.get("action", "bluetooth_on"))
+                        manager.broadcast_sync(WsMessage("response", {"text": result}))
+                    except Exception as e:
+                        manager.broadcast_sync(WsMessage("response", {"text": f"Erro ao controlar Bluetooth: {e}"}))
+                threading.Thread(target=_system_bluetooth, daemon=True).start()
+
+            elif msg_type == "system_power":
+                def _system_power():
+                    try:
+                        from actions.computer_settings import computer_settings
+                        result = computer_settings(action=data.get("action", "sleep"))
+                        manager.broadcast_sync(WsMessage("response", {"text": result}))
+                    except Exception as e:
+                        manager.broadcast_sync(WsMessage("response", {"text": f"Erro ao controlar energia: {e}"}))
+                threading.Thread(target=_system_power, daemon=True).start()
+
+            elif msg_type == "system_monitor_start":
+                def _system_monitor_start():
+                    try:
+                        from actions.system_monitor import system_monitor
+                        result = system_monitor(action="start", threshold_cpu=data.get("threshold_cpu"), threshold_ram=data.get("threshold_ram"), threshold_temp=data.get("threshold_temp"))
+                        manager.broadcast_sync(WsMessage("response", {"text": result}))
+                    except Exception as e:
+                        manager.broadcast_sync(WsMessage("response", {"text": f"Erro ao iniciar monitor: {e}"}))
+                threading.Thread(target=_system_monitor_start, daemon=True).start()
+
+            elif msg_type == "system_monitor_stop":
+                def _system_monitor_stop():
+                    try:
+                        from actions.system_monitor import system_monitor
+                        result = system_monitor(action="stop")
+                        manager.broadcast_sync(WsMessage("response", {"text": result}))
+                    except Exception as e:
+                        manager.broadcast_sync(WsMessage("response", {"text": f"Erro ao parar monitor: {e}"}))
+                threading.Thread(target=_system_monitor_stop, daemon=True).start()
+
+            elif msg_type == "system_monitor_status":
+                def _system_monitor_status():
+                    try:
+                        from actions.system_monitor import system_monitor
+                        result = system_monitor(action="get_stats")
+                        manager.broadcast_sync(WsMessage("response", {"text": result}))
+                    except Exception as e:
+                        manager.broadcast_sync(WsMessage("response", {"text": f"Erro ao obter stats: {e}"}))
+                threading.Thread(target=_system_monitor_status, daemon=True).start()
+
+            # ── Pane Quick Actions: Desktop & Files ─────────────────────
+            elif msg_type == "desktop_open_app":
+                def _desktop_open_app():
+                    try:
+                        from actions.open_app import open_app
+                        result = open_app(app_name=data.get("app_name", ""))
+                        manager.broadcast_sync(WsMessage("response", {"text": result}))
+                    except Exception as e:
+                        manager.broadcast_sync(WsMessage("response", {"text": f"Erro ao abrir app: {e}"}))
+                threading.Thread(target=_desktop_open_app, daemon=True).start()
+
+            elif msg_type == "desktop_cleanup":
+                def _desktop_cleanup():
+                    try:
+                        from actions.desktop import desktop
+                        result = desktop(action="cleanup", paths=data.get("paths"))
+                        manager.broadcast_sync(WsMessage("response", {"text": result}))
+                    except Exception as e:
+                        manager.broadcast_sync(WsMessage("response", {"text": f"Erro ao organizar: {e}"}))
+                threading.Thread(target=_desktop_cleanup, daemon=True).start()
+
+            elif msg_type == "desktop_organize":
+                def _desktop_organize():
+                    try:
+                        from actions.desktop import desktop
+                        result = desktop(action="organize", paths=data.get("paths"))
+                        manager.broadcast_sync(WsMessage("response", {"text": result}))
+                    except Exception as e:
+                        manager.broadcast_sync(WsMessage("response", {"text": f"Erro ao organizar: {e}"}))
+                threading.Thread(target=_desktop_organize, daemon=True).start()
+
+            elif msg_type == "file_read":
+                def _file_read():
+                    try:
+                        from actions.file_controller import file_controller
+                        result = file_controller(action="read", source=data.get("source", ""))
+                        manager.broadcast_sync(WsMessage("response", {"text": result}))
+                    except Exception as e:
+                        manager.broadcast_sync(WsMessage("response", {"text": f"Erro ao ler arquivo: {e}"}))
+                threading.Thread(target=_file_read, daemon=True).start()
+
+            elif msg_type == "file_write":
+                def _file_write():
+                    try:
+                        from actions.file_controller import file_controller
+                        result = file_controller(action="write", source=data.get("source", ""), content=data.get("content", ""))
+                        manager.broadcast_sync(WsMessage("response", {"text": result}))
+                    except Exception as e:
+                        manager.broadcast_sync(WsMessage("response", {"text": f"Erro ao escrever arquivo: {e}"}))
+                threading.Thread(target=_file_write, daemon=True).start()
+
+            elif msg_type == "file_search":
+                def _file_search():
+                    try:
+                        from actions.file_controller import file_controller
+                        result = file_controller(action="search", source=data.get("source", ""), pattern=data.get("pattern", ""))
+                        manager.broadcast_sync(WsMessage("response", {"text": result}))
+                    except Exception as e:
+                        manager.broadcast_sync(WsMessage("response", {"text": f"Erro ao buscar arquivo: {e}"}))
+                threading.Thread(target=_file_search, daemon=True).start()
+
+            elif msg_type == "file_list":
+                def _file_list():
+                    try:
+                        from actions.file_controller import file_controller
+                        result = file_controller(action="list", source=data.get("source", ""))
+                        manager.broadcast_sync(WsMessage("response", {"text": result}))
+                    except Exception as e:
+                        manager.broadcast_sync(WsMessage("response", {"text": f"Erro ao listar arquivos: {e}"}))
+                threading.Thread(target=_file_list, daemon=True).start()
+
+            elif msg_type == "file_process":
+                def _file_process():
+                    try:
+                        from actions.file_processor import file_processor
+                        result = file_processor(file_path=data.get("file_path", ""))
+                        manager.broadcast_sync(WsMessage("response", {"text": result}))
+                    except Exception as e:
+                        manager.broadcast_sync(WsMessage("response", {"text": f"Erro ao processar arquivo: {e}"}))
+                threading.Thread(target=_file_process, daemon=True).start()
+
+            # ── Pane Quick Actions: Communication ───────────────────────
+            elif msg_type == "send_message":
+                def _send_message():
+                    try:
+                        from actions.send_message import send_message
+                        result = send_message(platform=data.get("platform", ""), recipient=data.get("recipient", ""), message=data.get("message", ""))
+                        manager.broadcast_sync(WsMessage("response", {"text": result}))
+                    except Exception as e:
+                        manager.broadcast_sync(WsMessage("response", {"text": f"Erro ao enviar mensagem: {e}"}))
+                threading.Thread(target=_send_message, daemon=True).start()
+
+            elif msg_type == "gmail_list":
+                def _gmail_list():
+                    try:
+                        from actions.gmail import gmail
+                        result = gmail(action="list_emails", max_results=data.get("max_results", 10))
+                        manager.broadcast_sync(WsMessage("response", {"text": result}))
+                    except Exception as e:
+                        manager.broadcast_sync(WsMessage("response", {"text": f"Erro ao listar emails: {e}"}))
+                threading.Thread(target=_gmail_list, daemon=True).start()
+
+            elif msg_type == "gmail_search":
+                def _gmail_search():
+                    try:
+                        from actions.gmail import gmail
+                        result = gmail(action="search_emails", query=data.get("query", ""))
+                        manager.broadcast_sync(WsMessage("response", {"text": result}))
+                    except Exception as e:
+                        manager.broadcast_sync(WsMessage("response", {"text": f"Erro ao buscar email: {e}"}))
+                threading.Thread(target=_gmail_search, daemon=True).start()
+
+            elif msg_type == "gmail_read":
+                def _gmail_read():
+                    try:
+                        from actions.gmail import gmail
+                        result = gmail(action="read_email", email_id=data.get("email_id", ""))
+                        manager.broadcast_sync(WsMessage("response", {"text": result}))
+                    except Exception as e:
+                        manager.broadcast_sync(WsMessage("response", {"text": f"Erro ao ler email: {e}"}))
+                threading.Thread(target=_gmail_read, daemon=True).start()
+
+            # ── Pane Quick Actions: Calendar & Reminders ────────────────
+            elif msg_type == "calendar_list":
+                def _calendar_list():
+                    try:
+                        from actions.google_calendar import google_calendar
+                        result = google_calendar(action="list_events", days_ahead=data.get("days_ahead", 7))
+                        manager.broadcast_sync(WsMessage("response", {"text": result}))
+                    except Exception as e:
+                        manager.broadcast_sync(WsMessage("response", {"text": f"Erro ao listar eventos: {e}"}))
+                threading.Thread(target=_calendar_list, daemon=True).start()
+
+            elif msg_type == "calendar_create":
+                def _calendar_create():
+                    try:
+                        from actions.google_calendar import google_calendar
+                        result = google_calendar(action="create_event", summary=data.get("summary", ""), start_time=data.get("start_time", ""), end_time=data.get("end_time", ""), description=data.get("description", ""))
+                        manager.broadcast_sync(WsMessage("response", {"text": result}))
+                    except Exception as e:
+                        manager.broadcast_sync(WsMessage("response", {"text": f"Erro ao criar evento: {e}"}))
+                threading.Thread(target=_calendar_create, daemon=True).start()
+
+            elif msg_type == "reminder_create":
+                def _reminder_create():
+                    try:
+                        from actions.reminder import reminder
+                        result = reminder(action="create", message=data.get("message", ""), datetime_str=data.get("datetime_str", ""), repeat=data.get("repeat", "none"))
+                        manager.broadcast_sync(WsMessage("response", {"text": result}))
+                    except Exception as e:
+                        manager.broadcast_sync(WsMessage("response", {"text": f"Erro ao criar lembrete: {e}"}))
+                threading.Thread(target=_reminder_create, daemon=True).start()
+
+            elif msg_type == "reminder_list":
+                def _reminder_list():
+                    try:
+                        from actions.reminder import reminder
+                        result = reminder(action="list")
+                        manager.broadcast_sync(WsMessage("response", {"text": result}))
+                    except Exception as e:
+                        manager.broadcast_sync(WsMessage("response", {"text": f"Erro ao listar lembretes: {e}"}))
+                threading.Thread(target=_reminder_list, daemon=True).start()
+
+            elif msg_type == "reminder_delete":
+                def _reminder_delete():
+                    try:
+                        from actions.reminder import reminder
+                        result = reminder(action="delete", reminder_id=data.get("reminder_id", ""))
+                        manager.broadcast_sync(WsMessage("response", {"text": result}))
+                    except Exception as e:
+                        manager.broadcast_sync(WsMessage("response", {"text": f"Erro ao deletar lembrete: {e}"}))
+                threading.Thread(target=_reminder_delete, daemon=True).start()
+
+            # ── Pane Quick Actions: Code & Dev ──────────────────────────
+            elif msg_type == "code_generate":
+                def _code_generate():
+                    try:
+                        from actions.code_helper import code_helper
+                        result = code_helper(action="generate", prompt=data.get("prompt", ""), language=data.get("language", "python"))
+                        manager.broadcast_sync(WsMessage("response", {"text": result}))
+                    except Exception as e:
+                        manager.broadcast_sync(WsMessage("response", {"text": f"Erro ao gerar código: {e}"}))
+                threading.Thread(target=_code_generate, daemon=True).start()
+
+            elif msg_type == "code_run":
+                def _code_run():
+                    try:
+                        from actions.code_helper import code_helper
+                        result = code_helper(action="run", file_path=data.get("file_path", ""))
+                        manager.broadcast_sync(WsMessage("response", {"text": result}))
+                    except Exception as e:
+                        manager.broadcast_sync(WsMessage("response", {"text": f"Erro ao executar código: {e}"}))
+                threading.Thread(target=_code_run, daemon=True).start()
+
+            elif msg_type == "code_fix":
+                def _code_fix():
+                    try:
+                        from actions.code_helper import code_helper
+                        result = code_helper(action="fix", file_path=data.get("file_path", ""), fix_description=data.get("fix_description", ""))
+                        manager.broadcast_sync(WsMessage("response", {"text": result}))
+                    except Exception as e:
+                        manager.broadcast_sync(WsMessage("response", {"text": f"Erro ao corrigir código: {e}"}))
+                threading.Thread(target=_code_fix, daemon=True).start()
+
+            elif msg_type == "dev_generate_project":
+                def _dev_generate_project():
+                    try:
+                        from actions.dev_agent import dev_agent
+                        result = dev_agent(action="generate_project", prompt=data.get("prompt", ""), project_path=data.get("project_path", ""))
+                        manager.broadcast_sync(WsMessage("response", {"text": result}))
+                    except Exception as e:
+                        manager.broadcast_sync(WsMessage("response", {"text": f"Erro ao gerar projeto: {e}"}))
+                threading.Thread(target=_dev_generate_project, daemon=True).start()
+
+            # ── Pane Quick Actions: Research & Leisure ──────────────────
+            elif msg_type == "flight_search":
+                def _flight_search():
+                    try:
+                        from actions.flight_finder import flight_finder
+                        result = flight_finder(origin=data.get("origin", ""), destination=data.get("destination", ""), date=data.get("date", ""), passengers=data.get("passengers", 1))
+                        manager.broadcast_sync(WsMessage("response", {"text": result}))
+                    except Exception as e:
+                        manager.broadcast_sync(WsMessage("response", {"text": f"Erro ao buscar voos: {e}"}))
+                threading.Thread(target=_flight_search, daemon=True).start()
+
+            elif msg_type == "youtube_search":
+                def _youtube_search():
+                    try:
+                        from actions.youtube_video import youtube_video
+                        result = youtube_video(action="search", query=data.get("query", ""))
+                        manager.broadcast_sync(WsMessage("response", {"text": result}))
+                    except Exception as e:
+                        manager.broadcast_sync(WsMessage("response", {"text": f"Erro ao buscar vídeo: {e}"}))
+                threading.Thread(target=_youtube_search, daemon=True).start()
+
+            elif msg_type == "youtube_transcript":
+                def _youtube_transcript():
+                    try:
+                        from actions.youtube_video import youtube_video
+                        result = youtube_video(action="get_transcript", video_url=data.get("video_url", ""))
+                        manager.broadcast_sync(WsMessage("response", {"text": result}))
+                    except Exception as e:
+                        manager.broadcast_sync(WsMessage("response", {"text": f"Erro ao obter transcrição: {e}"}))
+                threading.Thread(target=_youtube_transcript, daemon=True).start()
+
+            # ── Pane Quick Actions: Business & Career ───────────────────
+            elif msg_type == "business_radar_search":
+                def _business_radar_search():
+                    try:
+                        from actions.business_radar import business_radar
+                        result = business_radar(action="search", query=data.get("query", ""))
+                        manager.broadcast_sync(WsMessage("response", {"text": result}))
+                    except Exception as e:
+                        manager.broadcast_sync(WsMessage("response", {"text": f"Erro ao buscar negócios: {e}"}))
+                threading.Thread(target=_business_radar_search, daemon=True).start()
+
+            elif msg_type == "linkedin_search":
+                def _linkedin_search():
+                    try:
+                        from actions.linkedin_jobs_radar import linkedin_jobs_radar
+                        result = linkedin_jobs_radar(action="search", query=data.get("query", ""), location=data.get("location", ""))
+                        manager.broadcast_sync(WsMessage("response", {"text": result}))
+                    except Exception as e:
+                        manager.broadcast_sync(WsMessage("response", {"text": f"Erro ao buscar vagas: {e}"}))
+                threading.Thread(target=_linkedin_search, daemon=True).start()
+
+            elif msg_type == "freela_scrape":
+                def _freela_scrape():
+                    try:
+                        from actions.freela_arsenal import freela_arsenal
+                        result = freela_arsenal(action="maps_scrape", query=data.get("query", ""), location=data.get("location", ""))
+                        manager.broadcast_sync(WsMessage("response", {"text": result}))
+                    except Exception as e:
+                        manager.broadcast_sync(WsMessage("response", {"text": f"Erro ao fazer scraping: {e}"}))
+                threading.Thread(target=_freela_scrape, daemon=True).start()
+
+            # ── Pane Quick Actions: Notes (Obsidian) ───────────────────
+            elif msg_type == "obsidian_search":
+                def _obsidian_search():
+                    try:
+                        from actions.obsidian_search import obsidian_search
+                        result = obsidian_search(query=data.get("query", ""))
+                        manager.broadcast_sync(WsMessage("response", {"text": result}))
+                    except Exception as e:
+                        manager.broadcast_sync(WsMessage("response", {"text": f"Erro ao buscar notas: {e}"}))
+                threading.Thread(target=_obsidian_search, daemon=True).start()
+
+            elif msg_type == "obsidian_tasks":
+                def _obsidian_tasks():
+                    try:
+                        from actions.obsidian_tasks import obsidian_tasks
+                        result = obsidian_tasks()
+                        manager.broadcast_sync(WsMessage("response", {"text": result}))
+                    except Exception as e:
+                        manager.broadcast_sync(WsMessage("response", {"text": f"Erro ao listar tarefas: {e}"}))
+                threading.Thread(target=_obsidian_tasks, daemon=True).start()
+
+            # ── Pane Quick Actions: Games ───────────────────────────────
+            elif msg_type == "game_list":
+                def _game_list():
+                    try:
+                        from actions.game_updater import game_updater
+                        result = game_updater(action="list_games")
+                        manager.broadcast_sync(WsMessage("response", {"text": result}))
+                    except Exception as e:
+                        manager.broadcast_sync(WsMessage("response", {"text": f"Erro ao listar jogos: {e}"}))
+                threading.Thread(target=_game_list, daemon=True).start()
+
+            elif msg_type == "game_check_updates":
+                def _game_check_updates():
+                    try:
+                        from actions.game_updater import game_updater
+                        result = game_updater(action="check_updates")
+                        manager.broadcast_sync(WsMessage("response", {"text": result}))
+                    except Exception as e:
+                        manager.broadcast_sync(WsMessage("response", {"text": f"Erro ao verificar atualizações: {e}"}))
+                threading.Thread(target=_game_check_updates, daemon=True).start()
+
+            elif msg_type == "game_update":
+                def _game_update():
+                    try:
+                        from actions.game_updater import game_updater
+                        result = game_updater(action="update_game", game_name=data.get("game_name", ""), store=data.get("store", "steam"))
+                        manager.broadcast_sync(WsMessage("response", {"text": result}))
+                    except Exception as e:
+                        manager.broadcast_sync(WsMessage("response", {"text": f"Erro ao atualizar jogo: {e}"}))
+                threading.Thread(target=_game_update, daemon=True).start()
+
+            # ── Pane Quick Actions: Multi-Agent ─────────────────────────
+            elif msg_type == "agent_list":
+                def _agent_list():
+                    try:
+                        from actions.agents import agents
+                        result = agents(action="list")
+                        manager.broadcast_sync(WsMessage("response", {"text": result}))
+                    except Exception as e:
+                        manager.broadcast_sync(WsMessage("response", {"text": f"Erro ao listar agentes: {e}"}))
+                threading.Thread(target=_agent_list, daemon=True).start()
+
+            elif msg_type == "agent_create":
+                def _agent_create():
+                    try:
+                        from actions.agents import agents
+                        result = agents(action="create", agent_type=data.get("agent_type", "claude"))
+                        manager.broadcast_sync(WsMessage("response", {"text": result}))
+                    except Exception as e:
+                        manager.broadcast_sync(WsMessage("response", {"text": f"Erro ao criar agente: {e}"}))
+                threading.Thread(target=_agent_create, daemon=True).start()
+
+            elif msg_type == "agent_send_command":
+                def _agent_send_command():
+                    try:
+                        from actions.agents import agents
+                        result = agents(action="send_command", agent_id=data.get("agent_id", ""), command=data.get("command", ""))
+                        manager.broadcast_sync(WsMessage("response", {"text": result}))
+                    except Exception as e:
+                        manager.broadcast_sync(WsMessage("response", {"text": f"Erro ao enviar comando: {e}"}))
+                threading.Thread(target=_agent_send_command, daemon=True).start()
+
+            elif msg_type == "agent_close":
+                def _agent_close():
+                    try:
+                        from actions.agents import agents
+                        result = agents(action="close", agent_id=data.get("agent_id", ""))
+                        manager.broadcast_sync(WsMessage("response", {"text": result}))
+                    except Exception as e:
+                        manager.broadcast_sync(WsMessage("response", {"text": f"Erro ao fechar agente: {e}"}))
+                threading.Thread(target=_agent_close, daemon=True).start()
+
+            # ── Pane Quick Actions: Screen & Voice ──────────────────────
+            elif msg_type == "screen_analyze":
+                def _screen_analyze():
+                    try:
+                        from actions.screen_processor import screen_processor
+                        result = screen_processor(action="analyze_screen", question=data.get("question", ""))
+                        manager.broadcast_sync(WsMessage("response", {"text": result}))
+                    except Exception as e:
+                        manager.broadcast_sync(WsMessage("response", {"text": f"Erro ao analisar tela: {e}"}))
+                threading.Thread(target=_screen_analyze, daemon=True).start()
+
+            elif msg_type == "tts_speak":
+                def _tts_speak():
+                    try:
+                        text = data.get("text", "")
+                        # Send message to chat with TTS flag
+                        manager.broadcast_sync(WsMessage("response", {"text": text, "is_tts": True}))
+                        # Broadcast speaking state
+                        manager.broadcast_sync(WsMessage("state", {"voice_state": "speaking"}))
+                        # Play audio
+                        from core.tts_service import speak
+                        speak(text)
+                        # Broadcast idle state
+                        manager.broadcast_sync(WsMessage("state", {"voice_state": "idle"}))
+                    except Exception as e:
+                        manager.broadcast_sync(WsMessage("state", {"voice_state": "idle"}))
+                        manager.broadcast_sync(WsMessage("response", {"text": f"Erro ao reproduzir áudio: {e}"}))
+                threading.Thread(target=_tts_speak, daemon=True).start()
+
+            elif msg_type == "stt_transcribe":
+                def _stt_transcribe():
+                    try:
+                        # Broadcast listening state
+                        manager.broadcast_sync(WsMessage("state", {"voice_state": "listening"}))
+                        from core.stt import transcribe_once
+                        result = transcribe_once()
+                        # Broadcast idle state
+                        manager.broadcast_sync(WsMessage("state", {"voice_state": "idle"}))
+                        manager.broadcast_sync(WsMessage("response", {"text": result}))
+                    except Exception as e:
+                        manager.broadcast_sync(WsMessage("state", {"voice_state": "idle"}))
+                        manager.broadcast_sync(WsMessage("response", {"text": f"Erro ao transcrever: {e}"}))
+                threading.Thread(target=_stt_transcribe, daemon=True).start()
+
+            elif msg_type == "start_listening":
+                def _start_listening():
+                    try:
+                        manager.broadcast_sync(WsMessage("state", {"voice_state": "listening"}))
+                        # Continuous listening would be implemented here
+                        # For now, trigger a single transcription
+                        from core.stt import transcribe_once
+                        result = transcribe_once()
+                        manager.broadcast_sync(WsMessage("state", {"voice_state": "idle"}))
+                        if result:
+                            manager.broadcast_sync(WsMessage("response", {"text": result}))
+                    except Exception as e:
+                        manager.broadcast_sync(WsMessage("state", {"voice_state": "idle"}))
+                        manager.broadcast_sync(WsMessage("response", {"text": f"Erro ao ouvir: {e}"}))
+                threading.Thread(target=_start_listening, daemon=True).start()
+
+            elif msg_type == "stop_listening":
+                manager.broadcast_sync(WsMessage("state", {"voice_state": "idle"}))
+
+            # ── Pane Quick Actions: Workspaces ──────────────────────────
+            elif msg_type == "workspace_save":
+                def _workspace_save():
+                    try:
+                        from actions.workspaces import workspaces
+                        result = workspaces(action="save", workspace_name=data.get("workspace_name", "default"))
+                        manager.broadcast_sync(WsMessage("response", {"text": result}))
+                    except Exception as e:
+                        manager.broadcast_sync(WsMessage("response", {"text": f"Erro ao salvar workspace: {e}"}))
+                threading.Thread(target=_workspace_save, daemon=True).start()
+
+            elif msg_type == "workspace_restore":
+                def _workspace_restore():
+                    try:
+                        from actions.workspaces import workspaces
+                        result = workspaces(action="restore", workspace_name=data.get("workspace_name", "default"))
+                        manager.broadcast_sync(WsMessage("response", {"text": result}))
+                    except Exception as e:
+                        manager.broadcast_sync(WsMessage("response", {"text": f"Erro ao restaurar workspace: {e}"}))
+                threading.Thread(target=_workspace_restore, daemon=True).start()
+
+            # ── Pane Quick Actions: Proactive ───────────────────────────
+            elif msg_type == "proactive_status":
+                def _proactive_status():
+                    try:
+                        from actions.proactive import proactive
+                        result = proactive.check() if hasattr(proactive, 'check') else "Proactive engine status: OK"
+                        manager.broadcast_sync(WsMessage("response", {"text": str(result)}))
+                    except Exception as e:
+                        manager.broadcast_sync(WsMessage("response", {"text": f"Erro ao verificar proactive: {e}"}))
+                threading.Thread(target=_proactive_status, daemon=True).start()
+
+            # ── Pane Quick Actions: Config ──────────────────────────────
+            elif msg_type == "save_config":
+                try:
+                    from core.config_loader import set_config, set_secret
+                    config_data = data.get("config", "{}")
+                    if isinstance(config_data, str):
+                        import json as _json
+                        config_data = _json.loads(config_data)
+                    # Separate config values from secrets (API keys)
+                    api_key_fields = {
+                        'gemini_api_key', 'openrouter_api_key', 'tavily_api_key',
+                        'serpapi_key', 'elevenlabs_api_key', 'google_client_id',
+                        'google_client_secret', 'notion_token', 'notion_database_id'
+                    }
+                    for key, value in config_data.items():
+                        if key in api_key_fields:
+                            set_secret(key, value)
+                        else:
+                            set_config(key, value)
+                    await ws.send(json.dumps({"type": "config_saved", "success": True}))
+                except Exception as e:
+                    await ws.send(json.dumps({"type": "config_saved", "success": False, "error": str(e)}))
 
     except websockets.exceptions.ConnectionClosed:
         pass

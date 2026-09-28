@@ -1,11 +1,11 @@
+from __future__ import annotations
+
 """
 dashboard/server.py — Local HTTP Dashboard for phone remote control
 
 Plain HTTP on port 8000 (no SSL warnings, no firewall issues).
 Optionally uses FastAPI/uvicorn if installed; falls back to Python's built-in http.server.
 """
-
-from __future__ import annotations
 
 import asyncio
 import base64
@@ -15,6 +15,7 @@ import re
 import secrets
 import socket
 import string
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -105,9 +106,26 @@ def _parse_due_at(raw) -> str | None:
 def _create_quick_task(payload: dict, device_id: str = "") -> dict | None:
     """Create a scheduled task coming from a companion app / REST client."""
     title = str(payload.get("title") or payload.get("text") or "").strip()
+
+    # Check if this is a date-range task
+    is_date_range = bool(payload.get("is_date_range"))
+    start_date = payload.get("start_date")
+    end_date = payload.get("end_date")
     due_iso = _parse_due_at(payload.get("due_at") or payload.get("due") or "")
-    if not title or not due_iso:
+
+    if not title:
         return None
+
+    if is_date_range:
+        # Date-range task: require start_date and end_date
+        if not start_date or not end_date:
+            return None
+        due_iso = None  # due_at is optional for date-range tasks
+    else:
+        # Time-specific task: require due_at
+        if not due_iso:
+            return None
+
     try:
         from persistence.repository import Repository
         client_id = str(payload.get("id") or "").strip()
@@ -118,8 +136,11 @@ def _create_quick_task(payload: dict, device_id: str = "") -> dict | None:
             source=str(payload.get("source") or "phone"),
             device_id=device_id or None,
             task_id=client_id or None,
+            start_date=start_date,
+            end_date=end_date,
+            is_date_range=is_date_range,
         )
-        print(f"[Tasks] Created '{title}' due {due_iso} (source={task['source']})")
+        print(f"[Tasks] Created '{title}' due {due_iso} (source={task['source']}, date_range={is_date_range})")
         return task
     except Exception as e:
         print(f"[Tasks] Create failed: {e}")
@@ -185,7 +206,7 @@ _CRYPTOJS_CDN  = ("https://cdnjs.cloudflare.com/ajax/libs/"
 _CRYPTOJS_FILE = STATIC_DIR / "crypto-js.min.js"
 
 
-def _ensure_network_access(port: int) -> None:
+def _ensure_network_access(port: int | tuple[int, ...]) -> None:
     """Cross-platform, best-effort: open port in the OS firewall for LAN access.
 
     Runs in a background thread — never blocks uvicorn startup.
@@ -201,14 +222,15 @@ def _ensure_network_access(port: int) -> None:
     import tempfile
     import threading
 
+    ports = (port,) if isinstance(port, int) else tuple(port)
+    ports = tuple(dict.fromkeys(int(p) for p in ports))
+    if not ports:
+        return
+
     # -- Windows --------------------------------------------------------------
     if sys.platform == "win32":
         import ctypes
         import time
-
-        port_rule = f"SIRIUS Dashboard Port {port}"
-        prog_rule = "SIRIUS Dashboard Python"
-        py_exe    = sys.executable
 
         def _netsh_rule_exists(name: str) -> bool:
             try:
@@ -220,46 +242,30 @@ def _ensure_network_access(port: int) -> None:
             except Exception:
                 return False
 
-        def _network_is_public() -> bool:
-            try:
-                r = subprocess.run(
-                    ["powershell", "-NoProfile", "-NonInteractive", "-Command",
-                     "(Get-NetConnectionProfile | "
-                     "Where-Object {$_.NetworkCategory -eq 'Public'} | "
-                     "Measure-Object).Count"],
-                    capture_output=True, text=True, timeout=6,
-                )
-                return r.stdout.strip() not in ("", "0")
-            except Exception:
-                return False
+        # The dashboard is reachable from the phone only through these LAN
+        # ports. The WebSocket on 127.0.0.1:8765 is local and needs no rule.
+        # Limit the rules to private/domain networks instead of silently
+        # changing a Windows network profile from Public to Private.
+        rules = [(f"SIRIUS Dashboard TCP {p}", "TCP", p) for p in ports]
+        # UDP 8002 is used only for LAN discovery before the phone opens the
+        # dashboard; without this rule automatic device discovery can fail.
+        rules.append(("SIRIUS Dashboard UDP 8002", "UDP", 8002))
+        missing_rules = [
+            (name, protocol, rule_port)
+            for name, protocol, rule_port in rules
+            if not _netsh_rule_exists(name)
+        ]
 
-        need_port    = not _netsh_rule_exists(port_rule)
-        need_prog    = not _netsh_rule_exists(prog_rule)
-        need_private = _network_is_public()
-
-        if not need_port and not need_prog and not need_private:
+        if not missing_rules:
             return  # already fully configured
 
-        # Build a .bat file — netsh + powershell, runs fast when elevated
+        # Build a .bat file and request elevation with ShellExecuteW below.
         bat_lines = ["@echo off"]
-        if need_private:
-            bat_lines.append(
-                'powershell -NoProfile -NonInteractive -Command "'
-                'Get-NetConnectionProfile | '
-                "Where-Object {$_.NetworkCategory -eq 'Public'} | "
-                'Set-NetConnectionProfile -NetworkCategory Private"'
-            )
-        if need_port:
+        for rule_name, protocol, rule_port in missing_rules:
             bat_lines.append(
                 f'netsh advfirewall firewall add rule '
-                f'name="{port_rule}" protocol=TCP dir=in '
-                f'localport={port} action=allow'
-            )
-        if need_prog:
-            bat_lines.append(
-                f'netsh advfirewall firewall add rule '
-                f'name="{prog_rule}" dir=in action=allow '
-                f'program="{py_exe}" enable=yes'
+                f'name="{rule_name}" protocol={protocol} dir=in '
+                f'localport={rule_port} action=allow profile=private,domain'
             )
 
         bat_body = "\r\n".join(bat_lines) + "\r\n"
@@ -280,7 +286,7 @@ def _ensure_network_access(port: int) -> None:
                 [bat_path], capture_output=True, timeout=8, shell=True
             )
             if r.returncode == 0:
-                print(f"[Dashboard] Firewall configured for port {port}.")
+                print(f"[Dashboard] Firewall configured for ports: {', '.join(map(str, ports))}.")
                 try:
                     os.unlink(bat_path)
                 except Exception:
@@ -307,7 +313,7 @@ def _ensure_network_access(port: int) -> None:
                 # ShellExecuteW returns immediately; bat finishes in ~1 second.
                 # Sleep briefly so the rules are in place before the first retry.
                 time.sleep(2)
-                print(f"[Dashboard] Network setup complete — port {port} is open.")
+                print(f"[Dashboard] Network setup complete — ports {', '.join(map(str, ports))} are open on private networks.")
                 print("[Dashboard] Refresh your phone browser to connect.")
             else:
                 print("[Dashboard] Setup was not allowed.")
@@ -928,13 +934,23 @@ class DashboardServer:
             return JSONResponse({"ok": True, "approved": False})
 
     def _load_trusted_devices(self) -> None:
-        """Load trusted devices from encrypted config."""
+        """Load trusted devices from encrypted config and restore device sessions."""
         try:
             from core.config_loader import _read_json
             data = _read_json("trusted_devices.json")
             self._trusted_devices = data.get("devices", {})
+            # Restore device sessions from saved tokens
+            self._device_sessions = {}
+            for device_id, info in self._trusted_devices.items():
+                token = info.get("token")
+                session_key = info.get("session_key")
+                if token and session_key:
+                    self._device_sessions[token] = {"session_key": session_key}
+                    self._aes_key(session_key)  # pre-derive & cache
+            print(f"[Dashboard] Restored {len(self._device_sessions)} device sessions from trusted_devices.json")
         except Exception:
             self._trusted_devices = {}
+            self._device_sessions = {}
 
     def _save_trusted_devices(self) -> None:
         """Save trusted devices to encrypted config."""
@@ -952,9 +968,19 @@ class DashboardServer:
         return None
 
     def _validate_device_token(self, token: str, device_id: str | None = None) -> bool:
-        """Validate a device token and optionally check device_id matches."""
+        """Validate a device token and optionally check device_id matches.
+        Tolerant: if token not in memory but exists in trusted_devices, restore it."""
         if token not in self._device_sessions:
-            return False
+            # Try to restore from trusted_devices
+            for dev_id, info in self._trusted_devices.items():
+                if info.get("token") == token:
+                    session_key = info.get("session_key")
+                    if session_key:
+                        self._device_sessions[token] = {"session_key": session_key}
+                        self._aes_key(session_key)
+                        break
+            if token not in self._device_sessions:
+                return False
         if device_id:
             # Find which device this token belongs to
             for dev_id, info in self._trusted_devices.items():
@@ -1410,10 +1436,18 @@ sessionStorage.setItem('sirius_token','{tok}');
             if not self._validate_device_token(token, device_id):
                 return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
 
-            # Update last seen
+            # Update last seen and notify PC frontend on reconnect
             if device_id and device_id in self._trusted_devices:
+                prev_seen = self._trusted_devices[device_id].get("last_seen", 0)
                 self._trusted_devices[device_id]["last_seen"] = time.time()
                 self._save_trusted_devices()
+                # If device was inactive for >60s, broadcast reconnection
+                if time.time() - prev_seen > 60:
+                    device_name = self._trusted_devices[device_id].get("name", device_id)
+                    asyncio.create_task(self.broadcast(WsMessage("device_connected", {
+                        "device_id": device_id,
+                        "text": f"📱 Celular conectado: {device_name}",
+                    })))
 
             # Check if assistant is running
             assistant_running = hasattr(self, '_assistant_running') and self._assistant_running
@@ -1447,6 +1481,20 @@ sessionStorage.setItem('sirius_token','{tok}');
 
             items = body.get("items", [])
             results = []
+            type_counts: dict[str, int] = {}
+
+            # Notify PC frontend that sync is starting
+            if items:
+                asyncio.create_task(self.broadcast(WsMessage("sync_started", {
+                    "text": f"📱 Sincronizando com o celular ({len(items)} itens)...",
+                })))
+
+            # Debug: log what the phone is sending
+            _type_summary = {}
+            for _it in items:
+                _t = _it.get("type", "?")
+                _type_summary[_t] = _type_summary.get(_t, 0) + 1
+            print(f"[SyncBatch] Received {len(items)} items from phone: {_type_summary}")
 
             def _item_payload(item: dict) -> tuple[dict | None, str | None]:
                 """Return (payload_dict, error). Decrypts when item['enc'] is set."""
@@ -1501,6 +1549,28 @@ sessionStorage.setItem('sirius_token','{tok}');
                     elif itype == "quick_task":
                         task = _create_quick_task(payload, device_id)
                         if task:
+                            # Also save to Obsidian tasks folder
+                            try:
+                                from core.config_loader import get_all_config
+                                cfg = get_all_config()
+                                vault_path = cfg.get("obsidian_vault_path")
+                                if vault_path:
+                                    tasks_dir = Path(vault_path) / "Tarefas"
+                                    tasks_dir.mkdir(parents=True, exist_ok=True)
+                                    due_str = task.get("due_at", "")
+                                    title_text = task.get("title", "")
+                                    task_line = f"- [ ] {title_text}"
+                                    if due_str:
+                                        task_line += f" 🛫 {due_str[:10]}"
+                                    task_line += "\n"
+                                    # Append to a daily or general tasks file
+                                    today = datetime.now().strftime("%Y-%m-%d")
+                                    task_file = tasks_dir / f"{today}.md"
+                                    with open(task_file, "a", encoding="utf-8") as f:
+                                        f.write(task_line)
+                            except Exception as e:
+                                print(f"[SyncBatch] Failed to write task to Obsidian: {e}")
+
                             results.append({"client_id": client_id, "status": "processed",
                                             "server_id": task["id"], "task": task})
                         else:
@@ -1522,6 +1592,92 @@ sessionStorage.setItem('sirius_token','{tok}');
                                         "status": "processed" if ok else "failed",
                                         "server_id": f"tsnooze_{int(time.time()*1000)}"})
 
+                    elif itype == "note":
+                        # Note synced from companion — the organizer resolves
+                        # the configured vault/notes folder itself and appends
+                        # to the file the AI picks.
+                        title = payload.get("title", "")
+                        content = payload.get("content", "")
+                        category = payload.get("category", "geral")
+                        ai_summary = payload.get("ai_summary")
+                        ai_tags = payload.get("ai_tags")
+                        if content:
+                            try:
+                                from actions.note_organizer import organize_note
+                                result = await organize_note(
+                                    title=title,
+                                    content=content,
+                                    category=category,
+                                    ai_summary=ai_summary,
+                                    ai_tags=ai_tags,
+                                    source_uuid=str(payload.get("uuid", "")),
+                                )
+                                if result:
+                                    results.append({"client_id": client_id, "status": "processed",
+                                                    "server_id": f"note_{int(time.time()*1000)}",
+                                                    "note_result": {"target": str(result.target),
+                                                                    "summary": result.summary,
+                                                                    "tags": result.tags,
+                                                                    "duplicate": result.duplicate}})
+                                else:
+                                    results.append({"client_id": client_id, "status": "failed",
+                                                    "error": "Organizer returned None"})
+                            except Exception as e:
+                                results.append({"client_id": client_id, "status": "failed",
+                                                "error": str(e)})
+                        else:
+                            results.append({"client_id": client_id, "status": "failed",
+                                            "error": "Empty note content"})
+
+                    elif itype == "place_visit":
+                        # Place visit synced from companion — save to DB + Obsidian.
+                        place_id = payload.get("place_id", "")
+                        place_name = payload.get("place_name", "")
+                        entered_at = payload.get("entered_at", "")
+                        exited_at = payload.get("exited_at")
+                        duration_seconds = payload.get("duration_seconds", 0)
+                        if place_id:
+                            try:
+                                from persistence.repository import Repository
+                                repo = Repository()
+                                # Store visit in local DB
+                                repo.db.execute(
+                                    "INSERT OR IGNORE INTO place_visits "
+                                    "(place_id, place_name, entered_at, exited_at, duration_seconds, device_id) "
+                                    "VALUES (?, ?, ?, ?, ?, ?)",
+                                    (place_id, place_name, entered_at, exited_at, duration_seconds, device_id),
+                                )
+                                repo.db.commit()
+                            except Exception as e:
+                                print(f"[SyncBatch] Failed to save place_visit to DB: {e}")
+
+                            # Write to Obsidian diary
+                            try:
+                                from core.config_loader import get_all_config
+                                cfg = get_all_config()
+                                vault_path = cfg.get("obsidian_vault_path")
+                                if vault_path:
+                                    diary_dir = Path(vault_path) / "Diario"
+                                    diary_dir.mkdir(parents=True, exist_ok=True)
+                                    today = datetime.now().strftime("%Y-%m-%d")
+                                    diary_file = diary_dir / f"{today}.md"
+                                    visit_line = (
+                                        f"- **{place_name or place_id}** "
+                                        f"({entered_at}"
+                                        f"{f' → {exited_at}' if exited_at else ''}"
+                                        f"{f' — {duration_seconds}s' if duration_seconds else ''})\n"
+                                    )
+                                    with open(diary_file, "a", encoding="utf-8") as f:
+                                        f.write(visit_line)
+                            except Exception as e:
+                                print(f"[SyncBatch] Failed to write visit to Obsidian: {e}")
+
+                            results.append({"client_id": client_id, "status": "processed",
+                                            "server_id": f"visit_{int(time.time()*1000)}"})
+                        else:
+                            results.append({"client_id": client_id, "status": "failed",
+                                            "error": "Missing place_id"})
+
                     else:
                         results.append({"client_id": client_id, "status": "failed", "error": f"Unknown type: {itype}"})
 
@@ -1529,6 +1685,77 @@ sessionStorage.setItem('sirius_token','{tok}');
                     results.append({"client_id": item.get("client_id", ""), "status": "failed", "error": str(e)})
 
             processed = sum(1 for r in results if r["status"] == "processed")
+
+            # -- Broadcast sync feedback to React frontend -------------------
+            if processed > 0:
+                # Count by itype from original items (reliable, not server_id)
+                type_counts: dict[str, int] = {}
+                for item, result in zip(items, results):
+                    if result["status"] == "processed":
+                        t = item.get("type", "unknown")
+                        type_counts[t] = type_counts.get(t, 0) + 1
+                # 1. Notificar a interface web/React via WebSocket
+                try:
+                    import ws_server
+                    _labels = {
+                        "note": "anotação",
+                        "place_visit": "visita",
+                        "command": "comando",
+                        "quick_task": "tarefa",
+                        "task_done": "tarefa",
+                        "task_snooze": "tarefa",
+                        "place_confirmation": "confirmação",
+                        "gemma_fallback": "comando",
+                    }
+                    parts = []
+                    for itype, count in type_counts.items():
+                        label = _labels.get(itype, itype)
+                        parts.append(f"{count} {label}{'(ões)' if count > 1 else ''}")
+                    detail = ", ".join(parts) if parts else f"{processed} item(s)"
+                    ws_server.manager.broadcast_sync(WsMessage("sync_summary", {
+                        "text": f"📱 {detail} recebido(s) do celular",
+                        "processed": processed,
+                        "counts": type_counts,
+                    }))
+                except Exception as e:
+                    print(f"[Dashboard] Broadcast sync_summary error: {e}")
+
+                # 2. Voz oficial do Gemini Live: montar resumo detalhado e enviar para _command_queue
+                # (sem nenhum TTS local)
+                received_summaries = []
+                for item, result in zip(items, results):
+                    if result.get("status") == "processed":
+                        t = item.get("type", "")
+                        p = item.get("payload")
+                        if isinstance(p, dict):
+                            if t == "note":
+                                note_title = p.get("title") or (p.get("content", "")[:30] + "...")
+                                received_summaries.append(f"Anotação '{note_title}'")
+                            elif t == "quick_task":
+                                task_title = p.get("title", "sem título")
+                                received_summaries.append(f"Tarefa '{task_title}'")
+                            elif t == "place_visit":
+                                place_name = p.get("place_name") or p.get("place_id") or "local"
+                                received_summaries.append(f"Visita ao local '{place_name}'")
+                            elif t == "task_done":
+                                received_summaries.append("Tarefa concluída")
+                            elif t == "task_snooze":
+                                received_summaries.append("Tarefa adiada")
+
+                if received_summaries:
+                    summary_text = "; ".join(received_summaries)
+                    gemini_prompt = (
+                        f"[SISTEMA: O celular sincronizou dados com o computador com sucesso.\n"
+                        f"Itens recebidos do celular: {summary_text}.\n\n"
+                        f"INSTRUÇÃO OBRIGATÓRIA: Fale agora em voz alta para o usuário, com a sua voz oficial do Gemini, "
+                        f"de forma breve, concisa e amigável (em no máximo 2 frases curtas), "
+                        f"que você recebeu essas informações do celular e faça um resumo sucinto do que chegou. "
+                        f"Não mencione comandos de sistema nem termos técnicos.]"
+                    )
+                    try:
+                        await self._command_queue.put(gemini_prompt)
+                    except Exception as e:
+                        print(f"[Dashboard] Failed to enqueue Gemini speech prompt: {e}")
 
             return JSONResponse({
                 "ok": True,
@@ -1891,7 +2118,6 @@ sessionStorage.setItem('sirius_token','{tok}');
         User types IP:8001 -> Chrome tries https -> self-signed cert warning -> accept once -> done."""
         ssl_key  = BASE_DIR / "config" / "certs" / "jarvis.key"
         ssl_cert = BASE_DIR / "config" / "certs" / "jarvis.crt"
-        asyncio.get_event_loop().run_in_executor(None, _ensure_network_access, PORT + 1)
         cfg = uvicorn.Config(
             self.app, host="0.0.0.0", port=PORT + 1, log_level="warning",
             ssl_keyfile=str(ssl_key), ssl_certfile=str(ssl_cert),
@@ -1930,7 +2156,20 @@ sessionStorage.setItem('sirius_token','{tok}');
             print("[DEBUG DashboardServer.serve] Firewall setup starting in executor...")
             # Firewall setup runs in a thread — uvicorn starts immediately,
             # no waiting for UAC dialogs or subprocess timeouts.
-            asyncio.get_event_loop().run_in_executor(None, _ensure_network_access, PORT)
+            asyncio.get_event_loop().run_in_executor(
+                None, _ensure_network_access, (PORT, 8001, 8002)
+            )
+
+            # Start UDP LAN discovery responder on port 8002
+            self._start_lan_discovery()
+
+            # Start TCP companion server on port 8001 (parallel to HTTP on 8000).
+            try:
+                from dashboard.tcp_companion_server import start_tcp_server
+                asyncio.create_task(start_tcp_server(port=8001))
+                print("[Dashboard] TCP Companion Server starting on port 8001")
+            except Exception as e:
+                print(f"[Dashboard] TCP Companion Server failed to start: {e}")
 
             if _DEPS_OK and self.app is not None:
                 # FastAPI / uvicorn available — use them
@@ -1969,6 +2208,32 @@ sessionStorage.setItem('sirius_token','{tok}');
             if self._ready_event is not None:
                 self._ready_event.set()
             raise
+
+    def _start_lan_discovery(self) -> None:
+        """Start UDP listener for LAN discovery probes from companion apps."""
+        def _listen():
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                sock.bind(("0.0.0.0", 8002))
+            except Exception as e:
+                print(f"[Dashboard] LAN discovery bind failed: {e}")
+                return
+            sock.settimeout(1.0)
+            print("[Dashboard] LAN discovery listening on UDP 8002")
+            while True:
+                try:
+                    data, addr = sock.recvfrom(1024)
+                    msg = data.decode('utf-8', errors='ignore').strip()
+                    if msg == "SIRIUS_DISCOVERY_PING":
+                        response = f"SIRIUS_ANNOUNCE:http://{self._ip}:{PORT}"
+                        sock.sendto(response.encode('utf-8'), addr)
+                except socket.timeout:
+                    continue
+                except Exception:
+                    break
+        thread = threading.Thread(target=_listen, daemon=True)
+        thread.start()
 
     async def serve_fallback(self):
         """Minimal HTTP server using Python's built-in http.server (zero deps)."""

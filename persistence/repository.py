@@ -513,21 +513,24 @@ class Repository:
     def add_scheduled_task(
         self,
         title: str,
-        due_at: str,
+        due_at: Optional[str] = None,
         notes: Optional[str] = None,
         source: str = "pc",
         device_id: Optional[str] = None,
         task_id: Optional[str] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        is_date_range: bool = False,
     ) -> dict:
-        """Create a scheduled task. `due_at` is an ISO datetime string."""
+        """Create a scheduled task. `due_at` is an ISO datetime string (optional for date-range tasks)."""
         import uuid
 
         now = datetime.now().isoformat()
         tid = task_id or uuid.uuid4().hex[:12]
         self.db.execute(
-            """INSERT INTO scheduled_tasks (id, title, notes, due_at, status, source, device_id, created_at, updated_at)
-               VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?)""",
-            (tid, title, notes, due_at, source, device_id, now, now),
+            """INSERT INTO scheduled_tasks (id, title, notes, due_at, status, source, device_id, created_at, updated_at, start_date, end_date, is_date_range)
+               VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)""",
+            (tid, title, notes, due_at, source, device_id, now, now, start_date, end_date, 1 if is_date_range else 0),
         )
         self.db.commit()
         return self.get_scheduled_task(tid)  # type: ignore[return-value]
@@ -564,6 +567,21 @@ class Repository:
             "OR (status IN ('done','dismissed') AND updated_at >= ?) "
             "ORDER BY due_at ASC LIMIT 500",
             (cutoff,),
+        )
+        return [dict(r) for r in rows]
+
+    def get_date_range_tasks_for_today(self, today: Optional[str] = None) -> list[dict]:
+        """Get all active date-range tasks for a specific day (default: today)."""
+        if today is None:
+            today = datetime.now().date().isoformat()
+        rows = self.db.fetchall(
+            """SELECT * FROM scheduled_tasks
+               WHERE is_date_range = 1
+               AND status IN ('pending','notified')
+               AND start_date <= ?
+               AND end_date >= ?
+               ORDER BY start_date ASC""",
+            (today, today),
         )
         return [dict(r) for r in rows]
 

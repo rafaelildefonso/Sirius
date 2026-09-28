@@ -84,3 +84,83 @@ def load_tasks_from_vault(vault_path: Path, tasks_subpath: str = "Tarefas") -> N
             else:
                 repo.add_task(file_path_str, description, start_date, priority_emoji, end_date)
                 print(f"[Obsidian] Added task from {md}: {description}")
+
+
+def organize_task_in_obsidian(
+    title: str,
+    due_at: str | None = None,
+    notes: str | None = None,
+    vault_path: str | None = None,
+) -> Path | None:
+    """Save a task to the Obsidian vault in Tasks plugin syntax.
+
+    Args:
+        title: Task description.
+        due_at: ISO datetime string for the due date (optional).
+        notes: Additional notes for the task (optional).
+        vault_path: Explicit vault path. Falls back to config, then auto-discover.
+
+    Returns:
+        Path of the markdown file written, or None on failure.
+    """
+    try:
+        # Determine vault
+        if vault_path:
+            vault = Path(vault_path)
+        else:
+            vault = _find_vault()
+        if not vault or not vault.exists():
+            print("[ObsidianTasks] No vault found")
+            return None
+
+        tasks_dir = vault / "Tarefas"
+        tasks_dir.mkdir(parents=True, exist_ok=True)
+
+        # Build task line in Tasks plugin syntax
+        task_line = f"- [ ] {title}"
+        if due_at:
+            # Extract date portion (YYYY-MM-DD)
+            date_part = due_at[:10] if len(due_at) >= 10 else due_at
+            task_line += f" 🛫 {date_part}"
+        task_line += "\n"
+
+        # Append to a dated file or general tasks file
+        from datetime import datetime
+        today = datetime.now().strftime("%Y-%m-%d")
+        task_file = tasks_dir / f"{today}.md"
+
+        # Add header if file is new
+        if not task_file.exists():
+            header = f"# Tarefas — {today}\n\n"
+            task_file.write_text(header, encoding="utf-8")
+
+        with open(task_file, "a", encoding="utf-8") as f:
+            f.write(task_line)
+
+        # Also add notes as a child block if provided
+        if notes:
+            note_line = f"  > {notes}\n"
+            with open(task_file, "a", encoding="utf-8") as f:
+                f.write(note_line)
+
+        print(f"[ObsidianTasks] Task saved: {title} → {task_file}")
+        return task_file
+
+    except Exception as e:
+        print(f"[ObsidianTasks] Failed to organize task: {e}")
+        return None
+
+
+def _find_vault() -> Path | None:
+    """Try common Obsidian vault locations."""
+    home = Path.home()
+    candidates = [
+        home / "Documents" / "Obsidian",
+        home / "Obsidian",
+        home / "Documents" / "Vault",
+        home / "Documents" / "notes",
+    ]
+    for p in candidates:
+        if p.exists() and any(p.glob("*.md")):
+            return p
+    return None

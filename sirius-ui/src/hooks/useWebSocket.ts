@@ -192,6 +192,9 @@ export function useWebSocket() {
   useEffect(() => {
     let running = true;
     const CONNECTION_TIMEOUT = 10000;
+    // One-file PyInstaller extraction and first-run model/database setup can
+    // take longer than the initial retry window. Keep retrying in the
+    // background instead of leaving the UI permanently on the error screen.
     const MAX_RETRIES = 15;
 
     const connect = () => {
@@ -231,9 +234,8 @@ export function useWebSocket() {
         retryCountRef.current++;
         if (retryCountRef.current >= MAX_RETRIES) {
           setConnectionError("Não foi possível conectar ao servidor após várias tentativas.");
-          return;
         }
-        reconnectTimer.current = setTimeout(connect, 2000);
+        reconnectTimer.current = setTimeout(connect, retryCountRef.current >= MAX_RETRIES ? 3000 : 2000);
       };
 
       ws.onerror = () => ws.close();
@@ -298,12 +300,40 @@ export function useWebSocket() {
           setNotification(String(data.text ?? ""));
           break;
         }
+        case "sync_received": {
+          const text = String(data.text ?? "");
+          setLogs((prev) => [...prev, { text, tag: "sys" }]);
+          break;
+        }
+        case "sync_summary": {
+          setNotification(String(data.text ?? ""));
+          const summaryText = String(data.text ?? "");
+          setLogs((prev) => [...prev, { text: summaryText, tag: "sys" }]);
+          break;
+        }
         case "task_alarm": {
           setTaskAlarm({
             id: String(data.id ?? ""),
             text: String(data.text ?? data.message ?? ""),
             dueAt: data.due_at ? String(data.due_at) : undefined,
           });
+          break;
+        }
+        case "date_range_task_alarm": {
+          // Date-range alarms use the same resolution actions as timed
+          // alarms. This also keeps a fallback UI available if the native
+          // Windows toast provider is unavailable.
+          setTaskAlarm({
+            id: String(data.id ?? ""),
+            text: String(data.text ?? data.message ?? ""),
+          });
+          break;
+        }
+        case "task_alarm_resolved": {
+          const resolvedId = String(data.id ?? "");
+          setTaskAlarm((current) =>
+            current?.id === resolvedId ? null : current
+          );
           break;
         }
         case "remote_key": {

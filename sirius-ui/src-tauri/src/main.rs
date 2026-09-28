@@ -102,7 +102,7 @@ fn log_startup() {
 }
 
 fn find_sidecar(app: &tauri::AppHandle) -> Option<PathBuf> {
-    let candidates = [
+    let mut candidates = vec![
         // Production: installed alongside the main exe
         std::env::current_exe().ok().map(|p| p.parent().unwrap().to_path_buf()),
         // Tauri resource dir (production bundle)
@@ -112,6 +112,14 @@ fn find_sidecar(app: &tauri::AppHandle) -> Option<PathBuf> {
         // current working directory + binaries (dev mode)
         std::env::current_dir().ok().map(|d| d.join("binaries")),
     ];
+    // During `tauri dev`, prefer the source sidecar that build_backend.py
+    // updates. target/debug can contain an older copied executable and was
+    // causing fixes to be ignored on the next dev run.
+    #[cfg(debug_assertions)]
+    candidates.insert(
+        0,
+        Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("binaries")),
+    );
     for dir in candidates.into_iter().flatten() {
         if !dir.is_dir() { continue; }
         log_msg(&format!("[Tauri] Searching for sidecar in: {}", dir.display()));
@@ -168,6 +176,8 @@ fn start_python_backend(app: &tauri::AppHandle) -> Option<Child> {
         log_msg(&format!("[Tauri] Starting sidecar: {}", sidecar_path.display()));
         let mut cmd = Command::new(&sidecar_path);
         cmd.env("SIRIUS_WS_UI", "1")
+            .env("PYTHONUNBUFFERED", "1")
+            .env("PYTHONIOENCODING", "utf-8")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         #[cfg(windows)]
@@ -181,13 +191,21 @@ fn start_python_backend(app: &tauri::AppHandle) -> Option<Child> {
     #[cfg(debug_assertions)]
     {
         let cwd = std::env::current_dir().ok()?;
-        let launcher = cwd.join("sirius_backend_launcher.py");
-        if launcher.exists() {
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let launcher_candidates = [
+            cwd.join("sirius_backend_launcher.py"),
+            cwd.join("..").join("sirius_backend_launcher.py"),
+            manifest_dir.join("..").join("..").join("sirius_backend_launcher.py"),
+        ];
+        if let Some(launcher) = launcher_candidates.into_iter().find(|path| path.exists()) {
+            let backend_dir = launcher.parent().unwrap_or(&cwd);
             log_msg(&format!("[Tauri] Starting python directly: {}", launcher.display()));
             let mut cmd = Command::new("python");
-            cmd.arg(&launcher)
-                .current_dir(&cwd)
+            cmd.args(["-u", launcher.to_string_lossy().as_ref()])
+                .current_dir(backend_dir)
                 .env("SIRIUS_WS_UI", "1")
+                .env("PYTHONUNBUFFERED", "1")
+                .env("PYTHONIOENCODING", "utf-8")
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
             #[cfg(windows)]

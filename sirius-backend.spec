@@ -13,6 +13,8 @@ BASE_DIR = Path(os.environ.get('SIRIUS_BUILD_ROOT', Path.cwd()))
 from PyInstaller.utils.hooks import collect_submodules, collect_data_files, collect_all
 
 _pkg_binaries, _pkg_datas, _pkg_hiddenimports = collect_all('packaging')
+_toast_binaries, _toast_datas, _toast_hiddenimports = collect_all('windows_toasts')
+_cv2_binaries, _cv2_datas, _cv2_hiddenimports = collect_all('cv2')
 _fw_datas = collect_data_files('faster_whisper')
 
 block_cipher = None
@@ -41,8 +43,8 @@ def _collect_runtime_data():
 a = Analysis(
     [str(BASE_DIR / 'sirius_backend_launcher.py')],
     pathex=[str(BASE_DIR)],
-    binaries=[] + _pkg_binaries,
-    datas=[] + _pkg_datas + _fw_datas + _collect_runtime_data(),
+    binaries=[] + _pkg_binaries + _toast_binaries + _cv2_binaries,
+    datas=[] + _pkg_datas + _toast_datas + _cv2_datas + _fw_datas + _collect_runtime_data(),
     hiddenimports=[
         # ── Entry point modules ─────────────────────────────────
         'main',
@@ -115,6 +117,8 @@ a = Analysis(
         'comtypes.client',
         'pycaw',
         'win10toast',
+        # Loaded dynamically by ws_server.py for actionable Windows toasts.
+        'windows_toasts',
         # ── Media ───────────────────────────────────────────────
         'youtube_transcript_api',
         'send2trash',
@@ -136,6 +140,8 @@ a = Analysis(
     + collect_submodules('google.auth')
     + collect_submodules('google.oauth2')
     + collect_submodules('comtypes')
+    + _toast_hiddenimports
+    + _cv2_hiddenimports
     + _pkg_hiddenimports,
     excludes=[
         'matplotlib',
