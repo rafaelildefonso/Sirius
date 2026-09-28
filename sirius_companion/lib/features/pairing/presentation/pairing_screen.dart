@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import '../application/pairing_controller.dart';
 import '../../home/presentation/home_screen.dart';
+import '../../home/application/home_controller.dart';
 
 class PairingScreen extends ConsumerStatefulWidget {
   const PairingScreen({super.key});
@@ -29,6 +30,8 @@ class _PairingScreenState extends ConsumerState<PairingScreen> {
 
     ref.listen(pairingControllerProvider, (_, next) {
       if (next.status == PairingStatus.paired) {
+        // Update the reactive paired provider so the auth gate navigates to Home
+        ref.read(isPairedProvider.notifier).state = true;
         Navigator.of(context).pushReplacement(
           MaterialPageRoute(builder: (_) => const HomeScreen()),
         );

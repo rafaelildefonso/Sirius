@@ -2,15 +2,21 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'dart:async';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../application/home_controller.dart';
 import '../../../../core/storage/models/sync_item.dart' as sync_model;
+import '../../../../core/storage/repositories/note_repository.dart';
 import '../../../../core/device_identity.dart';
 import '../../../../core/storage/database/database.dart';
 import '../../../../core/ai/ai_service.dart';
 import '../../../../core/ai/gemma_engine.dart';
 import '../../../../core/ai/hf_auth_webview.dart';
 import '../../../../features/tasks/task_alarm_service.dart';
+import '../../../../features/tasks/presentation/create_task_screen.dart';
 import '../../locations/presentation/places_screen.dart';
+import '../../notes/presentation/notes_screen.dart';
+import '../../notes/presentation/note_editor_screen.dart';
+import '../../pairing/presentation/pairing_screen.dart';
 
 class HomeScreen extends ConsumerStatefulWidget {
   const HomeScreen({super.key});
@@ -19,15 +25,40 @@ class HomeScreen extends ConsumerStatefulWidget {
   ConsumerState<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends ConsumerState<HomeScreen> {
+class _HomeScreenState extends ConsumerState<HomeScreen>
+    with WidgetsBindingObserver {
   int _taskTick = 0;
+  AppLifecycleListener? _lifecycleListener;
+  Timer? _taskRefreshTimer;
 
   @override
   void initState() {
     super.initState();
+    _lifecycleListener = AppLifecycleListener(
+      onResume: () async {
+        await ref.read(homeControllerProvider.notifier).loadStatus();
+        await ref.read(homeControllerProvider.notifier).checkConnectivity();
+        _refreshTasks();
+      },
+    );
+    // SQLite writes made by WorkManager/foreground background services can
+    // happen in another isolate, so Drift's stream is not always notified in
+    // this UI isolate. Recreate the query periodically while this screen is
+    // visible so synced tasks appear without closing and reopening the app.
+    _taskRefreshTimer = Timer.periodic(const Duration(seconds: 10), (_) {
+      if (mounted) _refreshTasks();
+    });
     WidgetsBinding.instance.addPostFrameCallback((_) {
       ref.read(homeControllerProvider.notifier).loadStatus();
+      ref.read(homeControllerProvider.notifier).checkConnectivity();
     });
+  }
+
+  @override
+  void dispose() {
+    _taskRefreshTimer?.cancel();
+    _lifecycleListener?.dispose();
+    super.dispose();
   }
 
   void _refreshTasks() {
@@ -41,10 +72,35 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     );
   }
 
+  void _navigateToNotes() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const NotesScreen()),
+    );
+  }
+
+  void _openQuickTaskModal() async {
+    final result = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(builder: (_) => const CreateTaskScreen()),
+    );
+    if (result == true) {
+      _refreshTasks();
+    }
+  }
+
+  void _openQuickNoteModal() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const NoteEditorScreen()),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final state = ref.watch(homeControllerProvider);
     final controller = ref.read(homeControllerProvider.notifier);
+    final serverUrlFuture = DeviceIdentity.getServerUrl();
 
     return Scaffold(
       backgroundColor: const Color(0xFF07090F),
@@ -60,37 +116,240 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       body: RefreshIndicator(
         onRefresh: () async {
           await ref.read(homeControllerProvider.notifier).loadStatus();
+          await ref.read(homeControllerProvider.notifier).checkConnectivity();
           _refreshTasks();
         },
         color: const Color(0xFF6366F1),
         child: ListView(
           padding: const EdgeInsets.all(16),
           children: [
-            _ConnectionStatusCard(state: state),
+            FutureBuilder<String?>(
+              future: serverUrlFuture,
+              builder: (context, snapshot) {
+                return _ConnectionStatusCard(
+                  state: state,
+                  onRefresh: () => controller.checkConnectivity(),
+                  serverUrl: snapshot.data,
+                );
+              },
+            ),
             const SizedBox(height: 16),
             const _AlarmPermissionBanner(),
             const SizedBox(height: 16),
-            _TaskQuickAddCard(onCreated: _refreshTasks),
+            _QuickActionButtons(
+              onQuickTask: _openQuickTaskModal,
+              onQuickNote: _openQuickNoteModal,
+            ),
             const SizedBox(height: 16),
             _UpcomingTasksSection(tick: _taskTick, onChanged: _refreshTasks),
             const SizedBox(height: 16),
             _QuickActions(
               isSyncing: state.isSyncing,
-              onSync: () => controller.triggerManualSync(),
-              onUnpair: () => _showUnpairDialog(context, ref.read(homeControllerProvider.notifier)),
+              onSync: () async {
+                final result = await controller.triggerManualSync();
+                // The sync writes tasks into SQLite after this screen has
+                // already built its FutureBuilder. Force the task section to
+                // read the freshly pulled rows immediately.
+                _refreshTasks();
+                if (!mounted) return;
+                if (result != null) {
+                  if (result.success) {
+                    // Show detailed success dialog
+                    showDialog(
+                      context: context,
+                      builder: (ctx) => AlertDialog(
+                        backgroundColor: const Color(0xFF0D1117),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(16),
+                        ),
+                        title: const Row(
+                          children: [
+                            Icon(
+                              Icons.check_circle,
+                              color: Color(0xFF22C55E),
+                              size: 24,
+                            ),
+                            SizedBox(width: 10),
+                            Expanded(
+                              child: Text(
+                                'Sincronização Concluída',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        content: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              'Itens enviados ao PC:',
+                              style: TextStyle(
+                                color: Color(0xFF9CA3AF),
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            if (result.notesSent > 0)
+                              _SyncDetailRow(
+                                icon: Icons.note_alt_outlined,
+                                label: 'Anotações (migradas pro PC)',
+                                count: result.notesSent,
+                                color: const Color(0xFF6366F1),
+                              ),
+                            if (result.visitsSent > 0)
+                              _SyncDetailRow(
+                                icon: Icons.place,
+                                label: 'Visitas a locais',
+                                count: result.visitsSent,
+                                color: const Color(0xFF22C55E),
+                              ),
+                            if (result.syncItemsSent > 0)
+                              _SyncDetailRow(
+                                icon: Icons.sync,
+                                label: 'Comandos/Tarefas',
+                                count: result.syncItemsSent,
+                                color: const Color(0xFFF59E0B),
+                              ),
+                            if (result.notesSent == 0 &&
+                                result.visitsSent == 0 &&
+                                result.syncItemsSent == 0)
+                              const Padding(
+                                padding: EdgeInsets.symmetric(vertical: 8),
+                                child: Text(
+                                  'Nenhum item novo para enviar',
+                                  style: TextStyle(color: Color(0xFF5E6A7E)),
+                                ),
+                              ),
+                            const SizedBox(height: 16),
+                            const Text(
+                              'Itens recebidos do PC:',
+                              style: TextStyle(
+                                color: Color(0xFF9CA3AF),
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            if (result.itemsPulled > 0)
+                              _SyncDetailRow(
+                                icon: Icons.download,
+                                label: 'Tarefas/Comandos',
+                                count: result.itemsPulled,
+                                color: const Color(0xFF6366F1),
+                              )
+                            else
+                              const Padding(
+                                padding: EdgeInsets.symmetric(vertical: 8),
+                                child: Text(
+                                  'Nenhuma atualização nova',
+                                  style: TextStyle(color: Color(0xFF5E6A7E)),
+                                ),
+                              ),
+                            const SizedBox(height: 16),
+                            const Divider(color: Color(0xFF374151)),
+                            const SizedBox(height: 8),
+                            Text(
+                              'Total: ${result.notesSent + result.visitsSent + result.syncItemsSent} enviados, ${result.itemsPulled} recebidos',
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            const Text(
+                              '✓ Anotações salvas no PC • Tarefas mantidas no celular',
+                              style: TextStyle(
+                                color: Color(0xFF22C55E),
+                                fontSize: 11,
+                              ),
+                            ),
+                          ],
+                        ),
+                        actions: [
+                          TextButton(
+                            onPressed: () => Navigator.pop(ctx),
+                            child: const Text(
+                              'OK',
+                              style: TextStyle(color: Color(0xFF6366F1)),
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  } else {
+                    // Show error dialog
+                    showDialog(
+                      context: context,
+                      builder: (ctx) => AlertDialog(
+                        backgroundColor: const Color(0xFF0D1117),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(16),
+                        ),
+                        title: const Row(
+                          children: [
+                            Icon(
+                              Icons.error_outline,
+                              color: Color(0xFFEF4444),
+                              size: 24,
+                            ),
+                            SizedBox(width: 10),
+                            Expanded(
+                              child: Text(
+                                'Falha na Sincronização',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        content: Text(
+                          result.error ?? 'Erro desconhecido',
+                          style: const TextStyle(color: Color(0xFF9CA3AF)),
+                        ),
+                        actions: [
+                          TextButton(
+                            onPressed: () => Navigator.pop(ctx),
+                            child: const Text(
+                              'OK',
+                              style: TextStyle(color: Color(0xFFEF4444)),
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  }
+                }
+              },
+              onUnpair: () => _showUnpairDialog(context, controller),
               onPlaces: _navigateToPlaces,
+              onNotes: _navigateToNotes,
             ),
             const SizedBox(height: 16),
             _StatsRow(
               pendingCount: state.pendingCount,
               failedCount: state.failedCount,
+              pendingNotesCount: state.pendingNotesCount,
+              pendingVisitsCount: state.pendingVisitsCount,
+              totalPendingCount: state.totalPendingCount,
               lastSync: state.lastSync,
             ),
             const SizedBox(height: 16),
             _RecentCommandsSection(commands: state.recentCommands),
             const SizedBox(height: 16),
             if (state.lastSync != null || state.lastError != null)
-              _LastSyncInfo(lastSync: state.lastSync, lastError: state.lastError),
+              _LastSyncInfo(
+                lastSync: state.lastSync,
+                lastError: state.lastError,
+              ),
           ],
         ),
       ),
@@ -110,7 +369,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       builder: (ctx) => AlertDialog(
         backgroundColor: const Color(0xFF0D1117),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text('Desparear Dispositivo', style: TextStyle(color: Colors.white)),
+        title: const Text(
+          'Desparear Dispositivo',
+          style: TextStyle(color: Colors.white),
+        ),
         content: const Text(
           'Isso removerá o pareamento com o PC. Você precisará escanear o QR code novamente para reconectar.',
           style: TextStyle(color: Color(0xFF9CA3AF)),
@@ -118,14 +380,27 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx),
-            child: const Text('Cancelar', style: TextStyle(color: Color(0xFF9CA3AF))),
+            child: const Text(
+              'Cancelar',
+              style: TextStyle(color: Color(0xFF9CA3AF)),
+            ),
           ),
           FilledButton(
-            onPressed: () {
+            onPressed: () async {
               Navigator.pop(ctx);
-              controller.unpair();
+              await controller.unpair();
+              if (!mounted) return;
+              // Update the reactive paired provider
+              ref.read(isPairedProvider.notifier).state = false;
+              // Navigate to pairing screen, clearing the stack
+              Navigator.of(context).pushAndRemoveUntil(
+                MaterialPageRoute(builder: (_) => const _PairingRedirect()),
+                (route) => false,
+              );
             },
-            style: FilledButton.styleFrom(backgroundColor: const Color(0xFFEF4444)),
+            style: FilledButton.styleFrom(
+              backgroundColor: const Color(0xFFEF4444),
+            ),
             child: const Text('Desparear'),
           ),
         ],
@@ -201,8 +476,11 @@ class _AlarmPermissionBannerState extends State<_AlarmPermissionBanner> {
         children: [
           Row(
             children: [
-              const Icon(Icons.alarm_off_rounded,
-                  color: Color(0xFFF59E0B), size: 22),
+              const Icon(
+                Icons.alarm_off_rounded,
+                color: Color(0xFFF59E0B),
+                size: 22,
+              ),
               const SizedBox(width: 10),
               Expanded(
                 child: Text(
@@ -244,16 +522,39 @@ class _AlarmPermissionBannerState extends State<_AlarmPermissionBanner> {
 
 class _ConnectionStatusCard extends StatelessWidget {
   final HomeState state;
+  final VoidCallback onRefresh;
+  final String? serverUrl;
 
-  const _ConnectionStatusCard({required this.state});
+  const _ConnectionStatusCard({
+    required this.state,
+    required this.onRefresh,
+    this.serverUrl,
+  });
 
   @override
   Widget build(BuildContext context) {
+    final connected = state.isConnected;
+    final syncing = state.isSyncing;
+    String displayUrl = 'IP desconhecido';
+    final url = serverUrl;
+    if (url != null) {
+      try {
+        final uri = Uri.parse(url);
+        displayUrl = '${uri.host}:${uri.port}';
+      } catch (_) {
+        displayUrl = url;
+      }
+    }
+
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
         color: const Color(0xFFFFFFFF).withValues(alpha: 0.04),
-        border: Border.all(color: const Color(0xFFFFFFFF).withValues(alpha: 0.08)),
+        border: Border.all(
+          color: connected
+              ? const Color(0xFF22C55E).withValues(alpha: 0.3)
+              : const Color(0xFFEF4444).withValues(alpha: 0.3),
+        ),
         borderRadius: BorderRadius.circular(22),
       ),
       child: Column(
@@ -264,7 +565,11 @@ class _ConnectionStatusCard extends StatelessWidget {
                 width: 12,
                 height: 12,
                 decoration: BoxDecoration(
-                  color: state.isSyncing ? const Color(0xFFF59E0B) : const Color(0xFF22C55E),
+                  color: syncing
+                      ? const Color(0xFFF59E0B)
+                      : connected
+                      ? const Color(0xFF22C55E)
+                      : const Color(0xFFEF4444),
                   shape: BoxShape.circle,
                 ),
               ),
@@ -274,22 +579,35 @@ class _ConnectionStatusCard extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      state.isSyncing ? 'Sincronizando...' : 'Conectado ao SIRIUS',
-                      style: const TextStyle(
+                      syncing
+                          ? 'Sincronizando...'
+                          : connected
+                          ? 'Conectado ao SIRIUS'
+                          : 'Desconectado do SIRIUS',
+                      style: TextStyle(
                         fontSize: 16,
                         fontWeight: FontWeight.w600,
-                        color: Colors.white,
+                        color: connected
+                            ? Colors.white
+                            : const Color(0xFFEF4444),
                       ),
                     ),
                     const SizedBox(height: 2),
                     Text(
-                      'Dispositivo pareado e pronto para uso',
-                      style: const TextStyle(fontSize: 12, color: Color(0xFF5E6A7E)),
+                      syncing
+                          ? (state.syncProgressMessage ?? 'Processando...')
+                          : connected
+                          ? 'Conectado em $displayUrl'
+                          : 'PC não encontrado na rede local',
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: Color(0xFF5E6A7E),
+                      ),
                     ),
                   ],
                 ),
               ),
-              if (state.isSyncing)
+              if (syncing)
                 const SizedBox(
                   width: 20,
                   height: 20,
@@ -297,6 +615,16 @@ class _ConnectionStatusCard extends StatelessWidget {
                     strokeWidth: 2,
                     valueColor: AlwaysStoppedAnimation(Color(0xFF6366F1)),
                   ),
+                )
+              else if (!connected)
+                IconButton(
+                  icon: const Icon(
+                    Icons.refresh,
+                    color: Color(0xFFEF4444),
+                    size: 20,
+                  ),
+                  onPressed: onRefresh,
+                  tooltip: 'Verificar Conexão',
                 ),
             ],
           ),
@@ -311,12 +639,14 @@ class _QuickActions extends StatelessWidget {
   final VoidCallback onSync;
   final VoidCallback onUnpair;
   final VoidCallback onPlaces;
+  final VoidCallback onNotes;
 
   const _QuickActions({
     required this.isSyncing,
     required this.onSync,
     required this.onUnpair,
     required this.onPlaces,
+    required this.onNotes,
   });
 
   @override
@@ -332,14 +662,21 @@ class _QuickActions extends StatelessWidget {
                     ? const SizedBox(
                         width: 18,
                         height: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Colors.white,
+                        ),
                       )
                     : const Icon(Icons.sync, size: 20),
-                label: Text(isSyncing ? 'Sincronizando...' : 'Sincronizar Agora'),
+                label: Text(
+                  isSyncing ? 'Sincronizando...' : 'Sincronizar Agora',
+                ),
                 style: FilledButton.styleFrom(
                   padding: const EdgeInsets.symmetric(vertical: 16),
                   backgroundColor: const Color(0xFF6366F1),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14),
+                  ),
                 ),
               ),
             ),
@@ -349,10 +686,17 @@ class _QuickActions extends StatelessWidget {
               icon: const Icon(Icons.link_off, size: 18),
               label: const Text('Desparear'),
               style: OutlinedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 20),
-                side: BorderSide(color: const Color(0xFFEF4444).withValues(alpha: 0.5)),
+                padding: const EdgeInsets.symmetric(
+                  vertical: 16,
+                  horizontal: 20,
+                ),
+                side: BorderSide(
+                  color: const Color(0xFFEF4444).withValues(alpha: 0.5),
+                ),
                 foregroundColor: const Color(0xFFEF4444),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(14),
+                ),
               ),
             ),
           ],
@@ -366,9 +710,32 @@ class _QuickActions extends StatelessWidget {
             label: const Text('Meus Lugares'),
             style: OutlinedButton.styleFrom(
               padding: const EdgeInsets.symmetric(vertical: 16),
-              side: BorderSide(color: const Color(0xFF22C55E).withValues(alpha: 0.5)),
+              side: BorderSide(
+                color: const Color(0xFF22C55E).withValues(alpha: 0.5),
+              ),
               foregroundColor: const Color(0xFF22C55E),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(14),
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
+        SizedBox(
+          width: double.infinity,
+          child: OutlinedButton.icon(
+            onPressed: onNotes,
+            icon: const Icon(Icons.note_alt_outlined, size: 18),
+            label: const Text('Anotações'),
+            style: OutlinedButton.styleFrom(
+              padding: const EdgeInsets.symmetric(vertical: 16),
+              side: BorderSide(
+                color: const Color(0xFFFBBF24).withValues(alpha: 0.5),
+              ),
+              foregroundColor: const Color(0xFFFBBF24),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(14),
+              ),
             ),
           ),
         ),
@@ -377,15 +744,15 @@ class _QuickActions extends StatelessWidget {
   }
 }
 
-class _StatsRow extends StatelessWidget {
-  final int pendingCount;
-  final int failedCount;
-  final DateTime? lastSync;
+// ── Quick action buttons (Nova Tarefa & Nova Anotação) ──────────────────────
 
-  const _StatsRow({
-    required this.pendingCount,
-    required this.failedCount,
-    this.lastSync,
+class _QuickActionButtons extends StatelessWidget {
+  final VoidCallback onQuickTask;
+  final VoidCallback onQuickNote;
+
+  const _QuickActionButtons({
+    required this.onQuickTask,
+    required this.onQuickNote,
   });
 
   @override
@@ -393,32 +760,355 @@ class _StatsRow extends StatelessWidget {
     return Row(
       children: [
         Expanded(
-          child: _StatCard(
-            icon: Icons.pending_actions,
-            label: 'Pendentes',
-            value: pendingCount.toString(),
-            color: const Color(0xFFF59E0B),
+          child: FilledButton.icon(
+            onPressed: onQuickTask,
+            icon: const Icon(Icons.add_task, size: 20),
+            label: const Text('Nova Tarefa'),
+            style: FilledButton.styleFrom(
+              padding: const EdgeInsets.symmetric(vertical: 14),
+              backgroundColor: const Color(0xFFF59E0B),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(14),
+              ),
+            ),
           ),
         ),
         const SizedBox(width: 12),
         Expanded(
-          child: _StatCard(
-            icon: Icons.error_outline,
-            label: 'Falhas',
-            value: failedCount.toString(),
-            color: const Color(0xFFEF4444),
+          child: FilledButton.icon(
+            onPressed: onQuickNote,
+            icon: const Icon(Icons.note_add_outlined, size: 20),
+            label: const Text('Nova Anotação'),
+            style: FilledButton.styleFrom(
+              padding: const EdgeInsets.symmetric(vertical: 14),
+              backgroundColor: const Color(0xFF6366F1),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(14),
+              ),
+            ),
           ),
         ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: _StatCard(
-            icon: Icons.access_time,
-            label: 'Último Sync',
-            value: lastSync != null
-                ? '${lastSync!.hour.toString().padLeft(2, '0')}:${lastSync!.minute.toString().padLeft(2, '0')}'
-                : '--:--',
-            color: const Color(0xFF6366F1),
+      ],
+    );
+  }
+}
+
+// ── Quick note capture (modal) ───────────────────────────────────────────────
+
+class _NoteQuickAddCard extends StatefulWidget {
+  const _NoteQuickAddCard();
+
+  @override
+  State<_NoteQuickAddCard> createState() => _NoteQuickAddCardState();
+}
+
+class _NoteQuickAddCardState extends State<_NoteQuickAddCard> {
+  final TextEditingController _titleController = TextEditingController();
+  final TextEditingController _contentController = TextEditingController();
+  String _category = 'geral';
+  bool _saving = false;
+
+  static const _categories = {
+    'curso': ('Curso', Color(0xFF6366F1)),
+    'ideia': ('Ideia', Color(0xFFFBBF24)),
+    'curiosidade': ('Curiosidade', Color(0xFF22C55E)),
+    'link': ('Link', Color(0xFF3B82F6)),
+    'geral': ('Geral', Color(0xFF9CA3AF)),
+    'lista': ('Lista', Color(0xFFF472B6)),
+    'meta': ('Meta', Color(0xFFEF4444)),
+  };
+
+  @override
+  void dispose() {
+    _titleController.dispose();
+    _contentController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _save() async {
+    final title = _titleController.text.trim();
+    final content = _contentController.text.trim();
+    if (title.isEmpty && content.isEmpty) return;
+    if (_saving) return;
+    setState(() => _saving = true);
+
+    try {
+      final db = AppDatabase();
+      final noteRepo = NoteRepository(db);
+      await noteRepo.create(
+        title: title,
+        content: content,
+        category: _category,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Anotação salva!'),
+          backgroundColor: Color(0xFF22C55E),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      Navigator.pop(context);
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.all(20),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(
+                Icons.note_add_outlined,
+                color: Color(0xFF6366F1),
+                size: 22,
+              ),
+              const SizedBox(width: 10),
+              Text(
+                'NOVA ANOTAÇÃO',
+                style: TextStyle(
+                  color: Colors.white.withValues(alpha: 0.9),
+                  fontSize: 13,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 1.5,
+                ),
+              ),
+            ],
           ),
+          const SizedBox(height: 16),
+          TextField(
+            controller: _titleController,
+            textCapitalization: TextCapitalization.sentences,
+            style: const TextStyle(color: Colors.white),
+            decoration: const InputDecoration(
+              hintText: 'Título',
+              prefixIcon: Icon(Icons.title, color: Color(0xFF6366F1)),
+            ),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _contentController,
+            textCapitalization: TextCapitalization.sentences,
+            maxLines: 3,
+            style: const TextStyle(color: Colors.white),
+            decoration: const InputDecoration(
+              hintText: 'Conteúdo...',
+              prefixIcon: Padding(
+                padding: EdgeInsets.only(bottom: 48),
+                child: Icon(Icons.notes, color: Color(0xFF6366F1)),
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: _categories.entries.map((e) {
+              final selected = _category == e.key;
+              final label = e.value.$1;
+              final color = e.value.$2;
+              return ChoiceChip(
+                label: Text(label, style: TextStyle(fontSize: 12)),
+                selected: selected,
+                selectedColor: color.withValues(alpha: 0.3),
+                backgroundColor: const Color(
+                  0xFFFFFFFF,
+                ).withValues(alpha: 0.06),
+                side: BorderSide(
+                  color: selected
+                      ? color
+                      : const Color(0xFFFFFFFF).withValues(alpha: 0.1),
+                ),
+                onSelected: (_) => setState(() => _category = e.key),
+              );
+            }).toList(),
+          ),
+          const SizedBox(height: 16),
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton.icon(
+              onPressed: _saving ? null : _save,
+              icon: _saving
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.white,
+                      ),
+                    )
+                  : const Icon(Icons.save_outlined),
+              label: const Text('Salvar Anotação'),
+              style: FilledButton.styleFrom(
+                padding: const EdgeInsets.symmetric(vertical: 14),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// Helper widget for sync detail dialog
+class _SyncDetailRow extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final int count;
+  final Color color;
+
+  const _SyncDetailRow({
+    required this.icon,
+    required this.label,
+    required this.count,
+    required this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        children: [
+          Icon(icon, color: color, size: 20),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              label,
+              style: const TextStyle(color: Colors.white, fontSize: 14),
+            ),
+          ),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+            decoration: BoxDecoration(
+              color: color.withValues(alpha: 0.2),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Text(
+              count.toString(),
+              style: TextStyle(
+                color: color,
+                fontWeight: FontWeight.w700,
+                fontSize: 13,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── Pairing redirect (used after unpair) ─────────────────────────────────────
+
+class _PairingRedirect extends StatelessWidget {
+  const _PairingRedirect();
+
+  @override
+  Widget build(BuildContext context) {
+    // Navigate to the pairing screen, clearing the entire navigation stack
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      Navigator.of(context).pushAndRemoveUntil(
+        MaterialPageRoute(builder: (_) => const PairingScreen()),
+        (route) => false,
+      );
+    });
+    return const Scaffold(
+      backgroundColor: Color(0xFF07090F),
+      body: Center(child: CircularProgressIndicator(color: Color(0xFF6366F1))),
+    );
+  }
+}
+
+class _StatsRow extends StatelessWidget {
+  final int pendingCount;
+  final int failedCount;
+  final int pendingNotesCount;
+  final int pendingVisitsCount;
+  final int totalPendingCount;
+  final DateTime? lastSync;
+
+  const _StatsRow({
+    required this.pendingCount,
+    required this.failedCount,
+    required this.pendingNotesCount,
+    required this.pendingVisitsCount,
+    required this.totalPendingCount,
+    this.lastSync,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: _StatCard(
+                icon: Icons.pending_actions,
+                label: 'Total Pendentes',
+                value: totalPendingCount.toString(),
+                color: const Color(0xFFF59E0B),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: _StatCard(
+                icon: Icons.error_outline,
+                label: 'Falhas',
+                value: failedCount.toString(),
+                color: const Color(0xFFEF4444),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: _StatCard(
+                icon: Icons.access_time,
+                label: 'Último Sync',
+                value: lastSync != null
+                    ? '${lastSync!.hour.toString().padLeft(2, '0')}:${lastSync!.minute.toString().padLeft(2, '0')}'
+                    : '--:--',
+                color: const Color(0xFF6366F1),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            Expanded(
+              child: _StatCard(
+                icon: Icons.sync,
+                label: 'Comandos/Tarefas',
+                value: pendingCount.toString(),
+                color: const Color(0xFFF59E0B),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: _StatCard(
+                icon: Icons.note_alt_outlined,
+                label: 'Anotações',
+                value: pendingNotesCount.toString(),
+                color: const Color(0xFF6366F1),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: _StatCard(
+                icon: Icons.place,
+                label: 'Visitas',
+                value: pendingVisitsCount.toString(),
+                color: const Color(0xFF22C55E),
+              ),
+            ),
+          ],
         ),
       ],
     );
@@ -444,7 +1134,9 @@ class _StatCard extends StatelessWidget {
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: const Color(0xFFFFFFFF).withValues(alpha: 0.04),
-        border: Border.all(color: const Color(0xFFFFFFFF).withValues(alpha: 0.08)),
+        border: Border.all(
+          color: const Color(0xFFFFFFFF).withValues(alpha: 0.08),
+        ),
         borderRadius: BorderRadius.circular(16),
       ),
       child: Column(
@@ -482,7 +1174,11 @@ class _RecentCommandsSection extends StatelessWidget {
       children: [
         const Text(
           'Comandos Recentes',
-          style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: Colors.white),
+          style: TextStyle(
+            fontSize: 16,
+            fontWeight: FontWeight.w600,
+            color: Colors.white,
+          ),
         ),
         const SizedBox(height: 12),
         if (commands.isEmpty)
@@ -490,7 +1186,9 @@ class _RecentCommandsSection extends StatelessWidget {
             padding: const EdgeInsets.all(24),
             decoration: BoxDecoration(
               color: const Color(0xFFFFFFFF).withValues(alpha: 0.04),
-              border: Border.all(color: const Color(0xFFFFFFFF).withValues(alpha: 0.08)),
+              border: Border.all(
+                color: const Color(0xFFFFFFFF).withValues(alpha: 0.08),
+              ),
               borderRadius: BorderRadius.circular(16),
             ),
             child: const Center(
@@ -538,7 +1236,9 @@ class _CommandTile extends StatelessWidget {
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
         color: const Color(0xFFFFFFFF).withValues(alpha: 0.04),
-        border: Border.all(color: const Color(0xFFFFFFFF).withValues(alpha: 0.08)),
+        border: Border.all(
+          color: const Color(0xFFFFFFFF).withValues(alpha: 0.08),
+        ),
         borderRadius: BorderRadius.circular(14),
       ),
       child: Row(
@@ -571,7 +1271,10 @@ class _CommandTile extends StatelessWidget {
                 const SizedBox(height: 2),
                 Text(
                   _formatTime(command.createdAt),
-                  style: const TextStyle(fontSize: 11, color: Color(0xFF5E6A7E)),
+                  style: const TextStyle(
+                    fontSize: 11,
+                    color: Color(0xFF5E6A7E),
+                  ),
                 ),
               ],
             ),
@@ -579,7 +1282,11 @@ class _CommandTile extends StatelessWidget {
           if (command.syncedAt != null)
             const Icon(Icons.check_circle, color: Color(0xFF22C55E), size: 20)
           else
-            const Icon(Icons.hourglass_empty, color: Color(0xFFF59E0B), size: 20),
+            const Icon(
+              Icons.hourglass_empty,
+              color: Color(0xFFF59E0B),
+              size: 20,
+            ),
         ],
       ),
     );
@@ -607,19 +1314,29 @@ class _LastSyncInfo extends StatelessWidget {
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: const Color(0xFFFFFFFF).withValues(alpha: 0.04),
-        border: Border.all(color: const Color(0xFFFFFFFF).withValues(alpha: 0.08)),
+        border: Border.all(
+          color: const Color(0xFFFFFFFF).withValues(alpha: 0.08),
+        ),
         borderRadius: BorderRadius.circular(16),
       ),
-child: Column(
+      child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
           Row(
             children: [
-              const Icon(Icons.info_outline, size: 18, color: Color(0xFF6366F1)),
+              const Icon(
+                Icons.info_outline,
+                size: 18,
+                color: Color(0xFF6366F1),
+              ),
               const SizedBox(width: 8),
               const Text(
                 'Última Sincronização',
-                style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Colors.white),
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.white,
+                ),
               ),
             ],
           ),
@@ -641,12 +1358,19 @@ child: Column(
                     ),
                     child: Row(
                       children: [
-                        const Icon(Icons.error_outline, size: 16, color: Color(0xFFEF4444)),
+                        const Icon(
+                          Icons.error_outline,
+                          size: 16,
+                          color: Color(0xFFEF4444),
+                        ),
                         const SizedBox(width: 8),
                         Expanded(
                           child: Text(
                             lastError!,
-                            style: const TextStyle(fontSize: 12, color: Color(0xFFEF4444)),
+                            style: const TextStyle(
+                              fontSize: 12,
+                              color: Color(0xFFEF4444),
+                            ),
                           ),
                         ),
                       ],
@@ -657,8 +1381,9 @@ child: Column(
         ],
       ),
     );
+  }
 }
-}
+
 class SettingsScreen extends ConsumerStatefulWidget {
   const SettingsScreen({super.key});
 
@@ -731,25 +1456,35 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       builder: (ctx) => AlertDialog(
         backgroundColor: const Color(0xFF0D1117),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text('Informações do Dispositivo', style: TextStyle(color: Colors.white)),
+        title: const Text(
+          'Informações do Dispositivo',
+          style: TextStyle(color: Colors.white),
+        ),
         content: FutureBuilder<Map<String, dynamic>>(
           future: _getDeviceInfo(),
           builder: (ctx, snapshot) {
             if (!snapshot.hasData) {
-              return const Center(child: CircularProgressIndicator(color: Color(0xFF6366F1)));
+              return const Center(
+                child: CircularProgressIndicator(color: Color(0xFF6366F1)),
+              );
             }
             final info = snapshot.data!;
             return Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
-              children: info.entries.map((e) => _InfoRow(label: e.key, value: e.value)).toList(),
+              children: info.entries
+                  .map((e) => _InfoRow(label: e.key, value: e.value))
+                  .toList(),
             );
-          }
+          },
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text('Fechar', style: TextStyle(color: Color(0xFF6366F1))),
+            child: const Text(
+              'Fechar',
+              style: TextStyle(color: Color(0xFF6366F1)),
+            ),
           ),
         ],
       ),
@@ -775,7 +1510,10 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       builder: (ctx) => AlertDialog(
         backgroundColor: const Color(0xFF0D1117),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text('Desparear Dispositivo', style: TextStyle(color: Colors.white)),
+        title: const Text(
+          'Desparear Dispositivo',
+          style: TextStyle(color: Colors.white),
+        ),
         content: const Text(
           'Isso removerá o pareamento com o PC. Você precisará escanear o QR code novamente para reconectar.',
           style: TextStyle(color: Color(0xFF9CA3AF)),
@@ -783,17 +1521,25 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx),
-            child: const Text('Cancelar', style: TextStyle(color: Color(0xFF9CA3AF))),
+            child: const Text(
+              'Cancelar',
+              style: TextStyle(color: Color(0xFF9CA3AF)),
+            ),
           ),
           FilledButton(
-            onPressed: () {
+            onPressed: () async {
               Navigator.pop(ctx);
-              DeviceIdentity.clearPairing();
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Dispositivo despareado')),
+              await DeviceIdentity.clearPairing();
+              if (!context.mounted) return;
+              ref.read(isPairedProvider.notifier).state = false;
+              Navigator.of(context).pushAndRemoveUntil(
+                MaterialPageRoute(builder: (_) => const _PairingRedirect()),
+                (route) => false,
               );
             },
-            style: FilledButton.styleFrom(backgroundColor: const Color(0xFFEF4444)),
+            style: FilledButton.styleFrom(
+              backgroundColor: const Color(0xFFEF4444),
+            ),
             child: const Text('Desparear'),
           ),
         ],
@@ -814,7 +1560,10 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       builder: (ctx) => AlertDialog(
         backgroundColor: const Color(0xFF0D1117),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text('Limpar Dados Locais', style: TextStyle(color: Colors.white)),
+        title: const Text(
+          'Limpar Dados Locais',
+          style: TextStyle(color: Colors.white),
+        ),
         content: const Text(
           'Isso removerá todo o banco de dados local (comandos, lugares, logs). O pareamento será mantido.',
           style: TextStyle(color: Color(0xFF9CA3AF)),
@@ -822,7 +1571,10 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx),
-            child: const Text('Cancelar', style: TextStyle(color: Color(0xFF9CA3AF))),
+            child: const Text(
+              'Cancelar',
+              style: TextStyle(color: Color(0xFF9CA3AF)),
+            ),
           ),
           FilledButton(
             onPressed: () async {
@@ -833,7 +1585,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 const SnackBar(content: Text('Dados locais limpos')),
               );
             },
-            style: FilledButton.styleFrom(backgroundColor: const Color(0xFFF59E0B)),
+            style: FilledButton.styleFrom(
+              backgroundColor: const Color(0xFFF59E0B),
+            ),
             child: const Text('Limpar'),
           ),
         ],
@@ -854,7 +1608,10 @@ class DebugLogsScreen extends StatelessWidget {
         backgroundColor: const Color(0xFF07090F),
       ),
       body: const Center(
-        child: Text('Logs de debug - implementar', style: TextStyle(color: Color(0xFF5E6A7E))),
+        child: Text(
+          'Logs de debug - implementar',
+          style: TextStyle(color: Color(0xFF5E6A7E)),
+        ),
       ),
     );
   }
@@ -875,10 +1632,16 @@ class _InfoRow extends StatelessWidget {
         children: [
           SizedBox(
             width: 100,
-            child: Text(label, style: const TextStyle(color: Color(0xFF5E6A7E), fontSize: 13)),
+            child: Text(
+              label,
+              style: const TextStyle(color: Color(0xFF5E6A7E), fontSize: 13),
+            ),
           ),
           Expanded(
-            child: Text(value, style: const TextStyle(color: Colors.white, fontSize: 13)),
+            child: Text(
+              value,
+              style: const TextStyle(color: Colors.white, fontSize: 13),
+            ),
           ),
         ],
       ),
@@ -894,8 +1657,99 @@ class _GemmaStatusTile extends ConsumerStatefulWidget {
 class _GemmaStatusTileState extends ConsumerState<_GemmaStatusTile> {
   final _aiService = AiService();
   double _downloadProgress = 0;
+  double _initProgress = 0;
+  String _initPhase = '';
   bool _isBusy = false;
+  bool _isDownloading = false;
+  bool _isInitializing = false;
   String? _lastError;
+  DateTime? _lastInitFailure;
+
+  static const _prefsKeyLastInitFailure = 'gemma_last_init_failure';
+
+  @override
+  void initState() {
+    super.initState();
+    _loadLastInitFailure();
+    // Auto-initialize if model already downloaded
+    WidgetsBinding.instance.addPostFrameCallback((_) => _autoInit());
+  }
+
+  Future<void> _loadLastInitFailure() async {
+    final prefs = await SharedPreferences.getInstance();
+    final timestamp = prefs.getInt(_prefsKeyLastInitFailure);
+    if (timestamp != null) {
+      _lastInitFailure = DateTime.fromMillisecondsSinceEpoch(timestamp);
+    }
+  }
+
+  Future<void> _saveLastInitFailure() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt(
+      _prefsKeyLastInitFailure,
+      DateTime.now().millisecondsSinceEpoch,
+    );
+    _lastInitFailure = DateTime.now();
+  }
+
+  Future<void> _clearLastInitFailure() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_prefsKeyLastInitFailure);
+    _lastInitFailure = null;
+  }
+
+  Future<void> _autoInit() async {
+    // Skip auto-init if failed recently (within 24 hours) to avoid repeated failures
+    if (_lastInitFailure != null) {
+      final hoursSinceFailure = DateTime.now()
+          .difference(_lastInitFailure!)
+          .inHours;
+      if (hoursSinceFailure < 24) {
+        return;
+      }
+    }
+
+    final statusNotifier = ref.read(gemmaStatusProvider.notifier);
+    // The settings tile is recreated whenever the settings modal is opened.
+    // Keep the shared native session alive and only reflect its current state;
+    // do not show an artificial initializing cycle on every visit.
+    if (_aiService.isInitialized) {
+      statusNotifier.set(GemmaStatus.ready);
+      return;
+    }
+    final modelExists = await GemmaEngine.checkModelExists();
+    if (modelExists) {
+      statusNotifier.set(GemmaStatus.initializing);
+      setState(() {
+        _isBusy = true;
+        _isInitializing = true;
+        _initProgress = 0;
+        _initPhase = 'model_loading';
+      });
+      final success = await _aiService.initialize(onProgress: _onInitProgress);
+      statusNotifier.set(success ? GemmaStatus.ready : GemmaStatus.error);
+      if (!success) {
+        await _saveLastInitFailure();
+      } else {
+        await _clearLastInitFailure();
+      }
+      if (!success && mounted) {
+        setState(() => _lastError = _aiService.lastError);
+      }
+      setState(() {
+        _isBusy = false;
+        _isInitializing = false;
+      });
+    }
+  }
+
+  void _onInitProgress(double progress, String phase) {
+    if (!mounted) return;
+    setState(() {
+      _initProgress = progress;
+      _initPhase = phase;
+    });
+  }
 
   Future<void> _checkAndInitialize() async {
     setState(() {
@@ -905,6 +1759,12 @@ class _GemmaStatusTileState extends ConsumerState<_GemmaStatusTile> {
 
     final statusNotifier = ref.read(gemmaStatusProvider.notifier);
 
+    if (_aiService.isInitialized) {
+      statusNotifier.set(GemmaStatus.ready);
+      setState(() => _isBusy = false);
+      return;
+    }
+
     final modelExists = await GemmaEngine.checkModelExists();
     if (!modelExists) {
       await _startAuthFlow();
@@ -912,20 +1772,33 @@ class _GemmaStatusTileState extends ConsumerState<_GemmaStatusTile> {
       return;
     }
 
-    statusNotifier.set(GemmaStatus.downloading);
-    setState(() => _downloadProgress = 1);
+    statusNotifier.set(GemmaStatus.initializing);
+    setState(() {
+      _isInitializing = true;
+      _initProgress = 0;
+      _initPhase = 'model_loading';
+    });
 
-    final success = await _aiService.initialize();
+    final success = await _aiService.initialize(onProgress: _onInitProgress);
     statusNotifier.set(success ? GemmaStatus.ready : GemmaStatus.error);
-    setState(() => _isBusy = false);
+    if (!success) {
+      await _saveLastInitFailure();
+      if (mounted) {
+        setState(() => _lastError = _aiService.lastError);
+      }
+    } else {
+      await _clearLastInitFailure();
+    }
+    setState(() {
+      _isBusy = false;
+      _isInitializing = false;
+    });
   }
 
   Future<void> _startAuthFlow() async {
     final result = await Navigator.push<Map<String, String>>(
       context,
-      MaterialPageRoute(
-        builder: (_) => const HfAuthWebView(),
-      ),
+      MaterialPageRoute(builder: (_) => const HfAuthWebView()),
     );
 
     final cookies = result?['cookies'] ?? '';
@@ -936,7 +1809,8 @@ class _GemmaStatusTileState extends ConsumerState<_GemmaStatusTile> {
         ref.read(gemmaStatusProvider.notifier).set(GemmaStatus.error);
         setState(() {
           _isBusy = false;
-          _lastError = 'Autenticação cancelada ou falhou. Toque em "Baixar / Inicializar" para tentar novamente.';
+          _lastError =
+              'Autenticação cancelada ou falhou. Toque em "Baixar / Inicializar" para tentar novamente.';
         });
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -951,7 +1825,10 @@ class _GemmaStatusTileState extends ConsumerState<_GemmaStatusTile> {
 
     final statusNotifier = ref.read(gemmaStatusProvider.notifier);
     statusNotifier.set(GemmaStatus.downloading);
-    setState(() => _downloadProgress = 0);
+    setState(() {
+      _isDownloading = true;
+      _downloadProgress = 0;
+    });
 
     try {
       final success = await GemmaEngine.downloadWithCookies(
@@ -963,23 +1840,44 @@ class _GemmaStatusTileState extends ConsumerState<_GemmaStatusTile> {
       );
 
       if (success) {
-        final initSuccess = await _aiService.initialize();
+        statusNotifier.set(GemmaStatus.initializing);
+        setState(() {
+          _isDownloading = false;
+          _isInitializing = true;
+          _initProgress = 0;
+          _initPhase = 'model_loading';
+        });
+
+        final initSuccess = await _aiService.initialize(
+          onProgress: _onInitProgress,
+        );
         statusNotifier.set(initSuccess ? GemmaStatus.ready : GemmaStatus.error);
-        if (!initSuccess && mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Modelo baixado mas falha ao inicializar. Tente reiniciar o app.'),
-              backgroundColor: Color(0xFFEF4444),
-              duration: Duration(seconds: 5),
-            ),
-          );
+        if (!initSuccess) {
+          await _saveLastInitFailure();
+          if (mounted) {
+            setState(() => _lastError = _aiService.lastError);
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(
+                  _aiService.lastError ??
+                      'Falha ao inicializar modelo. Tente novamente.',
+                ),
+                backgroundColor: Color(0xFFEF4444),
+                duration: Duration(seconds: 5),
+              ),
+            );
+          }
+        } else {
+          await _clearLastInitFailure();
         }
       } else {
         statusNotifier.set(GemmaStatus.error);
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-              content: Text('Falha ao baixar modelo. Verifique conexão e tente novamente.'),
+              content: Text(
+                'Falha ao baixar modelo. Verifique conexão e tente novamente.',
+              ),
               backgroundColor: Color(0xFFEF4444),
               duration: Duration(seconds: 5),
             ),
@@ -998,14 +1896,60 @@ class _GemmaStatusTileState extends ConsumerState<_GemmaStatusTile> {
         );
       }
     }
-    setState(() => _isBusy = false);
+    setState(() {
+      _isBusy = false;
+      _isDownloading = false;
+      _isInitializing = false;
+    });
   }
 
   Future<void> _shutdown() async {
     setState(() => _isBusy = true);
     await _aiService.shutdown();
+    await _clearLastInitFailure();
     ref.read(gemmaStatusProvider.notifier).set(GemmaStatus.unchecked);
-    setState(() => _isBusy = false);
+    setState(() {
+      _isBusy = false;
+      _downloadProgress = 0;
+      _initProgress = 0;
+      _initPhase = '';
+      _lastError = null;
+    });
+  }
+
+  String _getPhaseLabel(String phase) {
+    switch (phase) {
+      case 'model_loading':
+        return 'Carregando pesos do modelo...';
+      case 'session_creating':
+        return 'Criando sessão de inferência...';
+      case 'ready':
+        return 'Pronto';
+      default:
+        return 'Inicializando...';
+    }
+  }
+
+  Color _getPhaseColor(String phase) {
+    switch (phase) {
+      case 'model_loading':
+        return const Color(0xFF6366F1);
+      case 'session_creating':
+        return const Color(0xFFF59E0B);
+      case 'ready':
+        return const Color(0xFF22C55E);
+      default:
+        return const Color(0xFF6366F1);
+    }
+  }
+
+  String _formatFailureTime(DateTime dt) {
+    final now = DateTime.now();
+    final diff = now.difference(dt);
+    if (diff.inMinutes < 1) return 'agora mesmo';
+    if (diff.inMinutes < 60) return 'há ${diff.inMinutes} min';
+    if (diff.inHours < 24) return 'há ${diff.inHours}h';
+    return 'há ${diff.inDays}d';
   }
 
   @override
@@ -1023,7 +1967,11 @@ class _GemmaStatusTileState extends ConsumerState<_GemmaStatusTile> {
           children: [
             Row(
               children: [
-                const Icon(Icons.psychology, color: Color(0xFF6366F1), size: 24),
+                const Icon(
+                  Icons.psychology,
+                  color: Color(0xFF6366F1),
+                  size: 24,
+                ),
                 const SizedBox(width: 12),
                 Expanded(
                   child: Column(
@@ -1031,7 +1979,11 @@ class _GemmaStatusTileState extends ConsumerState<_GemmaStatusTile> {
                     children: [
                       const Text(
                         'Modelo: Gemma 3 1B',
-                        style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w500),
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 14,
+                          fontWeight: FontWeight.w500,
+                        ),
                       ),
                       const SizedBox(height: 2),
                       Text(
@@ -1039,9 +1991,10 @@ class _GemmaStatusTileState extends ConsumerState<_GemmaStatusTile> {
                         style: TextStyle(
                           color: status == GemmaStatus.ready
                               ? const Color(0xFF22C55E)
-                              : status == GemmaStatus.error || status == GemmaStatus.unavailable
-                                  ? const Color(0xFFEF4444)
-                                  : const Color(0xFFF59E0B),
+                              : status == GemmaStatus.error ||
+                                    status == GemmaStatus.unavailable
+                              ? const Color(0xFFEF4444)
+                              : const Color(0xFFF59E0B),
                           fontSize: 12,
                         ),
                       ),
@@ -1058,13 +2011,32 @@ class _GemmaStatusTileState extends ConsumerState<_GemmaStatusTile> {
                       color: const Color(0xFF6366F1),
                     ),
                   )
+                else if (status == GemmaStatus.initializing)
+                  SizedBox(
+                    width: 24,
+                    height: 24,
+                    child: CircularProgressIndicator(
+                      value: _initProgress > 0 ? _initProgress : null,
+                      strokeWidth: 2,
+                      color: _getPhaseColor(_initPhase),
+                    ),
+                  )
                 else if (status == GemmaStatus.ready)
-                  const Icon(Icons.check_circle, color: Color(0xFF22C55E), size: 22)
-                else if (status == GemmaStatus.error || status == GemmaStatus.unavailable)
-                  const Icon(Icons.error_outline, color: Color(0xFFEF4444), size: 22),
+                  const Icon(
+                    Icons.check_circle,
+                    color: Color(0xFF22C55E),
+                    size: 22,
+                  )
+                else if (status == GemmaStatus.error ||
+                    status == GemmaStatus.unavailable)
+                  const Icon(
+                    Icons.error_outline,
+                    color: Color(0xFFEF4444),
+                    size: 22,
+                  ),
               ],
             ),
-            if (status == GemmaStatus.downloading) ...[
+            if (_isDownloading) ...[
               const SizedBox(height: 8),
               ClipRRect(
                 borderRadius: BorderRadius.circular(4),
@@ -1077,8 +2049,49 @@ class _GemmaStatusTileState extends ConsumerState<_GemmaStatusTile> {
               ),
               const SizedBox(height: 4),
               Text(
-                '${(_downloadProgress * 100).toStringAsFixed(0)}% (658 MB)',
+                'Baixando modelo: ${(_downloadProgress * 100).toStringAsFixed(0)}% (658 MB)',
                 style: const TextStyle(color: Color(0xFF5E6A7E), fontSize: 11),
+              ),
+            ],
+            if (_isInitializing) ...[
+              const SizedBox(height: 8),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(4),
+                child: LinearProgressIndicator(
+                  value: _initProgress > 0 ? _initProgress : null,
+                  backgroundColor: const Color(0xFF1E293B),
+                  valueColor: AlwaysStoppedAnimation(
+                    _getPhaseColor(_initPhase),
+                  ),
+                  minHeight: 4,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    _getPhaseLabel(_initPhase),
+                    style: TextStyle(
+                      color: _getPhaseColor(_initPhase),
+                      fontSize: 11,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: _shutdown,
+                    style: TextButton.styleFrom(
+                      padding: EdgeInsets.zero,
+                      minimumSize: const Size(0, 28),
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      foregroundColor: const Color(0xFFEF4444),
+                    ),
+                    child: const Text(
+                      'Cancelar',
+                      style: TextStyle(fontSize: 11),
+                    ),
+                  ),
+                ],
               ),
             ],
             const SizedBox(height: 8),
@@ -1088,27 +2101,59 @@ class _GemmaStatusTileState extends ConsumerState<_GemmaStatusTile> {
                 decoration: BoxDecoration(
                   color: const Color(0xFFEF4444).withValues(alpha: 0.15),
                   borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: const Color(0xFFEF4444).withValues(alpha: 0.3)),
+                  border: Border.all(
+                    color: const Color(0xFFEF4444).withValues(alpha: 0.3),
+                  ),
                 ),
-                child: Row(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Icon(Icons.error_outline, color: Color(0xFFEF4444), size: 16),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        _lastError!,
-                        style: const TextStyle(color: Color(0xFFEF4444), fontSize: 11),
-                      ),
+                    Row(
+                      children: [
+                        const Icon(
+                          Icons.error_outline,
+                          color: Color(0xFFEF4444),
+                          size: 16,
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            _lastError!,
+                            style: const TextStyle(
+                              color: Color(0xFFEF4444),
+                              fontSize: 11,
+                            ),
+                          ),
+                        ),
+                        TextButton(
+                          onPressed: _isBusy
+                              ? null
+                              : () => _checkAndInitialize(),
+                          style: TextButton.styleFrom(
+                            padding: EdgeInsets.zero,
+                            minimumSize: const Size(0, 28),
+                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          ),
+                          child: const Text(
+                            'Tentar novamente',
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: Color(0xFF6366F1),
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
-                    TextButton(
-                      onPressed: _isBusy ? null : () => _checkAndInitialize(),
-                      style: TextButton.styleFrom(
-                        padding: EdgeInsets.zero,
-                        minimumSize: const Size(0, 28),
-                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    if (_lastInitFailure != null) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        'Última falha: ${_formatFailureTime(_lastInitFailure!)}',
+                        style: const TextStyle(
+                          color: Color(0xFF9CA3AF),
+                          fontSize: 10,
+                        ),
                       ),
-                      child: const Text('Tentar novamente', style: TextStyle(fontSize: 11, color: Color(0xFF6366F1))),
-                    ),
+                    ],
                   ],
                 ),
               ),
@@ -1121,22 +2166,31 @@ class _GemmaStatusTileState extends ConsumerState<_GemmaStatusTile> {
                   TextButton.icon(
                     onPressed: _isBusy ? null : _shutdown,
                     icon: const Icon(Icons.power_settings_new, size: 16),
-                    label: const Text('Descarregar', style: TextStyle(fontSize: 12)),
-                    style: TextButton.styleFrom(foregroundColor: const Color(0xFFEF4444)),
+                    label: const Text(
+                      'Descarregar',
+                      style: TextStyle(fontSize: 12),
+                    ),
+                    style: TextButton.styleFrom(
+                      foregroundColor: const Color(0xFFEF4444),
+                    ),
                   )
-                else if (status != GemmaStatus.downloading)
+                else if (!_isDownloading && !_isInitializing)
                   TextButton.icon(
                     onPressed: _isBusy ? null : _checkAndInitialize,
                     icon: Icon(
                       Icons.download,
                       size: 16,
-                      color: _isBusy ? const Color(0xFF5E6A7E) : const Color(0xFF6366F1),
+                      color: _isBusy
+                          ? const Color(0xFF5E6A7E)
+                          : const Color(0xFF6366F1),
                     ),
                     label: Text(
                       _isBusy ? 'Verificando...' : 'Baixar / Inicializar',
                       style: TextStyle(
                         fontSize: 12,
-                        color: _isBusy ? const Color(0xFF5E6A7E) : const Color(0xFF6366F1),
+                        color: _isBusy
+                            ? const Color(0xFF5E6A7E)
+                            : const Color(0xFF6366F1),
                       ),
                     ),
                   ),
@@ -1193,9 +2247,23 @@ class _SettingsTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return ListTile(
-      leading: Icon(icon, color: iconColor ?? const Color(0xFF6366F1), size: 24),
-      title: Text(title, style: TextStyle(color: textColor ?? Colors.white, fontSize: 15, fontWeight: FontWeight.w500)),
-      subtitle: Text(subtitle, style: const TextStyle(color: Color(0xFF5E6A7E), fontSize: 12)),
+      leading: Icon(
+        icon,
+        color: iconColor ?? const Color(0xFF6366F1),
+        size: 24,
+      ),
+      title: Text(
+        title,
+        style: TextStyle(
+          color: textColor ?? Colors.white,
+          fontSize: 15,
+          fontWeight: FontWeight.w500,
+        ),
+      ),
+      subtitle: Text(
+        subtitle,
+        style: const TextStyle(color: Color(0xFF5E6A7E), fontSize: 12),
+      ),
       trailing: Icon(trailingIcon, color: const Color(0xFF5E6A7E), size: 20),
       onTap: onTap,
       contentPadding: const EdgeInsets.symmetric(horizontal: 4),
@@ -1206,45 +2274,16 @@ class _SettingsTile extends StatelessWidget {
 }
 
 // ── Quick task capture ────────────────────────────────────────────────────────
+//
+// Moved to features/tasks/presentation/create_task_screen.dart
 
-class _TaskQuickAddCard extends StatefulWidget {
-  final VoidCallback onCreated;
+class _UpcomingTasksSection extends StatelessWidget {
+  final int tick;
+  final VoidCallback onChanged;
 
-  const _TaskQuickAddCard({required this.onCreated});
+  const _UpcomingTasksSection({required this.tick, required this.onChanged});
 
-  @override
-  State<_TaskQuickAddCard> createState() => _TaskQuickAddCardState();
-}
-
-class _TaskQuickAddCardState extends State<_TaskQuickAddCard> {
-  final TextEditingController _controller = TextEditingController();
-  DateTime? _selectedTime;
-  DateTime? _selectedDate;
-  bool _saving = false;
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  static String _labelFor(DateTime t) {
-    final now = DateTime.now();
-    final today = DateTime(now.year, now.month, now.day);
-    final target = DateTime(t.year, t.month, t.day);
-    final diff = target.difference(today).inDays;
-    String dayLabel;
-    if (diff == 0) {
-      dayLabel = 'Hoje';
-    } else if (diff == 1) {
-      dayLabel = 'Amanhã';
-    } else {
-      dayLabel = '${t.day.toString().padLeft(2, '0')}/${t.month.toString().padLeft(2, '0')}';
-    }
-    return '$dayLabel ${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
-  }
-
-  static String _dateLabel(DateTime d) {
+  String _formatDate(DateTime d) {
     final now = DateTime.now();
     final today = DateTime(now.year, now.month, now.day);
     final target = DateTime(d.year, d.month, d.day);
@@ -1254,216 +2293,32 @@ class _TaskQuickAddCardState extends State<_TaskQuickAddCard> {
     return '${d.day.toString().padLeft(2, '0')}/${d.month.toString().padLeft(2, '0')}';
   }
 
-  Future<void> _pickCustomDate() async {
-    final now = DateTime.now();
-    final date = await showDatePicker(
-      context: context,
-      initialDate: _selectedDate ?? now,
-      firstDate: now,
-      lastDate: now.add(const Duration(days: 365)),
-    );
-    if (date == null) return;
-    setState(() {
-      _selectedDate = DateTime(date.year, date.month, date.day);
-      if (_selectedTime != null) {
-        _selectedTime = DateTime(
-          date.year, date.month, date.day,
-          _selectedTime!.hour, _selectedTime!.minute,
-        );
+  String _dueLabel(ScheduledTask task) {
+    if (task.isDateRange) {
+      if (task.startDate == null || task.endDate == null) return 'sem data';
+      final start = task.startDate!;
+      final end = task.endDate!;
+      final startFmt = _formatDate(start);
+      final endFmt = _formatDate(end);
+      if (startFmt == endFmt) {
+        return '$startFmt';
       }
-    });
-  }
-
-  Future<void> _pickCustomTime() async {
-    final base = _selectedDate ?? DateTime.now();
-    final time = await showTimePicker(
-      context: context,
-      initialTime: TimeOfDay.fromDateTime(base.add(const Duration(hours: 1))),
-    );
-    if (time == null) return;
-    var picked = DateTime(base.year, base.month, base.day, time.hour, time.minute);
-    if (picked.isBefore(DateTime.now())) {
-      picked = picked.add(const Duration(days: 1));
+      return '$startFmt a $endFmt';
     }
-    setState(() => _selectedTime = picked);
-  }
-
-  Future<void> _save() async {
-    final title = _controller.text.trim();
-    final dueAt = _selectedTime;
-    if (title.isEmpty || dueAt == null || _saving) return;
-    setState(() => _saving = true);
-    try {
-      await TaskAlarmService.createQuickTask(title, dueAt);
-      if (!mounted) return;
-      _controller.clear();
-      setState(() {
-        _selectedTime = null;
-        _selectedDate = null;
-      });
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Tarefa agendada para ${_labelFor(dueAt)}'),
-          backgroundColor: const Color(0xFF22C55E),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
-      widget.onCreated();
-    } finally {
-      if (mounted) setState(() => _saving = false);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                const Icon(Icons.bolt_rounded, color: Color(0xFFFBBF24), size: 20),
-                const SizedBox(width: 8),
-                Text(
-                  'ANOTAR TAREFA',
-                  style: TextStyle(
-                    color: const Color(0xFFFFFFFF).withOpacity(0.9),
-                    fontSize: 12,
-                    fontWeight: FontWeight.w800,
-                    letterSpacing: 1.5,
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _controller,
-              textCapitalization: TextCapitalization.sentences,
-              maxLength: 200,
-              style: const TextStyle(color: Colors.white),
-              decoration: InputDecoration(
-                counterText: '',
-                hintText: 'Ex.: Ligar pro dentista',
-                hintStyle: TextStyle(color: const Color(0xFFFFFFFF).withOpacity(0.3)),
-                prefixIcon: const Icon(Icons.edit_note_rounded, color: Color(0xFF6366F1)),
-              ),
-            ),
-            const SizedBox(height: 12),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                for (final preset in [
-                  ('+15 min', const Duration(minutes: 15)),
-                  ('+1 hora', const Duration(hours: 1)),
-                  ('+3 horas', const Duration(hours: 3)),
-                  ('Manhã', null),
-                ])
-                  ActionChip(
-                    label: Text(preset.$1, style: const TextStyle(fontSize: 12)),
-                    labelStyle: const TextStyle(color: Colors.white),
-                    backgroundColor: const Color(0xFFFFFFFF).withOpacity(0.06),
-                    side: BorderSide(color: const Color(0xFF6366F1).withOpacity(0.4)),
-                    onPressed: () {
-                      final base = _selectedDate ?? DateTime.now();
-                      DateTime t;
-                      if (preset.$2 != null) {
-                        t = base.add(preset.$2!);
-                      } else {
-                        t = DateTime(base.year, base.month, base.day, 9);
-                        if (t.isBefore(DateTime.now())) t = t.add(const Duration(days: 1));
-                      }
-                      setState(() => _selectedTime = t);
-                    },
-                  ),
-                ActionChip(
-                  avatar: Icon(
-                    Icons.calendar_today_rounded,
-                    size: 16,
-                    color: _selectedDate != null ? const Color(0xFF22C55E) : Colors.white70,
-                  ),
-                  label: Text(
-                    _selectedDate == null ? 'Hoje' : _dateLabel(_selectedDate!),
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: _selectedDate != null ? const Color(0xFF22C55E) : Colors.white,
-                      fontWeight: _selectedDate != null ? FontWeight.w700 : FontWeight.w400,
-                    ),
-                  ),
-                  backgroundColor: const Color(0xFFFFFFFF).withOpacity(0.06),
-                  side: BorderSide(color: const Color(0xFF6366F1).withOpacity(0.4)),
-                  onPressed: _pickCustomDate,
-                ),
-                ActionChip(
-                  avatar: Icon(
-                    Icons.schedule_rounded,
-                    size: 16,
-                    color: _selectedTime != null ? const Color(0xFF22C55E) : Colors.white70,
-                  ),
-                  label: Text(
-                    _selectedTime == null ? 'Escolher hora' : _labelFor(_selectedTime!),
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: _selectedTime != null
-                          ? const Color(0xFF22C55E)
-                          : Colors.white,
-                      fontWeight: _selectedTime != null ? FontWeight.w700 : FontWeight.w400,
-                    ),
-                  ),
-                  backgroundColor: const Color(0xFFFFFFFF).withOpacity(0.06),
-                  side: BorderSide(color: const Color(0xFF6366F1).withOpacity(0.4)),
-                  onPressed: _pickCustomTime,
-                ),
-              ],
-            ),
-            const SizedBox(height: 14),
-            SizedBox(
-              width: double.infinity,
-              child: FilledButton.icon(
-                onPressed: (_saving || _controller.text.trim().isEmpty || _selectedTime == null)
-                    ? null
-                    : _save,
-                icon: _saving
-                    ? const SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                      )
-                    : const Icon(Icons.alarm_add_rounded),
-                label: const Text('Agendar alarme'),
-                style: FilledButton.styleFrom(
-                  padding: const EdgeInsets.symmetric(vertical: 14),
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _UpcomingTasksSection extends StatelessWidget {
-  final int tick;
-  final VoidCallback onChanged;
-
-  const _UpcomingTasksSection({required this.tick, required this.onChanged});
-
-  String _dueLabel(DateTime t) {
+    final t = task.dueAt;
+    if (t == null) return 'sem data';
     final diff = t.difference(DateTime.now());
     if (diff.isNegative) return 'agora';
     if (diff.inMinutes < 60) return 'em ${diff.inMinutes} min';
     if (diff.inHours < 24) return 'em ${(diff.inMinutes / 60).round()} h';
-    return '${t.day}/${t.month} ${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
+    return '${_formatDate(t)} ${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
   }
 
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder<List<ScheduledTask>>(
+    return StreamBuilder<List<ScheduledTask>>(
       key: ValueKey(tick),
-      future: TaskAlarmService.getPendingTasks(),
+      stream: TaskAlarmService.watchPendingTasks(),
       builder: (context, snapshot) {
         final tasks = snapshot.data ?? [];
         if (tasks.isEmpty) {
@@ -1473,37 +2328,51 @@ class _UpcomingTasksSection extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const _SectionTitle('PRÓXIMAS TAREFAS'),
-            ...tasks.take(5).map((task) => Card(
-                  margin: const EdgeInsets.only(bottom: 8),
-                  child: ListTile(
-                    leading: Icon(
-                      task.dueAt.isBefore(DateTime.now())
-                          ? Icons.notifications_active_rounded
-                          : Icons.alarm_rounded,
-                      color: task.dueAt.isBefore(DateTime.now())
-                          ? const Color(0xFFEF4444)
-                          : const Color(0xFF6366F1),
-                    ),
-                    title: Text(
-                      task.title,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w600),
-                    ),
-                    subtitle: Text(
-                      _dueLabel(task.dueAt),
-                      style: const TextStyle(color: Color(0xFF9CA3AF), fontSize: 12),
-                    ),
-                    trailing: IconButton(
-                      icon: const Icon(Icons.check_circle_outline_rounded, color: Color(0xFF22C55E)),
-                      tooltip: 'Concluir',
-                      onPressed: () async {
-                        await TaskAlarmService.markDone(task.remoteId);
-                        onChanged();
-                      },
+            ...tasks
+                .take(5)
+                .map(
+                  (task) => Card(
+                    margin: const EdgeInsets.only(bottom: 8),
+                    child: ListTile(
+                      leading: Icon(
+                        task.dueAt?.isBefore(DateTime.now()) ?? false
+                            ? Icons.notifications_active_rounded
+                            : Icons.alarm_rounded,
+                        color: task.dueAt?.isBefore(DateTime.now()) ?? false
+                            ? const Color(0xFFEF4444)
+                            : const Color(0xFF6366F1),
+                      ),
+                      title: Text(
+                        task.title,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      subtitle: Text(
+                        _dueLabel(task),
+                        style: const TextStyle(
+                          color: Color(0xFF9CA3AF),
+                          fontSize: 12,
+                        ),
+                      ),
+                      trailing: IconButton(
+                        icon: const Icon(
+                          Icons.check_circle_outline_rounded,
+                          color: Color(0xFF22C55E),
+                        ),
+                        tooltip: 'Concluir',
+                        onPressed: () async {
+                          await TaskAlarmService.markDone(task.remoteId);
+                          onChanged();
+                        },
+                      ),
                     ),
                   ),
-                )),
+                ),
           ],
         );
       },

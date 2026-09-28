@@ -1,6 +1,5 @@
 // Round-trip cipher interop check against dashboard/server.py helpers.
 // Usage: dart run tool/cipher_roundtrip.dart <python_encrypted_b64>
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:sirius_companion/core/crypto/aes_cipher.dart';

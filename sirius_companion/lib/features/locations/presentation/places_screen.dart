@@ -4,6 +4,8 @@ import 'package:geolocator/geolocator.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import '../application/geofence_manager.dart';
+import '../../../core/storage/database/database.dart';
+import '../../../core/storage/repositories/place_visit_repository.dart';
 
 class PlacesScreen extends ConsumerStatefulWidget {
   const PlacesScreen({super.key});
@@ -12,17 +14,28 @@ class PlacesScreen extends ConsumerStatefulWidget {
   ConsumerState<PlacesScreen> createState() => _PlacesScreenState();
 }
 
-class _PlacesScreenState extends ConsumerState<PlacesScreen> {
+class _PlacesScreenState extends ConsumerState<PlacesScreen>
+    with SingleTickerProviderStateMixin {
   final _nameController = TextEditingController();
   final _radiusController = TextEditingController(text: '100');
   final _mapController = MapController();
   LatLng? _selectedPosition;
+  late TabController _tabController;
+  late PlaceVisitRepository _visitRepo;
+
+  @override
+  void initState() {
+    super.initState();
+    _tabController = TabController(length: 2, vsync: this);
+    _visitRepo = PlaceVisitRepository(AppDatabase());
+  }
 
   @override
   void dispose() {
     _nameController.dispose();
     _radiusController.dispose();
     _mapController.dispose();
+    _tabController.dispose();
     super.dispose();
   }
 
@@ -94,8 +107,29 @@ class _PlacesScreenState extends ConsumerState<PlacesScreen> {
             tooltip: 'Localização atual',
           ),
         ],
+        bottom: TabBar(
+          controller: _tabController,
+          indicatorColor: const Color(0xFF6366F1),
+          labelColor: Colors.white,
+          unselectedLabelColor: const Color(0xFF5E6A7E),
+          tabs: const [
+            Tab(text: 'Lugares'),
+            Tab(text: 'Histórico'),
+          ],
+        ),
       ),
-      body: Column(
+      body: TabBarView(
+        controller: _tabController,
+        children: [
+          _buildPlacesTab(),
+          _buildHistoryTab(),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPlacesTab() {
+    return Column(
         children: [
           SizedBox(
             height: 300,
@@ -279,12 +313,176 @@ class _PlacesScreenState extends ConsumerState<PlacesScreen> {
             ),
           ),
         ],
-      ),
     );
   }
 
   void _centerOnPlace(GeofenceRegion place) {
     _mapController.move(LatLng(place.latitude, place.longitude), 16);
+  }
+
+  Widget _buildHistoryTab() {
+    return StreamBuilder<List<PlaceVisit>>(
+      stream: _visitRepo.watchAll(),
+      builder: (context, snapshot) {
+        final visits = snapshot.data ?? [];
+        if (visits.isEmpty) {
+          return const Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.history, size: 48, color: Color(0xFF5E6A7E)),
+                SizedBox(height: 12),
+                Text(
+                  'Nenhuma visita registrada',
+                  style: TextStyle(color: Color(0xFF5E6A7E), fontSize: 16),
+                ),
+                SizedBox(height: 4),
+                Text(
+                  'Visitas são registradas automaticamente',
+                  style: TextStyle(color: Color(0xFF5E6A7E), fontSize: 13),
+                ),
+              ],
+            ),
+          );
+        }
+
+        // Stats
+        int totalVisits = visits.length;
+        int totalSeconds = 0;
+        int endedCount = 0;
+        for (final v in visits) {
+          if (v.durationSeconds > 0) {
+            totalSeconds += v.durationSeconds;
+            endedCount++;
+          }
+        }
+        final totalDuration = Duration(seconds: totalSeconds);
+        final avgMinutes = endedCount > 0 ? totalDuration.inMinutes / endedCount : 0.0;
+
+        // Find most visited place.
+        final placeCounts = <String, int>{};
+        for (final v in visits) {
+          placeCounts[v.placeName] = (placeCounts[v.placeName] ?? 0) + 1;
+        }
+        final mostVisited = placeCounts.isNotEmpty
+            ? (placeCounts.entries.toList()..sort((a, b) => b.value.compareTo(a.value))).first.key
+            : '-';
+
+        return Column(
+          children: [
+            // Stats cards
+            Padding(
+              padding: const EdgeInsets.all(12),
+              child: Row(
+                children: [
+                  _HistoryStatCard(
+                    icon: Icons.people,
+                    label: 'Total',
+                    value: '$totalVisits',
+                  ),
+                  const SizedBox(width: 8),
+                  _HistoryStatCard(
+                    icon: Icons.timer,
+                    label: 'Média',
+                    value: '${avgMinutes.toStringAsFixed(0)}min',
+                  ),
+                  const SizedBox(width: 8),
+                  _HistoryStatCard(
+                    icon: Icons.place,
+                    label: 'Mais visitado',
+                    value: mostVisited,
+                  ),
+                ],
+              ),
+            ),
+            // Visit list
+            Expanded(
+              child: ListView.builder(
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                itemCount: visits.length,
+                itemBuilder: (context, index) {
+                  final visit = visits[index];
+                  final duration = Duration(seconds: visit.durationSeconds);
+                  final hours = duration.inHours;
+                  final mins = duration.inMinutes.remainder(60);
+                  final durationStr = hours > 0 ? '${hours}h ${mins}m' : '${mins}m';
+
+                  final entered = '${visit.enteredAt.hour.toString().padLeft(2, '0')}:${visit.enteredAt.minute.toString().padLeft(2, '0')}';
+                  final date = '${visit.enteredAt.day.toString().padLeft(2, '0')}/${visit.enteredAt.month.toString().padLeft(2, '0')}';
+                  final hasEnded = visit.exitedAt != null;
+
+                  return Container(
+                    margin: const EdgeInsets.only(bottom: 8),
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFFFFFFF).withValues(alpha: 0.04),
+                      border: Border.all(color: const Color(0xFFFFFFFF).withValues(alpha: 0.08)),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Row(
+                      children: [
+                        Container(
+                          width: 40,
+                          height: 40,
+                          decoration: BoxDecoration(
+                            color: (hasEnded ? const Color(0xFF22C55E) : const Color(0xFFFBBF24)).withValues(alpha: 0.15),
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: Icon(
+                            hasEnded ? Icons.check_circle : Icons.access_time,
+                            color: hasEnded ? const Color(0xFF22C55E) : const Color(0xFFFBBF24),
+                            size: 20,
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                visit.placeName,
+                                style: const TextStyle(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w600,
+                                  color: Colors.white,
+                                ),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                '$date • $entered${hasEnded ? ' → ${visit.exitedAt!.hour.toString().padLeft(2, '0')}:${visit.exitedAt!.minute.toString().padLeft(2, '0')}' : ''}',
+                                style: const TextStyle(fontSize: 11, color: Color(0xFF5E6A7E)),
+                              ),
+                            ],
+                          ),
+                        ),
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          children: [
+                            Text(
+                              durationStr,
+                              style: const TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w600,
+                                color: Color(0xFF6366F1),
+                              ),
+                            ),
+                            if (!hasEnded)
+                              const Text(
+                                'Em andamento',
+                                style: TextStyle(fontSize: 10, color: Color(0xFFFBBF24)),
+                              ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+            ),
+          ],
+        );
+      },
+    );
   }
 
   Future<void> _confirmDelete(GeofenceRegion place) async {
@@ -397,6 +595,52 @@ class _PlaceTile extends StatelessWidget {
               icon: const Icon(Icons.delete_outline, color: Color(0xFFEF4444), size: 20),
               onPressed: onDelete,
               tooltip: 'Excluir',
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _HistoryStatCard extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final String value;
+
+  const _HistoryStatCard({
+    required this.icon,
+    required this.label,
+    required this.value,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Expanded(
+      child: Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: const Color(0xFFFFFFFF).withValues(alpha: 0.04),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Column(
+          children: [
+            Icon(icon, size: 18, color: const Color(0xFF6366F1)),
+            const SizedBox(height: 4),
+            Text(
+              value,
+              style: const TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w700,
+                color: Colors.white,
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+            const SizedBox(height: 2),
+            Text(
+              label,
+              style: const TextStyle(fontSize: 10, color: Color(0xFF5E6A7E)),
             ),
           ],
         ),

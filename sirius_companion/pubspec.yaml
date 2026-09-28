@@ -29,6 +29,9 @@ dependencies:
   # Secure Storage (Android Keystore / iOS Keychain)
   flutter_secure_storage: ^10.3.1
 
+  # Simple key-value persistence (background heartbeat)
+  shared_preferences: ^2.5.0
+
   # Location & Geofencing
   geolocator: ^14.0.3
   permission_handler: ^12.0.3
@@ -55,6 +58,9 @@ dependencies:
 
   # WebView for HuggingFace authentication
   webview_flutter: ^4.10.0
+
+  # Image picking for note attachments
+  image_picker: ^1.1.2
 
   # Utilities
   uuid: ^4.6.0

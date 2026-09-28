@@ -101,7 +101,73 @@ class TaskAlarmService {
       print('[TaskAlarm] Native alarm engine init failed: $e');
     }
 
+    // Schedule the daily 00:00 alarm for date-range notifications.
+    await _scheduleDailyDateRangeAlarm();
+
     _initialized = true;
+  }
+
+  /// Schedules a daily alarm at 00:00 to fire date-range task notifications.
+  static Future<void> _scheduleDailyDateRangeAlarm() async {
+    await _ensureTimezone();
+    
+    const dailyAlarmId = 0xCAFE; // Fixed ID for the daily 00:00 alarm
+    
+    try {
+      // Cancel any existing daily alarm
+      await Alarm.stop(dailyAlarmId);
+      
+      // Calculate next 00:00
+      final now = DateTime.now();
+      var nextMidnight = DateTime(now.year, now.month, now.day + 1, 0, 0, 0);
+      
+      // If it's already past 00:00 today, schedule for tomorrow
+      if (now.isAfter(nextMidnight)) {
+        nextMidnight = nextMidnight.add(const Duration(days: 1));
+      }
+      
+      final ok = await Alarm.set(
+        alarmSettings: AlarmSettings(
+          id: dailyAlarmId,
+          dateTime: nextMidnight,
+          assetAudioPath: 'assets/audio/silent.wav',
+          loopAudio: false,
+          vibrate: false,
+          warningNotificationOnKill: false,
+          androidFullScreenIntent: true,
+          payload: '$_payloadPrefix$dailyAlarmId|DATE_RANGE_DAILY',
+          volumeSettings: const VolumeSettings.fixed(
+            volume: 0,
+            showSystemUI: false,
+          ),
+          notificationSettings: NotificationSettings(
+            title: 'SIRIUS — Verificação diária',
+            body: 'Verificando tarefas do dia...',
+            stopButton: 'OK',
+            androidStopAlarmOnDismiss: true,
+          ),
+        ),
+      );
+      
+      if (ok) {
+        print('[TaskAlarm] Daily 00:00 date-range alarm scheduled for $nextMidnight');
+      }
+    } catch (e, stack) {
+      print('[TaskAlarm] Failed to schedule daily 00:00 alarm: $e');
+      print(stack);
+    }
+  }
+
+  /// Called when the daily 00:00 alarm fires - shows notifications for active date-range tasks.
+  static Future<void> onDailyDateRangeAlarm() async {
+    await _ensureBackgroundReady();
+    await _ensureTimezone();
+    
+    print('[TaskAlarm] Daily 00:00 alarm fired - showing date-range notifications');
+    await fireDateRangeNotificationsForToday();
+    
+    // Reschedule for next day
+    await _scheduleDailyDateRangeAlarm();
   }
 
   /// Creates the notification channel. Uses a dedicated id (v2) because
@@ -184,7 +250,17 @@ class TaskAlarmService {
 
   /// Creates a task locally, schedules the alarm and queues it for the PC.
   /// Returns the remote id (used as server primary key for dedupe).
-  static Future<String> createQuickTask(String title, DateTime dueAt) async {
+  ///
+  /// If [isDateRange] is true, creates a date-range task with [startDate] and [endDate].
+  /// [dueAt] is optional for date-range tasks (will be null).
+  /// If [isDateRange] is false, [dueAt] is required (time-specific task).
+  static Future<String> createQuickTask(
+    String title, {
+    required DateTime? dueAt,
+    DateTime? startDate,
+    DateTime? endDate,
+    bool isDateRange = false,
+  }) async {
     final remoteId = const Uuid().v4();
     final now = DateTime.now();
     final cleanTitle = title.trim();
@@ -198,31 +274,67 @@ class TaskAlarmService {
     await db.into(db.scheduledTasks).insert(ScheduledTasksCompanion.insert(
           remoteId: remoteId,
           title: cleanTitle,
-          dueAt: dueAt,
+          dueAt: dueAt == null ? const Value.absent() : Value(dueAt),
+          startDate: startDate == null ? const Value.absent() : Value(startDate),
+          endDate: endDate == null ? const Value.absent() : Value(endDate),
+          isDateRange: Value(isDateRange),
           source: const Value('phone'),
           createdAt: now,
           updatedAt: now,
         ));
 
+    final payload = {
+      'id': remoteId,
+      'title': cleanTitle,
+      'source': 'phone',
+      'timestamp': now.toIso8601String(),
+      'is_date_range': isDateRange,
+    };
+    if (dueAt != null) {
+      payload['due_at'] = dueAt.toIso8601String();
+    }
+    if (startDate != null) {
+      payload['start_date'] = startDate.toIso8601String();
+    }
+    if (endDate != null) {
+      payload['end_date'] = endDate.toIso8601String();
+    }
+
     await SyncRepository(db).enqueue(
       type: SyncItemType.quickTask.value,
-      payloadJson: jsonEncode({
-        'id': remoteId,
-        'title': cleanTitle,
-        'due_at': dueAt.toIso8601String(),
-        'source': 'phone',
-        'timestamp': now.toIso8601String(),
-      }),
+      payloadJson: jsonEncode(payload),
       clientId: const Uuid().v4(),
     );
 
-    final scheduled = await _scheduleAlarm(
-      remoteId: remoteId,
-      title: cleanTitle,
-      dueAt: dueAt,
-    );
-    if (!scheduled) {
-      print('[TaskAlarm] WARNING: alarm for "$cleanTitle" was NOT scheduled');
+    if (!isDateRange && dueAt != null) {
+      final now = DateTime.now();
+      final scheduled = await _scheduleAlarm(
+        remoteId: remoteId,
+        title: cleanTitle,
+        dueAt: dueAt,
+      );
+      if (!scheduled && dueAt.isAfter(now)) {
+        // Due time is in the future today but alarm wasn't scheduled (e.g., engine busy)
+        // Show immediate overdue-style notification so user sees it
+        await _showOverdueNotification(remoteId, cleanTitle, dueAt);
+        await markNotifiedLocally(remoteId);
+      } else if (!scheduled) {
+        print('[TaskAlarm] WARNING: alarm for "$cleanTitle" was NOT scheduled');
+      }
+    } else if (isDateRange) {
+      // Ensure the daily 00:00 alarm is scheduled for date-range tasks
+      await _scheduleDailyDateRangeAlarm();
+      
+      // If task range includes today, fire 00:00-style notification immediately
+      final today = DateTime.now();
+      final todayStart = DateTime(today.year, today.month, today.day);
+      final todayEnd = todayStart.add(const Duration(days: 1)).subtract(const Duration(milliseconds: 1));
+      
+      if (startDate != null && endDate != null &&
+          !startDate.isAfter(todayEnd) && !endDate.isBefore(todayStart)) {
+        await _showDateRangeNotification(remoteId, cleanTitle, startDate!, endDate!);
+        await markNotifiedLocally(remoteId);
+      }
     }
 
     // Push to the PC right away so the toast/PC side knows about it.
@@ -233,11 +345,45 @@ class TaskAlarmService {
   // ── User actions ──────────────────────────────────────────────────────────
 
   static Future<void> markDone(String remoteId, {bool sync = true}) async {
-    await _updateStatus(remoteId, 'done');
+    // Persist the local completion and its outbox item in the same SQLite
+    // transaction. This is important for notification actions: the phone may
+    // be offline, and Android may stop the background isolate immediately
+    // after the action callback returns.
+    final db = AppDatabase();
+    final now = DateTime.now();
+    await db.transaction(() async {
+      await (db.update(db.scheduledTasks)
+            ..where((tbl) => tbl.remoteId.equals(remoteId)))
+          .write(ScheduledTasksCompanion(
+            status: const Value('done'),
+            alarmScheduled: const Value(false),
+            updatedAt: Value(now),
+          ));
+
+      if (sync) {
+        await db.into(db.syncItems).insert(
+          SyncItemsCompanion.insert(
+            type: SyncItemType.taskDone.value,
+            payloadJson: jsonEncode({
+              'task_id': remoteId,
+              'timestamp': now.toIso8601String(),
+            }),
+            clientId: const Uuid().v4(),
+            createdAt: now,
+          ),
+        );
+      }
+    });
+
     await _cancelAlarmsFor(remoteId);
     if (sync) {
-      await _enqueueAction(SyncItemType.taskDone, remoteId);
-      await SyncWorker.triggerSync();
+      try {
+        await SyncWorker.triggerSync();
+      } catch (e) {
+        // Best-effort nudge (WorkManager channel may be unavailable in this
+        // isolate); the queued action is pushed by the periodic sync anyway.
+        print('[TaskAlarm] Immediate sync trigger failed: $e');
+      }
     }
   }
 
@@ -249,7 +395,7 @@ class TaskAlarmService {
     if (task == null) return;
 
     final base =
-        task.dueAt.isAfter(DateTime.now()) ? task.dueAt : DateTime.now();
+        (task.dueAt?.isAfter(DateTime.now()) ?? false) ? (task.dueAt ?? DateTime.now()) : DateTime.now();
     final newDue = base.add(Duration(minutes: minutes));
     await (db.update(db.scheduledTasks)
           ..where((tbl) => tbl.remoteId.equals(remoteId)))
@@ -278,9 +424,29 @@ class TaskAlarmService {
     return await (db.select(db.scheduledTasks)
           ..where((tbl) =>
               tbl.status.equals('pending') | tbl.status.equals('notified'))
-          ..orderBy([(u) => OrderingTerm.asc(u.dueAt)])
+          ..orderBy([
+            (u) => OrderingTerm.asc(u.isDateRange), // Date-range tasks first
+            (u) => OrderingTerm.asc(u.startDate),   // Then by start date
+            (u) => OrderingTerm.asc(u.dueAt),       // Then by due time
+          ])
           ..limit(limit))
         .get();
+  }
+
+  /// Live local view used by the home screen. It updates immediately when a
+  /// background sync inserts or updates tasks in SQLite.
+  static Stream<List<ScheduledTask>> watchPendingTasks({int limit = 20}) {
+    final db = AppDatabase();
+    return (db.select(db.scheduledTasks)
+          ..where((tbl) =>
+              tbl.status.equals('pending') | tbl.status.equals('notified'))
+          ..orderBy([
+            (u) => OrderingTerm.asc(u.isDateRange),
+            (u) => OrderingTerm.asc(u.startDate),
+            (u) => OrderingTerm.asc(u.dueAt),
+          ])
+          ..limit(limit))
+        .watch();
   }
 
   /// Recovery pass at app start: re-arms EVERY pending task's alarm with the
@@ -303,17 +469,22 @@ class TaskAlarmService {
       print('[TaskAlarm] Re-arming ${rows.length} task alarm(s)');
       final now = DateTime.now();
       for (final t in rows) {
-        if (t.dueAt.isAfter(now)) {
+        // Skip date-range tasks here - they're handled by catchUpMissedDateRangeNotifications
+        if (t.isDateRange) continue;
+        
+        final dueAt = t.dueAt;
+        if (dueAt != null && dueAt.isAfter(now)) {
           await _scheduleAlarm(
             remoteId: t.remoteId,
             title: t.title,
-            dueAt: t.dueAt,
+            dueAt: dueAt,
           );
         } else if (!t.alarmScheduled &&
-            now.difference(t.dueAt) <= _overdueFireWindow &&
+            dueAt != null &&
+            now.difference(dueAt) <= _overdueFireWindow &&
             t.status == 'pending') {
           // Recently missed — surface it instead of silently skipping.
-          await _showOverdueNotification(t.remoteId, t.title, t.dueAt);
+          await _showOverdueNotification(t.remoteId, t.title, dueAt);
           await markNotifiedLocally(t.remoteId);
         } else if (!t.alarmScheduled) {
           // Long overdue and never fired: close it locally. Server sync
@@ -326,6 +497,118 @@ class TaskAlarmService {
     } catch (e) {
       print('[TaskAlarm] Reschedule pass failed: $e');
     }
+
+    // Also catch up on missed date-range notifications
+    await catchUpMissedDateRangeNotifications();
+
+    // Ensure the daily 00:00 alarm is scheduled
+    await _scheduleDailyDateRangeAlarm();
+  }
+
+  /// Fires 00:00 notifications for all active date-range tasks today.
+  /// Called by the background worker at midnight.
+  static Future<void> fireDateRangeNotificationsForToday() async {
+    await _ensureBackgroundReady();
+    await _ensureTimezone();
+
+    final db = AppDatabase();
+    final today = DateTime.now();
+    final todayStart = DateTime(today.year, today.month, today.day);
+    final todayEnd = todayStart.add(const Duration(days: 1)).subtract(const Duration(milliseconds: 1));
+
+    try {
+      final rows = await (db.select(db.scheduledTasks)
+            ..where((tbl) =>
+                tbl.isDateRange.equals(true) &
+                tbl.status.isIn(['pending', 'notified']) &
+                (tbl.startDate.isSmallerOrEqual(Variable(todayEnd))) &
+                (tbl.endDate.isBiggerOrEqual(Variable(todayStart)))))
+          .get();
+      if (rows.isEmpty) return;
+
+      print('[TaskAlarm] Firing ${rows.length} date-range task notification(s) for today');
+      for (final t in rows) {
+        await _showDateRangeNotification(t.remoteId, t.title, t.startDate!, t.endDate!);
+      }
+    } catch (e) {
+      print('[TaskAlarm] fireDateRangeNotificationsForToday failed: $e');
+    }
+  }
+
+  /// Checks for missed date-range notifications (e.g., app was off at 00:00).
+  /// Call this at app startup to catch up.
+  static Future<void> catchUpMissedDateRangeNotifications() async {
+    await _ensureBackgroundReady();
+    await _ensureTimezone();
+
+    final db = AppDatabase();
+    final today = DateTime.now();
+    final todayStart = DateTime(today.year, today.month, today.day);
+    final todayEnd = todayStart.add(const Duration(days: 1)).subtract(const Duration(milliseconds: 1));
+
+    try {
+      final rows = await (db.select(db.scheduledTasks)
+            ..where((tbl) =>
+                tbl.isDateRange.equals(true) &
+                tbl.status.equals('pending') &
+                (tbl.startDate.isSmallerOrEqual(Variable(todayEnd))) &
+                (tbl.endDate.isBiggerOrEqual(Variable(todayStart)))))
+          .get();
+      if (rows.isEmpty) return;
+
+      print('[TaskAlarm] Catching up ${rows.length} missed date-range notification(s)');
+      for (final t in rows) {
+        await _showDateRangeNotification(t.remoteId, t.title, t.startDate!, t.endDate!);
+        await markNotifiedLocally(t.remoteId);
+      }
+    } catch (e) {
+      print('[TaskAlarm] catchUpMissedDateRangeNotifications failed: $e');
+    }
+  }
+
+  /// Notification details for date-range tasks: non-dismissible, only "Concluir" action.
+  static AndroidNotificationDetails _dateRangeDetails() {
+    return const AndroidNotificationDetails(
+      AppConstants.taskAlarmChannelId,
+      AppConstants.taskAlarmChannelName,
+      channelDescription: 'Lembretes em tela cheia (silencioso, com vibração)',
+      icon: 'ic_stat_face',
+      importance: Importance.max,
+      priority: Priority.max,
+      category: AndroidNotificationCategory.alarm,
+      playSound: false,
+      enableVibration: true,
+      visibility: NotificationVisibility.public,
+      autoCancel: false, // Non-dismissible
+      ongoing: true,     // Stays in notification shade
+      actions: [
+        // Keep this action in the background. The local completion and outbox
+        // write happen before the optional alarm cleanup in markDone.
+        AndroidNotificationAction(
+          'task_complete_date_range',
+          'Concluir',
+          cancelNotification: true,
+          showsUserInterface: false,
+        ),
+      ],
+    );
+  }
+
+  static Future<void> _showDateRangeNotification(
+    String remoteId,
+    String title,
+    DateTime startDate,
+    DateTime endDate,
+  ) async {
+    final startStr = '${startDate.day.toString().padLeft(2, '0')}/${startDate.month.toString().padLeft(2, '0')}';
+    final endStr = '${endDate.day.toString().padLeft(2, '0')}/${endDate.month.toString().padLeft(2, '0')}';
+    await _plugin.show(
+      id: remoteId.hashCode,
+      title: '⏰ Tarefa do dia',
+      body: '$title ($startStr a $endStr)',
+      notificationDetails: NotificationDetails(android: _dateRangeDetails()),
+      payload: '$_payloadPrefix$remoteId|$title',
+    );
   }
 
   // ── Server convergence ────────────────────────────────────────────────────
@@ -345,15 +628,41 @@ class TaskAlarmService {
       final title = (map['title'] as String?)?.trim();
       final dueRaw = map['due_at'] as String?;
       final status = (map['status'] as String?) ?? 'pending';
+      final rawDateRange = map['is_date_range'];
+      final isDateRange = rawDateRange == true ||
+          rawDateRange == 1 ||
+          rawDateRange == '1' ||
+          rawDateRange == 'true';
+      final startRaw = map['start_date'] as String?;
+      final endRaw = map['end_date'] as String?;
       if (remoteId == null || title == null || title.isEmpty) continue;
 
       DateTime? dueAt;
-      try {
-        dueAt = dueRaw == null ? null : DateTime.parse(dueRaw).toLocal();
-      } on FormatException {
-        continue;
+      DateTime? startDate;
+      DateTime? endDate;
+      
+      if (isDateRange) {
+        // Date-range task: parse start_date and end_date
+        if (startRaw != null) {
+          try {
+            startDate = DateTime.parse(startRaw).toLocal();
+          } on FormatException {}
+        }
+        if (endRaw != null) {
+          try {
+            endDate = DateTime.parse(endRaw).toLocal();
+          } on FormatException {}
+        }
+        if (startDate == null || endDate == null) continue;
+      } else {
+        // Time-specific task: require due_at
+        try {
+          dueAt = dueRaw == null ? null : DateTime.parse(dueRaw).toLocal();
+        } on FormatException {
+          continue;
+        }
+        if (dueAt == null) continue;
       }
-      if (dueAt == null) continue;
 
       final existing = await (db.select(db.scheduledTasks)
             ..where((tbl) => tbl.remoteId.equals(remoteId)))
@@ -390,7 +699,10 @@ class TaskAlarmService {
               ScheduledTasksCompanion.insert(
                 remoteId: remoteId,
                 title: title,
-                dueAt: dueAt,
+                dueAt: dueAt == null ? const Value.absent() : Value(dueAt!),
+                startDate: startDate == null ? const Value.absent() : Value(startDate!),
+                endDate: endDate == null ? const Value.absent() : Value(endDate!),
+                isDateRange: Value(isDateRange),
                 notes: Value(map['notes'] as String?),
                 status: Value(nextStatus),
                 source: Value((map['source'] as String?) ?? 'pc'),
@@ -404,23 +716,51 @@ class TaskAlarmService {
             .write(ScheduledTasksCompanion(
               title: Value(title),
               notes: Value(map['notes'] as String?),
-              dueAt: Value(dueAt),
+              dueAt: dueAt == null ? const Value.absent() : Value(dueAt!),
+              startDate: startDate == null ? const Value.absent() : Value(startDate!),
+              endDate: endDate == null ? const Value.absent() : Value(endDate!),
+              isDateRange: Value(isDateRange),
               status: Value(nextStatus),
               updatedAt: Value(now),
             ));
       }
 
-      if (dueAt.isAfter(now)) {
+      if (isDateRange) {
+        // For date-range tasks, the daily alarm handles subsequent days. On
+        // the first pull, however, this task may have been created before the
+        // app was installed (or while it was closed), so show today's
+        // notification immediately instead of waiting for tomorrow's alarm.
+        final rangeStart = startDate;
+        final rangeEnd = endDate;
+        final today = DateTime.now();
+        final todayStart = DateTime(today.year, today.month, today.day);
+        final todayEnd = todayStart
+            .add(const Duration(days: 1))
+            .subtract(const Duration(milliseconds: 1));
+        if (nextStatus == 'pending' &&
+            rangeStart != null &&
+            rangeEnd != null &&
+            !rangeStart.isAfter(todayEnd) &&
+            !rangeEnd.isBefore(todayStart)) {
+          await _showDateRangeNotification(
+            remoteId,
+            title,
+            rangeStart,
+            rangeEnd,
+          );
+          await markNotifiedLocally(remoteId);
+        }
+      } else if (dueAt != null && dueAt.isAfter(now)) {
         await _scheduleAlarm(
           remoteId: remoteId,
           title: title,
           dueAt: dueAt,
         );
-      } else if (now.difference(dueAt) <= _overdueFireWindow &&
+      } else if (dueAt != null && now.difference(dueAt) <= _overdueFireWindow &&
           nextStatus == 'pending') {
         // Recently missed while offline / pulled in late — fire now instead
         // of silently skipping. markNotifiedLocally prevents repeats.
-        await _showOverdueNotification(remoteId, title, dueAt);
+        await _showOverdueNotification(remoteId, title, dueAt!);
         await markNotifiedLocally(remoteId);
       }
     }
@@ -444,7 +784,13 @@ class TaskAlarmService {
       visibility: NotificationVisibility.public,
       autoCancel: true,
       actions: [
-        AndroidNotificationAction('task_dismiss', 'Dispensar'),
+        // Run the action in the background while the phone is unlocked.
+        AndroidNotificationAction(
+          'task_dismiss',
+          'Dispensar',
+          cancelNotification: false,
+          showsUserInterface: false,
+        ),
       ],
     );
   }
@@ -460,6 +806,10 @@ class TaskAlarmService {
 
   /// Handles a notification tap or action button. Returns the payload parts
   /// ('task|$id|$title') so the app can open the alarm screen on plain taps.
+  ///
+  /// Note: action buttons with `showsUserInterface: false` are delivered to
+  /// the background callback ([onNotificationBackgroundResponse] in main.dart),
+  /// not to the foreground handler — both paths land here.
   static Future<List<String>?> handleNotificationResponse(
     NotificationResponse response,
   ) async {
@@ -472,12 +822,21 @@ class TaskAlarmService {
     switch (response.actionId) {
       case 'task_dismiss':
       case 'task_done': // legacy button from previous app versions
+        // Complete the SQLite transaction before initializing optional
+        // notification/alarm platform services. This keeps the action
+        // durable even when the PC is unreachable or Android ends the
+        // background isolate quickly.
         await markDone(taskId);
         return null;
       case 'task_snooze': // legacy button from previous app versions
+        await _ensureBackgroundReady();
         await snooze(taskId);
         return null;
+      case 'task_complete_date_range': // date-range task completion
+        await markDone(taskId);
+        return null;
       default:
+        await _ensureBackgroundReady();
         return parts;
     }
   }
@@ -556,6 +915,18 @@ class TaskAlarmService {
       await (db.update(db.scheduledTasks)
             ..where((tbl) => tbl.remoteId.equals(remoteId)))
           .write(ScheduledTasksCompanion(alarmScheduled: Value(ok)));
+
+      // Schedule a backup notification via flutter_local_notifications.
+      // If the native alarm engine fails (process death), the scheduled
+      // notification still fires as a heads-up alert.
+      if (ok) {
+        await _scheduleBackupNotification(
+          remoteId: remoteId,
+          title: title,
+          dueAt: dueAt,
+        );
+      }
+
       print('[TaskAlarm] Scheduled ${ok ? 'OK' : 'FAILED'}');
       return ok;
     } catch (e, stack) {
@@ -585,7 +956,7 @@ class TaskAlarmService {
   }
 
   /// Cancels both engines for a task: the legacy FLN scheduled notification
-  /// (old app versions) and the native alarm.
+  /// (old app versions), the native alarm, and the backup scheduled notification.
   static Future<void> _cancelAlarmsFor(String remoteId) async {
     try {
       await _plugin.cancel(id: remoteId.hashCode);
@@ -593,6 +964,51 @@ class TaskAlarmService {
     try {
       await Alarm.stop(alarmId(remoteId));
     } catch (_) {}
+    // Also cancel the backup zonedSchedule notification.
+    try {
+      await _plugin.cancel(id: remoteId.hashCode + 100000);
+    } catch (_) {}
+  }
+
+  /// Schedules a backup heads-up notification via flutter_local_notifications
+  /// using zonedSchedule. This is a safety net: if the native alarm engine
+  /// fails (process death, OEM restrictions), this notification still appears.
+  static Future<void> _scheduleBackupNotification({
+    required String remoteId,
+    required String title,
+    required DateTime dueAt,
+  }) async {
+    try {
+      await _ensureTimezone();
+      final tzDate = tz.TZDateTime.from(dueAt, tz.local);
+      final now = tz.TZDateTime.now(tz.local);
+      if (!tzDate.isAfter(now)) return;
+
+      await _plugin.zonedSchedule(
+        id: remoteId.hashCode + 100000,
+        title: 'Hora da tarefa!',
+        body: title,
+        scheduledDate: tzDate,
+        notificationDetails: const NotificationDetails(
+          android: AndroidNotificationDetails(
+            AppConstants.taskAlarmChannelId,
+            AppConstants.taskAlarmChannelName,
+            channelDescription: 'Lembretes em tela cheia (silencioso, com vibração)',
+            icon: 'ic_stat_face',
+            importance: Importance.max,
+            priority: Priority.max,
+            category: AndroidNotificationCategory.alarm,
+            playSound: false,
+            enableVibration: true,
+            visibility: NotificationVisibility.public,
+          ),
+        ),
+        androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
+        payload: '$_payloadPrefix$remoteId|$title',
+      );
+    } catch (e) {
+      print('[TaskAlarm] Backup notification schedule failed: $e');
+    }
   }
 
   static Future<void> _updateStatus(String remoteId, String status) async {

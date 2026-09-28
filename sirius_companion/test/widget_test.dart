@@ -2,7 +2,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:sirius_companion/core/device_identity.dart';
 
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:sirius_companion/main.dart';
 

@@ -35,7 +35,15 @@ class SyncRepository {
     final driftItems = await (db.select(db.syncItems)
           ..where((tbl) =>
               tbl.syncedAt.isNull() &
-              tbl.retryCount.isSmallerOrEqualValue(maxRetries))
+              (tbl.retryCount.isSmallerOrEqualValue(maxRetries) |
+                  // Task actions are durable user actions. Keep retrying
+                  // them after the generic dead-letter threshold so an
+                  // offline notification action cannot be lost before the
+                  // next successful manual sync. This also preserves the
+                  // creation item when a task was created on the phone.
+                  tbl.type.equals(SyncItemType.quickTask.value) |
+                  tbl.type.equals(SyncItemType.taskDone.value) |
+                  tbl.type.equals(SyncItemType.taskSnooze.value)))
           ..orderBy([(tbl) => OrderingTerm.asc(tbl.createdAt)])
           ..limit(limit))
         .get();

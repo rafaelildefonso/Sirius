@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:io';
+
 import 'package:dio/dio.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:package_info_plus/package_info_plus.dart';
@@ -41,14 +43,14 @@ class ApiClient {
     _androidInfo = await deviceInfo.androidInfo;
   }
   
-  void _setupInterceptors() {
+void _setupInterceptors() {
     // Request interceptor - add headers
     _dio.interceptors.add(InterceptorsWrapper(
       onRequest: (options, handler) async {
         // Add device ID to all requests
         final deviceId = await DeviceIdentity.getOrCreateId();
         options.headers['X-Device-ID'] = deviceId;
-        
+
         // Add device token if paired
         if (_deviceToken != null) {
           options.headers['Authorization'] = 'Bearer $_deviceToken';
@@ -59,7 +61,7 @@ class ApiClient {
             options.headers['Authorization'] = 'Bearer $token';
           }
         }
-        
+
         // App info headers
         if (_packageInfo != null) {
           options.headers['X-App-Version'] = _packageInfo!.version;
@@ -70,24 +72,23 @@ class ApiClient {
           options.headers['X-Device-Model'] = _androidInfo!.model;
           options.headers['X-Android-Version'] = _androidInfo!.version.release;
         }
-        
+
         handler.next(options);
       },
       onError: (error, handler) async {
-        // Handle 401 - token expired, clear and retry once
-        if (error.response?.statusCode == 401 && 
+        // Handle 401 - token expired, clear token and retry once WITHOUT clearing pairing
+        if (error.response?.statusCode == 401 &&
             error.requestOptions.extra['retry'] != true) {
-          
-          await DeviceIdentity.clearPairing();
+
           _deviceToken = null;
-          
+
           // Retry once without token
           final opts = Options(
             method: error.requestOptions.method,
             headers: error.requestOptions.headers,
             extra: {'retry': true},
           );
-          
+
           try {
             final response = await _dio.request(
               error.requestOptions.path,
@@ -104,7 +105,7 @@ class ApiClient {
         handler.next(error);
       },
     ));
-    
+
     // Logging interceptor
     _dio.interceptors.add(LogInterceptor(
       request: true,
@@ -177,6 +178,95 @@ class ApiClient {
     } catch (_) {
       return false;
     }
+  }
+
+  /// Discover Sirius server on the local network via UDP broadcast.
+  /// Returns the discovered base URL (e.g., "http://192.168.1.15:8000") or null if not found.
+  Future<String?> discoverServerOnLan() async {
+    // 1. Try saved URL first
+    final savedUrl = await DeviceIdentity.getServerUrl();
+    if (savedUrl != null) {
+      _baseUrl = savedUrl;
+      _dio.options.baseUrl = savedUrl;
+      if (await checkServerReachable()) {
+        return savedUrl;
+      }
+    }
+
+    // 2. Try UDP broadcast discovery
+    try {
+      final socket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
+      final responses = <String>{};
+
+      final subscription = socket.listen((event) {
+        if (event == RawSocketEvent.read) {
+          final datagram = socket.receive();
+          if (datagram != null) {
+            final msg = String.fromCharCodes(datagram.data).trim();
+            if (msg.startsWith('SIRIUS_ANNOUNCE:')) {
+              final url = msg.substring('SIRIUS_ANNOUNCE:'.length);
+              responses.add(url);
+            }
+          }
+        }
+      });
+
+      // Send discovery ping
+      final broadcastAddr = InternetAddress('255.255.255.255');
+      socket.send('SIRIUS_DISCOVERY_PING'.codeUnits, broadcastAddr, 8002);
+
+      // Wait for responses
+      await Future.delayed(const Duration(seconds: 2));
+      await subscription.cancel();
+      socket.close();
+
+      if (responses.isNotEmpty) {
+        final url = responses.first;
+        await DeviceIdentity.saveServerUrl(url);
+        setBaseUrl(url);
+        return url;
+      }
+    } catch (_) {
+      // UDP failed, fall through to subnet scan
+    }
+
+    // 3. Fallback: scan local subnet (/24) for the server
+    try {
+      final localIp = await _getLocalIp();
+      if (localIp != null) {
+        final parts = localIp.split('.');
+        if (parts.length == 4) {
+          final baseIp = '${parts[0]}.${parts[1]}.${parts[2]}';
+          for (int i = 1; i < 255; i++) {
+            if (i == int.parse(parts[3])) continue;
+            final testIp = '$baseIp.$i';
+            final testUrl = 'http://$testIp:8000';
+            _dio.options.baseUrl = testUrl;
+            if (await checkServerReachable()) {
+              await DeviceIdentity.saveServerUrl(testUrl);
+              setBaseUrl(testUrl);
+              return testUrl;
+            }
+          }
+        }
+      }
+    } catch (_) {}
+
+    return null;
+  }
+
+  Future<String?> _getLocalIp() async {
+    try {
+      final interfaces = await NetworkInterface.list();
+      for (final interface in interfaces) {
+        for (final addr in interface.addresses) {
+          if (addr.type == InternetAddressType.IPv4 && !addr.isLoopback) {
+            return addr.address;
+          }
+        }
+      }
+    } catch (_) {}
+    return null;
   }
   
   /// Pair with Sirius PC.

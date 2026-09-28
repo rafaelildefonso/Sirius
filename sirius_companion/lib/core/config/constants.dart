@@ -47,6 +47,9 @@ class AppConstants {
   static const int gemmaMinRamGb = 3;
   static const String gemmaDownloadUrl = 'https://huggingface.co/litert-community/Gemma3-1B-IT/resolve/main/Gemma3-1B-IT_multi-prefill-seq_q4_block128_ekv1280.task';
   static const String gemmaHfRepoUrl = 'https://huggingface.co/google/gemma-3-1b-it';
+  static const int gemmaExpectedModelSizeBytes = 658_000_000;
+  // TODO: Obter SHA256 oficial do Hugging Face e adicionar aqui para validação completa
+  // static const String gemmaModelSha256 = '...';
   
   // Device Identity
   static const String deviceIdStorageKey = 'sirius_device_id';

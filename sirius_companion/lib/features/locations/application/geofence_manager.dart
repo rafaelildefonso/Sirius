@@ -11,7 +11,9 @@ import 'package:drift/drift.dart';
 import '../background/location_isolate.dart';
 import '../../../../core/storage/database/database.dart';
 import '../../../../core/storage/repositories/sync_repository.dart';
+import '../../../../core/storage/repositories/place_visit_repository.dart';
 import '../../../../core/sync/sync_worker.dart';
+import '../../../../core/sync/background_health_monitor.dart';
 
 final geofenceManagerProvider = Provider<GeofenceManager>((ref) => GeofenceManager());
 
@@ -92,14 +94,21 @@ class GeofenceManager {
   final StreamController<GeofenceTriggerEvent> _triggerController = StreamController.broadcast();
   final _notifications = FlutterLocalNotificationsPlugin();
 
+  /// Tracks active (un-ended) visit UUIDs per place.
+  final Map<String, String> _activeVisitUuids = {};
+
   Stream<GeofenceTriggerEvent> get triggerStream => _triggerController.stream;
 
   Future<void> initialize() async {
-    final granted = await _requestLocationPermissions();
-    if (!granted) return;
-    await _setupBackgroundService();
-    await _startBackgroundIsolate();
-    await _setupNotificationChannels();
+    try {
+      final granted = await _requestLocationPermissions();
+      if (!granted) return;
+      await _setupBackgroundService();
+      await _startBackgroundIsolate();
+      await _setupNotificationChannels();
+    } catch (e) {
+      print('[GeofenceManager] Init failed: $e');
+    }
   }
 
   Future<bool> _requestLocationPermissions() async {
@@ -113,22 +122,26 @@ class GeofenceManager {
   }
 
   Future<void> _setupBackgroundService() async {
-    await _backgroundService.configure(
-      iosConfiguration: IosConfiguration(),
-      androidConfiguration: AndroidConfiguration(
-        onStart: onStart,
-        autoStart: true,
-        isForegroundMode: true,
-        foregroundServiceTypes: [
-          AndroidForegroundType.location,
-          AndroidForegroundType.dataSync,
-        ],
-        notificationChannelId: _geofenceChannelId,
-        initialNotificationTitle: 'SIRIUS Companion',
-        initialNotificationContent: 'Ativo',
-        foregroundServiceNotificationId: 888,
-      ),
-    );
+    try {
+      await _backgroundService.configure(
+        iosConfiguration: IosConfiguration(),
+        androidConfiguration: AndroidConfiguration(
+          onStart: onStart,
+          autoStart: true,
+          isForegroundMode: true,
+          foregroundServiceTypes: [
+            AndroidForegroundType.location,
+            AndroidForegroundType.dataSync,
+          ],
+          notificationChannelId: _geofenceChannelId,
+          initialNotificationTitle: 'SIRIUS Companion',
+          initialNotificationContent: 'Ativo',
+          foregroundServiceNotificationId: 888,
+        ),
+      );
+    } catch (e) {
+      print('[GeofenceManager] Background service config failed: $e');
+    }
   }
 
   Future<void> _startBackgroundIsolate() async {
@@ -258,7 +271,82 @@ class GeofenceManager {
         ),
       );
     }
+
+    // Track visit start/end.
+    if (eventType == GeofenceEventType.enter.name) {
+      await _startVisit(placeId, existing?.name ?? placeId);
+    } else if (eventType == GeofenceEventType.exit.name) {
+      await _endVisit(placeId, existing?.name ?? placeId);
+    }
+
     await _notifyTriggerFromPlace(placeId, eventType);
+  }
+
+  Future<void> _startVisit(String placeId, String placeName) async {
+    // Don't start a new visit if one is already active for this place.
+    if (_activeVisitUuids.containsKey(placeId)) return;
+
+    final visitRepo = PlaceVisitRepository(AppDatabase());
+    final now = DateTime.now();
+    final visitId = await visitRepo.startVisit(
+      placeId: placeId,
+      placeName: placeName,
+      enteredAt: now,
+      confirmed: true,
+    );
+
+    // Store the visit UUID for tracking.
+    final visit = await AppDatabase().customSelect(
+      'SELECT uuid FROM place_visits WHERE id = ?',
+      variables: [Variable.withInt(visitId)],
+    ).getSingleOrNull();
+    if (visit != null) {
+      _activeVisitUuids[placeId] = visit.data['uuid'] as String;
+    }
+  }
+
+  Future<void> _endVisit(String placeId, String placeName) async {
+    final visitUuid = _activeVisitUuids.remove(placeId);
+    if (visitUuid == null) return;
+
+    final visitRepo = PlaceVisitRepository(AppDatabase());
+    final now = DateTime.now();
+    await visitRepo.endVisitByUuid(uuid: visitUuid, exitedAt: now);
+
+    // Fetch the visit to get duration.
+    final db = AppDatabase();
+    final visit = await (db.select(db.placeVisits)
+          ..where((tbl) => tbl.uuid.equals(visitUuid)))
+        .getSingleOrNull();
+
+    if (visit != null) {
+      final duration = Duration(seconds: visit.durationSeconds);
+      final hours = duration.inHours;
+      final minutes = duration.inMinutes.remainder(60);
+      final durationStr = hours > 0 ? '${hours}h ${minutes}m' : '${minutes}m';
+
+      // Show exit notification with duration.
+      await _showExitNotification(placeName, durationStr);
+    }
+  }
+
+  Future<void> _showExitNotification(String placeName, String duration) async {
+    const androidDetails = AndroidNotificationDetails(
+      'geofence_channel',
+      'Geofence Alerts',
+      channelDescription: 'Notificações ao entrar/sair de lugares salvos',
+      icon: 'ic_stat_face',
+      importance: Importance.high,
+      priority: Priority.high,
+      visibility: NotificationVisibility.public,
+    );
+
+    await _notifications.show(
+      id: 'exit_$placeName'.hashCode.abs() % 2147483647,
+      title: '👋 Saiu de $placeName',
+      body: 'Tempo de permanência: $duration',
+      notificationDetails: const NotificationDetails(android: androidDetails),
+    );
   }
 
   Future<void> _notifyTriggerFromPlace(String placeId, String eventType) async {
@@ -309,10 +397,38 @@ void onStart(ServiceInstance service) async {
     service.on('setAsBackground').listen((event) {
       service.setAsBackgroundService();
     });
+
+    // Self-healing: re-schedule if the OS kills the service.
+    service.on('onTaskRemoved').listen((event) async {
+      print('[BG Service] onTaskRemoved — scheduling restart');
+      await BackgroundHealthMonitor.markStopped();
+      // Give the OS a moment, then request restart via the global service.
+      await Future.delayed(const Duration(seconds: 3));
+      try {
+        await FlutterBackgroundService().startService();
+      } catch (_) {}
+    });
   }
 
-  service.on('stopService').listen((event) {
+  service.on('stopService').listen((event) async {
+    await BackgroundHealthMonitor.markStopped();
     service.stopSelf();
+  });
+
+  // Start heartbeat so the health monitor knows we're alive.
+  BackgroundHealthMonitor.startHeartbeat();
+
+  // Watchdog: if the service is still running after 5 min, restart it
+  // to avoid zombie state where the foreground notification lingers but
+  // timers are dead.
+  Timer.periodic(const Duration(minutes: 5), (_) async {
+    try {
+      final isRunning = await FlutterBackgroundService().isRunning();
+      if (!isRunning) {
+        print('[BG Service] Watchdog detected service is not running — restarting');
+        await FlutterBackgroundService().startService();
+      }
+    } catch (_) {}
   });
 
   // Periodic sync — silent, no notification update.

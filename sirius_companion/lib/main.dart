@@ -7,9 +7,11 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'core/storage/database/database.dart';
 import 'core/sync/sync_worker.dart';
 import 'core/sync/foreground_sync.dart';
+import 'core/sync/background_health_monitor.dart';
 import 'core/network/api_client.dart';
 import 'features/pairing/presentation/pairing_screen.dart';
 import 'features/home/presentation/home_screen.dart';
+import 'features/home/application/home_controller.dart';
 import 'core/device_identity.dart';
 import 'features/locations/application/geofence_manager.dart';
 import 'features/tasks/task_alarm_service.dart';
@@ -17,6 +19,26 @@ import 'features/tasks/presentation/alarm_screen.dart';
 
 final _notificationPlugin = FlutterLocalNotificationsPlugin();
 final _navigatorKey = GlobalKey<NavigatorState>();
+
+/// Fixed native-alarm id for the daily 00:00 date-range verification alarm.
+const int _dailyDateRangeAlarmId = 0xCAFE;
+
+/// Handles notification actions while the app UI is not shown (background
+/// isolate spawned by flutter_local_notifications when the action has
+/// `showsUserInterface: false`). Must be top-level with `vm:entry-point` so
+/// the plugin can resolve it via `PluginUtilities.getCallbackHandle`.
+@pragma('vm:entry-point')
+void onNotificationBackgroundResponse(NotificationResponse response) {
+  // Background isolates never run main(), so the binding (binary messenger)
+  // must be initialized here — otherwise every plugin channel and the local
+  // DB (path_provider) throw "binding was accessed before it was initialized"
+  // and the action aborts silently.
+  WidgetsFlutterBinding.ensureInitialized();
+  TaskAlarmService.handleNotificationResponse(response).catchError((e) {
+    print('[TaskAlarm] Background notification response failed: $e');
+    return null;
+  });
+}
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -32,8 +54,6 @@ class SiriusCompanionApp extends ConsumerStatefulWidget {
 
 class _SiriusCompanionAppState extends ConsumerState<SiriusCompanionApp> {
   final AppDatabase _db = AppDatabase();
-  // Element type (AlarmSet) is intentionally left unannotated — the class
-  // isn't exported by the package's public API.
   StreamSubscription? _ringingSub;
   int? _displayedRingId;
   bool _wasRinging = false;
@@ -45,57 +65,89 @@ class _SiriusCompanionAppState extends ConsumerState<SiriusCompanionApp> {
   }
 
   Future<void> _initApp() async {
-    await _db.customSelect('SELECT 1').get();
-    // Point the API at the PC saved during QR pairing (if any).
-    await ApiClient.instance.restoreSavedBaseUrl();
-    await initWorkManager();
-
+    // 1. Notifications — lightweight, needed before any UI.
     const androidSettings = AndroidInitializationSettings('@drawable/ic_stat_face');
     const initSettings = InitializationSettings(android: androidSettings);
     await _notificationPlugin.initialize(
       settings: initSettings,
       onDidReceiveNotificationResponse: _handleNotificationResponse,
+      onDidReceiveBackgroundNotificationResponse: onNotificationBackgroundResponse,
     );
 
-    // Task alarms: channels, permissions, native engine (looping sound).
-    await TaskAlarmService.initialize(_notificationPlugin);
-    // Re-arm alarms for pending tasks that lost theirs (reboot / old failure).
-    await TaskAlarmService.rescheduleMissingAlarms();
-    // Open the ringing screen whenever a native alarm fires.
     _listenForRingingAlarms();
 
-    // Launched by a full-screen task alarm (possibly over the lockscreen)?
+    // 2. Check if launched from notification.
     try {
       final launch = await _notificationPlugin.getNotificationAppLaunchDetails();
       if (launch?.didNotificationLaunchApp ?? false) {
-        final payload = launch?.notificationResponse?.payload;
+        final response = launch?.notificationResponse;
+        final payload = response?.payload;
         if (payload != null && payload.startsWith('task|')) {
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            _openAlarmFromPayload(payload);
-          });
+          if (response?.actionId != null) {
+            // Launched by a notification action button (e.g. "Concluir"):
+            // run the action instead of opening the ringing screen.
+            _handleNotificationResponse(response!);
+          } else {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              _openAlarmFromPayload(payload);
+            });
+          }
         }
       }
     } catch (_) {}
 
-    ForegroundSyncService.instance.start();
+    // 3. DB + pairing (quick, but still yield the frame).
+    await _db.customSelect('SELECT 1').get();
+    final paired = await DeviceIdentity.isPaired();
+    ref.read(isPairedProvider.notifier).state = paired;
 
-    await ref.read(geofenceManagerProvider).initialize();
+    // 4. Heavy / non-essential work — fire and forget, never block UI.
+    _initBackground();
   }
 
-  /// Opens the ring screen whenever a native alarm starts ringing — including
-  /// cold starts triggered by the full-screen intent over the lockscreen.
+  /// Background init that must NOT block the first frame.
+  Future<void> _initBackground() async {
+    try {
+      await ApiClient.instance.restoreSavedBaseUrl();
+    } catch (_) {}
+
+    try {
+      await initWorkManager();
+    } catch (_) {}
+
+    try {
+      await TaskAlarmService.initialize(_notificationPlugin);
+      await TaskAlarmService.rescheduleMissingAlarms();
+    } catch (_) {}
+
+    ForegroundSyncService.instance.start();
+
+    try {
+      await ref.read(geofenceManagerProvider).initialize();
+    } catch (_) {}
+
+    try {
+      await BackgroundHealthMonitor.restartIfDead();
+    } catch (_) {}
+  }
+
   void _listenForRingingAlarms() {
     _ringingSub = Alarm.ringing.listen((ringing) {
       final alarms = [...ringing.alarms]
         ..sort((a, b) => a.dateTime.compareTo(b.dateTime));
-      final hasRinging = alarms.isNotEmpty;
-      // Attention buzz on the empty → ringing transition (the stream also
-      // re-emits when an alarm stops, which must not vibrate again).
+      // The internal daily 00:00 alarm is a silent verification pass, not a
+      // user-facing task ring — no attention vibration for it.
+      final taskAlarms =
+          alarms.where((a) => a.id != _dailyDateRangeAlarmId).toList();
+      final hasRinging = taskAlarms.isNotEmpty;
       if (hasRinging && !_wasRinging) {
         TaskAlarmService.fireAttentionPattern();
       }
       _wasRinging = hasRinging;
-      for (final alarm in alarms) {
+      if (alarms.any((a) => a.id == _dailyDateRangeAlarmId)) {
+        TaskAlarmService.onDailyDateRangeAlarm();
+      }
+      for (final alarm in taskAlarms) {
         if (_displayedRingId == alarm.id) continue;
         _openRingScreen(alarm);
         break;
@@ -105,7 +157,6 @@ class _SiriusCompanionAppState extends ConsumerState<SiriusCompanionApp> {
 
   Future<void> _openRingScreen(AlarmSettings alarm) async {
     _displayedRingId = alarm.id;
-    // Cold start: wait for the Navigator to exist before pushing.
     for (var i = 0; i < 60 && _navigatorKey.currentState == null; i++) {
       await WidgetsBinding.instance.endOfFrame;
     }
@@ -153,7 +204,6 @@ class _SiriusCompanionAppState extends ConsumerState<SiriusCompanionApp> {
       return;
     }
 
-    // Task alarm actions / tap.
     TaskAlarmService.handleNotificationResponse(response).then((openParts) {
       if (openParts != null) {
         _navigatorKey.currentState?.push(
@@ -246,27 +296,18 @@ class _SiriusCompanionAppState extends ConsumerState<SiriusCompanionApp> {
   }
 }
 
+/// Reactive auth gate — watches [isPairedProvider] so that unpairing
+/// immediately navigates back to the pairing screen.
 class _AuthGate extends ConsumerWidget {
   const _AuthGate();
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    return FutureBuilder<bool>(
-      future: DeviceIdentity.isPaired(),
-      builder: (context, snapshot) {
-        if (!snapshot.hasData) {
-          return const Scaffold(
-            backgroundColor: Color(0xFF07090F),
-            body: Center(
-              child: CircularProgressIndicator(color: Color(0xFF6366F1)),
-            ),
-          );
-        }
-        if (snapshot.data == true) {
-          return const HomeScreen();
-        }
-        return const PairingScreen();
-      },
-    );
+    final isPaired = ref.watch(isPairedProvider);
+
+    if (isPaired) {
+      return const HomeScreen();
+    }
+    return const PairingScreen();
   }
 }

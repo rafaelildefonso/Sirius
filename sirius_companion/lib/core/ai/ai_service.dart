@@ -1,9 +1,4 @@
-import 'dart:convert';
-import 'package:uuid/uuid.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import '../config/constants.dart';
-import '../storage/database/database.dart';
-import '../storage/repositories/sync_repository.dart';
 import 'gemma_engine.dart';
 
 enum GemmaStatus {
@@ -11,6 +6,7 @@ enum GemmaStatus {
   available,
   unavailable,
   downloading,
+  initializing,
   ready,
   error,
 }
@@ -30,6 +26,8 @@ class GemmaStatusNotifier extends StateNotifier<GemmaStatus> {
         return 'Hardware incompatível';
       case GemmaStatus.downloading:
         return 'Baixando modelo...';
+      case GemmaStatus.initializing:
+        return 'Inicializando modelo...';
       case GemmaStatus.ready:
         return 'Pronto';
       case GemmaStatus.error:
@@ -40,11 +38,13 @@ class GemmaStatusNotifier extends StateNotifier<GemmaStatus> {
 
 final gemmaStatusProvider =
     StateNotifierProvider<GemmaStatusNotifier, GemmaStatus>((ref) {
-  return GemmaStatusNotifier();
-});
+      return GemmaStatusNotifier();
+    });
 
 class AiService {
-  bool _initialized = false;
+  static bool _initialized = false;
+  static String? _lastError;
+  static Future<bool>? _initializing;
 
   Future<bool> checkHardware() async {
     try {
@@ -54,27 +54,45 @@ class AiService {
     }
   }
 
-  Future<bool> initialize() async {
+  Future<bool> initialize({void Function(double, String)? onProgress}) async {
+    if (_initialized) return true;
+    if (_initializing != null) return _initializing!;
+    _initializing = _initialize(onProgress);
     try {
-      final result = await GemmaEngine.initialize();
+      return await _initializing!;
+    } finally {
+      _initializing = null;
+    }
+  }
+
+  Future<bool> _initialize(void Function(double, String)? onProgress) async {
+    try {
+      final result = await GemmaEngine.initialize(
+        showProgress: onProgress != null,
+        onProgress: onProgress,
+      );
       _initialized = result;
+      _lastError = null;
       return result;
-    } on GemmaException {
+    } on GemmaException catch (e) {
       _initialized = false;
+      _lastError = e.message;
       return false;
     }
   }
+
+  String? get lastError => _lastError;
 
   Future<String?> processText(String text) async {
     if (!_initialized) {
       final hardwareOk = await checkHardware();
       if (!hardwareOk) {
-        await _fallback(text);
+        _lastError = 'Hardware incompatível para IA local';
         return null;
       }
       final inited = await initialize();
       if (!inited) {
-        await _fallback(text);
+        _lastError = 'Falha ao inicializar modelo local: $_lastError';
         return null;
       }
     }
@@ -83,27 +101,15 @@ class AiService {
       final prompt = _buildPrompt(text);
       final response = await GemmaEngine.generate(prompt);
       if (response.trim().isEmpty) {
-        await _fallback(text);
+        _lastError = 'Resposta vazia do modelo local';
         return null;
       }
+      _lastError = null;
       return response;
-    } on GemmaException {
-      await _fallback(text);
+    } on GemmaException catch (e) {
+      _lastError = 'Erro na geração: ${e.message}';
       return null;
     }
-  }
-
-  Future<void> _fallback(String text) async {
-    final db = AppDatabase();
-    final repo = SyncRepository(db);
-    await repo.enqueue(
-      type: SyncItemType.gemmaFallback.value,
-      payloadJson: jsonEncode({
-        'text': text,
-        'timestamp': DateTime.now().toIso8601String(),
-      }),
-      clientId: const Uuid().v4(),
-    );
   }
 
   String _buildPrompt(String text) {
@@ -119,5 +125,7 @@ class AiService {
   Future<void> shutdown() async {
     await GemmaEngine.shutdown();
     _initialized = false;
+    _lastError = null;
+    _initializing = null;
   }
 }
