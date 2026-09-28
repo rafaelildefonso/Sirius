@@ -127,6 +127,16 @@ obsidian_tasks_list
   Lists the user's pending Obsidian tasks. No parameters.
   Use when the user asks about tasks/afazeres written in their Obsidian vault.
 
+orchestrate_pane
+  action: "create_pane" | "list_panes" | "list_panels" | "screen_panel" | "doctor" (required)
+  repo: string (optional, for create_pane, default: "active")
+  name: string (optional, for create_pane)
+  agent: string (optional, for create_pane, e.g. "claude", "codex", "aider")
+  prompt: string (optional, for create_pane, the task for the agent)
+  pane_id: string (optional, for list_panels)
+  panel_id: string (optional, for screen_panel)
+  Use when the user asks to create worktrees, manage panes, or check agent status in the Pane Desktop.
+
 EXAMPLES:
 
 Goal: "o que eu tenho para hoje?"

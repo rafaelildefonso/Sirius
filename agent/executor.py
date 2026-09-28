@@ -239,6 +239,10 @@ def _call_tool(tool: str, parameters: dict, speak: Callable | None) -> str:
         from actions.workspaces import workspaces
         return workspaces(parameters=parameters, player=None) or "Done."
 
+    elif tool == "orchestrate_pane":
+        from actions.orchestrate_pane import orchestrate_pane
+        return orchestrate_pane(parameters=parameters, player=None, speak=speak) or "Done."
+
     else:
         print(f"[Executor] [WARN] Unknown tool '{tool}' — falling back to generated_code")
         return _run_generated_code(f"Accomplish this task: {parameters}", speak=speak)
