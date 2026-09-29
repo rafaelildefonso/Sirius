@@ -4,7 +4,9 @@ Build script for SIRIUS backend (headless, no PyQt6).
 Produces dist/sirius-backend/sirius-backend.exe
 
 Usage:
-    python build_backend.py
+    python build_backend.py --cached --profile=dev
+    python build_backend.py --cached --profile=release
+    python build_backend.py --clean --force
 
 Output:
     dist/sirius-backend/sirius-backend.exe  (PyInstaller bundle)
@@ -13,17 +15,37 @@ Output:
 
 import json
 import os
+import platform
+import re
 import shutil
 import subprocess
 import sys
 import time
+from importlib import metadata as importlib_metadata
 from pathlib import Path
+from typing import Iterable
 
 BASE_DIR = Path(__file__).resolve().parent
 TAURI_BINARIES = BASE_DIR / "sirius-ui" / "src-tauri" / "binaries"
+BUILD_DIR = BASE_DIR / "build"
+DIST_DIR = BASE_DIR / "dist"
+BUILD_STATE_FILE = BASE_DIR / ".backend_build_state.json"
+CACHE_SCHEMA = 2
+PUBLIC_DATA_DIRS = ("assets",)
+SOURCE_CODE_DIRS = (
+    "core",
+    "actions",
+    "agent",
+    "dashboard",
+    "persistence",
+    "plugins",
+    "orchestrator",
+    "config",
+    "memory",
+)
 
 
-def _check_pyinstaller():
+def _check_pyinstaller() -> bool:
     try:
         import PyInstaller  # noqa: F401
         return True
@@ -31,16 +53,30 @@ def _check_pyinstaller():
         return False
 
 
-def _install_pyinstaller():
-    print("[*] Installing PyInstaller...")
-    subprocess.run(
-        [sys.executable, "-m", "pip", "install", "pyinstaller"],
-        check=True,
+def _parse_args() -> tuple[bool, bool, bool, bool, str]:
+    """Parse the small, stable command-line contract used by Tauri and CI."""
+    allowed = {"--cached", "--force", "--clean", "--no-lint"}
+    unknown = [arg for arg in sys.argv[1:] if not arg.startswith("--profile=") and arg not in allowed]
+    if unknown:
+        raise SystemExit(f"Unknown build argument(s): {', '.join(unknown)}")
+
+    profile = "dev"
+    for arg in sys.argv[1:]:
+        if arg.startswith("--profile="):
+            profile = arg.split("=", 1)[1].strip().lower()
+    if profile not in {"dev", "release"}:
+        raise SystemExit("--profile must be 'dev' or 'release'")
+
+    return (
+        "--cached" in sys.argv,
+        "--force" in sys.argv,
+        "--clean" in sys.argv,
+        "--no-lint" in sys.argv,
+        profile,
     )
-    print("[OK] PyInstaller installed\n")
 
 
-def _ensure_config_files():
+def _ensure_config_files() -> None:
     config_dir = BASE_DIR / "config"
     config_dir.mkdir(parents=True, exist_ok=True)
 
@@ -86,38 +122,34 @@ def _ensure_config_files():
         }, indent=2), encoding="utf-8")
 
 
-def _copy_data_to_bundle_root(dist_dir: Path):
-    print("[*] Copying data files to bundle root...")
-    for rel_dir in ["config", "core", "memory"]:
+def _copy_data_to_bundle_root(dist_dir: Path) -> None:
+    """Copy only public runtime data when this helper is used externally.
+
+    User configuration, credentials, databases and certificates must never be
+    copied into a distributable backend bundle.
+    """
+    print("[*] Copying public data files to bundle root...")
+    for rel_dir in PUBLIC_DATA_DIRS:
         src = BASE_DIR / rel_dir
-        dst = dist_dir / rel_dir
-        if src.is_dir():
-            dst.mkdir(parents=True, exist_ok=True)
-            for item in src.iterdir():
-                if item.suffix in (".json", ".txt", ".png") and not item.name.startswith("__"):
-                    shutil.copy2(item, dst / item.name)
-                    print(f"    {rel_dir}/{item.name}")
-    for rel_file in ["ws_server.py"]:
-        src = BASE_DIR / rel_file
-        if src.exists():
-            shutil.copy2(src, dist_dir / rel_file)
-            print(f"    {rel_file}")
-    for rel_dir in ["dashboard"]:
-        src = BASE_DIR / rel_dir
-        dst = dist_dir / rel_dir
-        if src.is_dir():
-            dst.mkdir(parents=True, exist_ok=True)
-            for item in src.rglob("*"):
-                if item.is_file() and not item.name.startswith("__"):
-                    rel = item.relative_to(src)
-                    (dst / rel).parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(item, dst / rel)
-                    print(f"    {rel_dir}/{rel}")
-    for fname in (".env",):
-        src = BASE_DIR / fname
-        if src.exists():
-            shutil.copy2(src, dist_dir / fname)
-            print(f"    {fname}")
+        if not src.is_dir():
+            continue
+        for item in src.rglob("*"):
+            if item.is_file() and not item.name.startswith("__"):
+                rel = item.relative_to(BASE_DIR)
+                target = dist_dir / rel
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(item, target)
+                print(f"    {rel}")
+
+    static_dir = BASE_DIR / "dashboard" / "static"
+    if static_dir.is_dir():
+        for item in static_dir.rglob("*"):
+            if item.is_file() and not item.name.startswith("__"):
+                rel = item.relative_to(BASE_DIR)
+                target = dist_dir / rel
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(item, target)
+                print(f"    {rel}")
 
 
 def _get_target_triple() -> str:
@@ -134,64 +166,153 @@ def _get_target_triple() -> str:
         return "x86_64-pc-windows-msvc"
 
 
-def _clean_build_artifacts():
-    for d in ["build", "dist"]:
-        p = BASE_DIR / d
-        if not p.exists():
+def _remove_path(path: Path) -> None:
+    """Remove one exact build path, preserving unrelated workspace data."""
+    if not path.exists():
+        return
+    try:
+        if path.is_dir():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+    except OSError as exc:
+        raise SystemExit(f"[ERRO] Could not remove {path}: {exc}") from exc
+
+
+def _clean_build_artifacts() -> None:
+    """Explicitly remove all PyInstaller output and its incremental work cache."""
+    print("[*] Removing build/ and dist/ directories (--clean)...")
+    _remove_path(BUILD_DIR)
+    _remove_path(DIST_DIR)
+
+
+def _iter_files(paths: Iterable[Path], suffixes: set[str] | None = None) -> Iterable[Path]:
+    """Yield stable, relevant files while excluding runtime/generated state."""
+    excluded_names = {".env", ".db_key"}
+    excluded_suffixes = {".db", ".key", ".crt", ".pyc", ".pyo"}
+    for path in paths:
+        if path.is_file():
+            candidates = [path]
+        elif path.is_dir():
+            candidates = path.rglob("*")
+        else:
             continue
-        print(f"[*] Removing stale {d}/ directory...")
-        for attempt in range(5):
-            subprocess.run(
-                ["powershell", "-NoProfile", "-Command",
-                 f"Remove-Item -LiteralPath '{p}' -Recurse -Force -ErrorAction SilentlyContinue"],
-                capture_output=True,
-            )
-            if not p.exists():
-                break
-            if attempt < 4:
-                time.sleep(2 ** attempt)
-        if p.exists():
-            print(f"[ERRO] Could not remove {d}/ after 5 attempts.")
-            print(f"    Manually delete: {p}")
-            sys.exit(1)
+        for candidate in candidates:
+            if not candidate.is_file():
+                continue
+            if any(part in {"__pycache__", ".git", "node_modules", "target"} for part in candidate.parts):
+                continue
+            if candidate.name in excluded_names or candidate.suffix.lower() in excluded_suffixes:
+                continue
+            if suffixes is not None and candidate.suffix.lower() not in suffixes:
+                continue
+            yield candidate
 
 
-def _compute_backend_hash() -> str:
+def _requirements_packages() -> list[str]:
+    """Return normalized package names declared by requirements.txt."""
+    packages: list[str] = []
+    requirements = BASE_DIR / "requirements.txt"
+    if not requirements.exists():
+        return packages
+    for line in requirements.read_text(encoding="utf-8").splitlines():
+        line = line.split("#", 1)[0].strip()
+        if not line or line.startswith(("-", "http:", "https:")):
+            continue
+        match = re.match(r"([A-Za-z0-9_.-]+)", line)
+        if match:
+            packages.append(match.group(1).lower().replace("_", "-"))
+    return sorted(set(packages))
+
+
+def _installed_dependency_versions() -> dict[str, str]:
+    """Capture versions that can change PyInstaller's collected graph."""
+    names = {"pyinstaller", "ruff", *_requirements_packages()}
+    versions: dict[str, str] = {}
+    for name in sorted(names):
+        try:
+            versions[name] = importlib_metadata.version(name)
+        except importlib_metadata.PackageNotFoundError:
+            versions[name] = "<missing>"
+    return versions
+
+
+def _environment_fingerprint(profile: str) -> dict[str, object]:
+    """Return build-environment values that affect the generated executable."""
+    return {
+        "python": platform.python_version(),
+        "python_executable": str(Path(sys.executable).resolve()),
+        "platform": platform.platform(),
+        "target": _get_target_triple(),
+        "profile": profile,
+        "dependencies": _installed_dependency_versions(),
+    }
+
+
+def _compute_backend_hash(profile: str) -> tuple[str, dict[str, object]]:
+    """Hash source, public data and toolchain state for safe cache reuse."""
     import hashlib
-    hasher = hashlib.sha256()
 
-    # Watch files
-    watch_paths = [
+    hasher = hashlib.sha256()
+    watch_paths: list[Path] = [
         BASE_DIR / "main.py",
         BASE_DIR / "sirius_backend_launcher.py",
         BASE_DIR / "ws_server.py",
         BASE_DIR / "sirius-backend.spec",
+        BASE_DIR / "build_backend.py",
         BASE_DIR / "requirements.txt",
+        BASE_DIR / "ruff.toml",
     ]
+    if (BASE_DIR / "requirements.lock").exists():
+        watch_paths.append(BASE_DIR / "requirements.lock")
 
-    # Watch directories recursively
-    for folder in ["core", "actions", "agent", "dashboard"]:
-        folder_path = BASE_DIR / folder
-        if folder_path.is_dir():
-            for root, _, files in os.walk(folder_path):
-                for file in sorted(files):
-                    if file.endswith((".py", ".txt")):
-                        watch_paths.append(Path(root) / file)
+    environment = _environment_fingerprint(profile)
+    hasher.update(f"cache-schema:{CACHE_SCHEMA}\n".encode("utf-8"))
+    hasher.update(json.dumps(environment, sort_keys=True).encode("utf-8"))
 
-    for path in sorted(watch_paths):
+    source_paths = [BASE_DIR / folder for folder in SOURCE_CODE_DIRS]
+    public_paths = [BASE_DIR / folder for folder in PUBLIC_DATA_DIRS]
+    public_paths.append(BASE_DIR / "dashboard" / "static")
+    tracked_files = list(_iter_files(watch_paths))
+    tracked_files.extend(_iter_files(source_paths, suffixes={".py"}))
+    tracked_files.extend(_iter_files(public_paths))
+
+    for path in sorted(set(tracked_files)):
         if path.exists():
             hasher.update(str(path.relative_to(BASE_DIR)).encode("utf-8"))
-            try:
-                with open(path, "rb") as f:
-                    while chunk := f.read(8192):
-                        hasher.update(chunk)
-            except Exception:
-                pass
+            with path.open("rb") as file:
+                while chunk := file.read(8192):
+                    hasher.update(chunk)
 
-    return hasher.hexdigest()
+    return hasher.hexdigest(), environment
 
 
-def _run_lint():
+def _read_build_state() -> dict[str, object]:
+    """Read cache metadata, returning an empty state for old/incomplete builds."""
+    try:
+        state = json.loads(BUILD_STATE_FILE.read_text(encoding="utf-8"))
+        return state if isinstance(state, dict) else {}
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return {}
+
+
+def _write_build_state(fingerprint: str, environment: dict[str, object]) -> None:
+    """Persist cache metadata only after the sidecar was copied successfully."""
+    state = {
+        "schema": CACHE_SCHEMA,
+        "fingerprint": fingerprint,
+        "environment": environment,
+        "sidecar": str((TAURI_BINARIES / f"sirius-backend-{_get_target_triple()}.exe").relative_to(BASE_DIR)),
+    }
+    BUILD_STATE_FILE.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def _workpath_is_reusable(previous_state: dict[str, object], environment: dict[str, object]) -> bool:
+    """Decide whether PyInstaller's incremental workpath is compatible."""
+    return previous_state.get("schema") == CACHE_SCHEMA and previous_state.get("environment") == environment
+
+
+def _run_lint() -> None:
     print("[*] Running Ruff linter...")
     try:
         import ruff  # noqa: F401
@@ -213,43 +334,54 @@ def _run_lint():
     print("[OK] Lint passed\n")
 
 
-def main():
-    use_cache = "--cached" in sys.argv
-    skip_lint = "--no-lint" in sys.argv
+def main() -> None:
+    use_cache, force, clean, skip_lint, profile = _parse_args()
     triple = _get_target_triple()
     dst_exe = TAURI_BINARIES / f"sirius-backend-{triple}.exe"
 
-    hash_file = BASE_DIR / ".backend_build_hash"
-    current_hash = _compute_backend_hash()
+    if not _check_pyinstaller():
+        raise SystemExit(
+            "[ERRO] PyInstaller is not installed in the selected Python environment. "
+            "Run 'python setup.py' once, then retry the build."
+        )
+    print("[OK] PyInstaller already installed\n")
 
-    if use_cache and hash_file.exists() and dst_exe.exists():
-        try:
-            saved_hash = hash_file.read_text(encoding="utf-8").strip()
-            if saved_hash == current_hash:
-                print("=" * 60)
-                print("  SIRIUS Backend — Build Script (Cached)")
-                print("  Backend source unchanged. Skipping PyInstaller build.")
-                print(f"  Sidecar:    {dst_exe}")
-                print("=" * 60)
-                return
-        except Exception:
-            pass
+    current_hash, environment = _compute_backend_hash(profile)
+    previous_state = _read_build_state()
+
+    if clean:
+        _clean_build_artifacts()
+        previous_state = {}
+
+    if (
+        use_cache
+        and not force
+        and dst_exe.exists()
+        and previous_state.get("schema") == CACHE_SCHEMA
+        and previous_state.get("fingerprint") == current_hash
+    ):
+        print("=" * 60)
+        print("  SIRIUS Backend — Build Script (Cached)")
+        print("  Backend source and build environment unchanged.")
+        print(f"  Sidecar:    {dst_exe}")
+        print("=" * 60)
+        return
 
     print("=" * 60)
     print("  SIRIUS Backend — Build Script")
     print("  Generates headless .exe for Tauri sidecar")
     print("=" * 60)
 
-    if not _check_pyinstaller():
-        _install_pyinstaller()
-    else:
-        print("[OK] PyInstaller already installed\n")
-
     if not skip_lint:
         _run_lint()
 
     _ensure_config_files()
-    _clean_build_artifacts()
+
+    # A missing state file means the workpath may have been generated by the
+    # previous cache contract. Reusing it could leave stale analysis metadata.
+    # Once this build succeeds, subsequent compatible builds reuse it.
+    if not _workpath_is_reusable(previous_state, environment):
+        _remove_path(BUILD_DIR / "sirius-backend")
 
     spec_file = BASE_DIR / "sirius-backend.spec"
     if not spec_file.exists():
@@ -259,6 +391,7 @@ def main():
     print("[*] Building sirius-backend.exe...\n")
     env = os.environ.copy()
     env["SIRIUS_BUILD_ROOT"] = str(BASE_DIR)
+    env["SIRIUS_BUILD_PROFILE"] = profile
     result = subprocess.run(
         [sys.executable, "-m", "PyInstaller", "-y", str(spec_file)],
         cwd=BASE_DIR,
@@ -286,7 +419,6 @@ def main():
          f"Get-Process | Where-Object {{ $_.Path -like '*{dst_exe.name}*' -or $_.Modules.FileName -like '*{dst_exe.name}*' }} | Stop-Process -Force"],
         capture_output=True
     )
-    import time
     time.sleep(1)
 
     for attempt in range(10):
@@ -307,9 +439,11 @@ def main():
         sys.exit(1)
 
     try:
-        hash_file.write_text(current_hash, encoding="utf-8")
-    except Exception as e:
-        print(f"[!] Warning: Could not save build hash: {e}")
+        _write_build_state(current_hash, environment)
+        # Keep the legacy marker for tools that only inspect its existence.
+        (BASE_DIR / ".backend_build_hash").write_text(current_hash, encoding="utf-8")
+    except OSError as exc:
+        print(f"[!] Warning: Could not save build state: {exc}")
 
     size_mb = src_exe.stat().st_size / (1024 * 1024)
     print("=" * 60)

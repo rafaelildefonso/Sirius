@@ -1,0 +1,14 @@
+{
+  "os_system": "windows",
+  "assistant_mode": "gemini",
+  "stt_engine": "whisper",
+  "stt_language": "auto",
+  "stt_model": "medium",
+  "llm_provider": "gemini",
+  "llm_url": "http://localhost:11434",
+  "llm_model": "qwen2.5:7b",
+  "tts_engine": "kokoro",
+  "elevenlabs_api_key": "",
+  "tts_voice": "af_heart",
+  "tts_speed": "1.2"
+}

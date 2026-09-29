@@ -19,10 +19,11 @@ _fw_datas = collect_data_files('faster_whisper')
 
 block_cipher = None
 
-# Collect runtime data files (configs, memory, .env, dashboard static assets)
+# Collect public runtime data only. User configuration, credentials, databases
+# and certificates live in SIRIUS_DATA_DIR and must never enter the bundle.
 def _collect_runtime_data():
     datas = []
-    for dirname in ("config", "memory", "assets"):
+    for dirname in ("assets",):
         src = BASE_DIR / dirname
         if src.is_dir():
             for f in src.rglob("*"):
@@ -35,9 +36,6 @@ def _collect_runtime_data():
             if f.is_file() and not f.name.startswith("__"):
                 dst = str(f.relative_to(BASE_DIR))
                 datas.append((str(f), dst))
-    fp = BASE_DIR / ".env"
-    if fp.exists():
-        datas.append((str(fp), ".env"))
     return datas
 
 a = Analysis(
@@ -184,7 +182,9 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    # UPX is slower and can trigger antivirus rescans during development.
+    # Release builds keep compression; dev builds prioritize iteration speed.
+    upx=os.environ.get('SIRIUS_BUILD_PROFILE', 'dev').lower() == 'release',
     upx_exclude=[],
     runtime_tmpdir=None,
     console=False,

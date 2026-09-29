@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "com.rafaelildefonso.sirius",
   "build": {
-    "beforeDevCommand": "..\\build_backend.cmd && npm run dev",
+    "beforeDevCommand": "..\\build_backend.cmd --profile=dev && npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "..\\build_backend.cmd && npm run build",
+    "beforeBuildCommand": "..\\build_backend.cmd --profile=release && npm run build",
     "frontendDist": "../dist"
   },
   "app": {

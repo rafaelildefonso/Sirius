@@ -17,10 +17,12 @@ It's not just an assistant — it's an extension of your digital life.
 
 ```bash
 # app windows
-python build_backend.py;cd sirius-ui;npx tauri build
+python setup.py
+cd sirius-ui
+npx tauri build
 
-# app mobile
-cd sirius_companion; flutter build apk --debug
+# app mobile (reuses Dart/Gradle caches and only runs pub get when needed)
+.\build_companion.ps1 -Mode debug
 ```
 
 ---
@@ -225,25 +227,112 @@ python main.py
 
 # Terminal 2: Tauri frontend (modo dev)
 cd sirius-ui
-npm install
+# Execute npm ci apenas na primeira configuração ou após alterar package-lock.json
 npx tauri dev
 ```
 
 ### Building for Production
 
 ```bash
-# 1. Build the Python sidecar (PyInstaller)
-pip install pyinstaller
-python build_backend.py
+# 1. Prepare the Python environment once (reuses the lock on later runs)
+python setup.py
 
-# 2. Build the Tauri installer
+# 2. Install frontend dependencies only on a new environment or lock change
 cd sirius-ui
-npm install
+npm ci
+cd ..
+
+# 3. Build the Python sidecar (cached unless source/toolchain changed)
+python build_backend.py --cached --profile=release
+
+# 4. Build the Tauri installer (frontend/Rust caches are reused)
+cd sirius-ui
 npx tauri build
+```
+
+Useful backend build modes:
+
+```powershell
+python build_backend.py --cached              # normal incremental build
+python build_backend.py --force               # rebuild, preserving PyInstaller work cache
+python build_backend.py --clean --force       # discard PyInstaller cache and rebuild
+python setup.py --check                       # verify environment without installing
 ```
 
 > The backend and frontend are **two separate processes**. The Tauri shell spawns `sirius-backend-x86_64-pc-windows-msvc.exe` as a sidecar and communicates via WebSocket on port 8765.
 > Both processes share the same **AppUserModelID** (`com.rafaelildefonso.sirius`), so Windows Task Manager groups them under "SIRIUS".
+
+## Builds, caches e invalidação
+
+Os scripts de build reutilizam dependências e artefatos incrementais. Não execute `clean` em builds normais.
+
+| Componente | Build normal | Saída |
+|---|---|---|
+| Instalador Windows | `cd sirius-ui; npx tauri build` | `sirius-ui/src-tauri/target/release/bundle/` |
+| Sidecar Python principal | Executado automaticamente pelo Tauri | `dist/sirius-backend.exe` e `sirius-ui/src-tauri/binaries/` |
+| Backend headless/PyInstaller | `python build_headless.py --cached` | `dist/sirius-headless/` |
+| Companion Android debug | `.\build_companion.ps1 -Mode debug` | `sirius_companion/build/app/outputs/flutter-apk/` |
+| Companion Android release | `.\build_companion.ps1 -Mode release` | `sirius_companion/build/app/outputs/flutter-apk/` |
+
+### Preparação inicial
+
+Execute uma vez por ambiente, ou quando o arquivo de dependências mudar:
+
+```powershell
+python setup.py
+cd sirius-ui
+npm ci
+cd ..
+```
+
+O `setup.py` usa `requirements.lock` e registra o ambiente instalado. Em execuções seguintes, não reinstala Python ou navegadores Playwright sem mudança no lockfile ou no interpretador.
+
+O Companion usa `build_companion.ps1`. Ele executa `flutter pub get` somente quando `pubspec.yaml`, `pubspec.lock`, a configuração Gradle ou a versão do Flutter mudam. O Gradle mantém daemon, cache e compilação incremental ativos.
+
+### Rebuilds forçados
+
+```powershell
+# Backend principal: recompila, preservando a análise incremental do PyInstaller
+python build_backend.py --force --profile=release
+
+# Backend principal: remove o cache incremental e recompila do zero
+python build_backend.py --clean --force --profile=release
+
+# Backend headless
+python build_headless.py --force
+python build_headless.py --clean --force
+
+# Companion Android
+.\build_companion.ps1 -Mode release -Clean
+```
+
+Use rebuild forçado quando trocar manualmente a versão do Python, PyInstaller, Flutter, Gradle ou Android SDK. Alterações em código, assets e lockfiles invalidam automaticamente somente o cache afetado. Configurações pessoais, banco, memória e `.env` não entram no bundle nem provocam rebuild.
+
+### Caches que devem ser preservados
+
+- `build/` do PyInstaller (workpath incremental). O `dist/` é uma saída substituível.
+- `sirius-ui/src-tauri/target/` do Rust/Tauri.
+- `sirius-ui/.cache/` do TypeScript.
+- `sirius_companion/.dart_tool/` e `sirius_companion/build/`.
+- Cache global do npm, Pub e Gradle.
+
+Não versionamos esses diretórios. Apague-os somente para investigar um problema de artefato obsoleto ou quando executar explicitamente um rebuild limpo.
+
+### Release Windows no GitHub Actions
+
+O workflow [`.github/workflows/build-windows.yml`](.github/workflows/build-windows.yml) pode ser executado manualmente ou por uma tag `v*`. Ele restaura caches separados para Python/Playwright/PyInstaller e Cargo/Tauri, instala dependências conforme os lockfiles e publica os instaladores em `sirius-ui/src-tauri/target/release/bundle/` como artefato da execução. O instalador final não é usado como cache compartilhado.
+
+### Diagnóstico rápido
+
+```powershell
+# Confirmar o Python usado pelo build
+python -c "import sys; print(sys.executable); print(sys.version)"
+
+# Verificar se o ambiente Python está sincronizado
+python setup.py --check
+```
+
+Se aparecer que o PyInstaller não está instalado, execute `python setup.py` antes do build. Se o Python da `venv` apontar para uma instalação removida, recrie a `venv` com Python 3.11+ e repita a preparação.
 
 ---
 
@@ -287,20 +376,21 @@ npx tauri build
 | **API Key** | Free Gemini API key |
 | **Node.js 20+** | Only for Tauri UI (optional) |
 | **Rust** | Only for Tauri build (optional) |
-| **PyInstaller** | Only for production bundle (`pip install pyinstaller`) |
+| **PyInstaller** | Installed by `python setup.py` for the reproducible release environment |
 | **sentence-transformers** | Optional — enables real RAG/vector embeddings (`pip install sentence-transformers`) |
 
 ### Installing Dependencies
 
 ```bash
-# Core runtime
-pip install -r requirements.txt
+# Core runtime and build tools (idempotent)
+python setup.py
 
 # Optional: semantic search with vector embeddings
 pip install sentence-transformers
 
 # Optional: Tauri frontend build
-npm install -g @tauri-apps/cli
+cd sirius-ui
+npm ci
 ```
 
 ## 📧 Integração Google (Calendar & Gmail)

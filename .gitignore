@@ -14,6 +14,9 @@ memory/long_term.json
 *.db-wal
 config/.db_key
 .backend_build_hash
+.backend_build_state.json
+.runtime_setup_state.json
+.headless_build_state.json
 
 # SSL certs (auto-gerados pelo dashboard FastAPI)
 config/certs/
@@ -59,3 +62,8 @@ sirius-ui/src-tauri/binaries/
 # Node
 sirius-ui/node_modules/
 sirius-ui/dist/
+sirius-ui/.cache/
+sirius_companion/.companion_build_state.json
+sirius_companion/.dart_tool/
+sirius_companion/build/
+sirius_companion/android/.gradle/

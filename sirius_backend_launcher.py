@@ -104,8 +104,9 @@ def _select_data_dir() -> Path:
 def _init_data_dir():
     """Set up persistent data directory (%LOCALAPPDATA%/SIRIUS) for configs and memory.
 
-    On first run, copies default configs from the PyInstaller bundle (sys._MEIPASS)
-    to the persistent location. Sets SIRIUS_DATA_DIR so config_loader.py picks it up.
+    On first run, copies sanitized defaults from the PyInstaller bundle
+    (assets/defaults) to the persistent location. User data is never replaced.
+    Sets SIRIUS_DATA_DIR so config_loader.py picks it up.
     """
     data_dir = _select_data_dir()
     os.environ["SIRIUS_DATA_DIR"] = str(data_dir)
@@ -122,41 +123,28 @@ def _init_data_dir():
         return
     bundle_dir = Path(bundle_dir)
 
-    def _needs_populate(d: Path) -> bool:
-        try:
-            if not d.exists():
-                return True
-            return not any(d.iterdir())
-        except OSError as e:
-            print(f"[LAUNCHER] Warning: cannot inspect {d} - {e}")
-            return False
-
+    defaults_root = bundle_dir / "assets" / "defaults"
     for subdir in ("config", "memory"):
-        src = bundle_dir / subdir
+        src = defaults_root / subdir
         dst = data_dir / subdir
-        if src.is_dir() and _needs_populate(dst):
-            dst.mkdir(parents=True, exist_ok=True)
-            for item in src.iterdir():
-                if item.is_file() and not item.name.startswith("__"):
-                    try:
-                        shutil.copy2(item, dst / item.name)
-                        print(f"[LAUNCHER] Created default {subdir}/{item.name}")
-                    except PermissionError as e:
-                        print(f"[LAUNCHER] Warning: could not copy {item.name} - {e}")
-                    except Exception as e:
-                        print(f"[LAUNCHER] Warning: error copying {item.name} - {e}")
-
-    env_src = bundle_dir / ".env"
-    env_dst = data_dir / ".env"
-    if env_src.exists() and not env_dst.exists():
-        try:
-            shutil.copy2(env_src, env_dst)
-            print("[LAUNCHER] Created default .env")
-        except PermissionError as e:
-            print(f"[LAUNCHER] Warning: could not copy .env - {e}. Creating empty .env instead.")
-            env_dst.write_text("", encoding="utf-8")
-        except Exception as e:
-            print(f"[LAUNCHER] Warning: error copying .env - {e}")
+        if not src.is_dir():
+            continue
+        dst.mkdir(parents=True, exist_ok=True)
+        for item in src.iterdir():
+            if not item.is_file() or item.name.startswith("__"):
+                continue
+            target = dst / item.name
+            # Never overwrite configuration, credentials or memory created by
+            # an earlier installation or by the user.
+            if target.exists():
+                continue
+            try:
+                shutil.copy2(item, target)
+                print(f"[LAUNCHER] Created default {subdir}/{item.name}")
+            except PermissionError as e:
+                print(f"[LAUNCHER] Warning: could not copy {item.name} - {e}")
+            except OSError as e:
+                print(f"[LAUNCHER] Warning: error copying {item.name} - {e}")
 
 
 def _init_database():

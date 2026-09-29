@@ -5,20 +5,23 @@ set "SIRIUS_ROOT=%~dp0"
 
 rem Prefer the project's virtual environment, then standard Windows Python launchers.
 if exist "%SIRIUS_ROOT%venv\Scripts\python.exe" (
-    "%SIRIUS_ROOT%venv\Scripts\python.exe" "%SIRIUS_ROOT%build_backend.py" --cached
-    if not errorlevel 1 exit /b 0
+    "%SIRIUS_ROOT%venv\Scripts\python.exe" -c "import sys" >nul 2>nul
+    if not errorlevel 1 (
+        "%SIRIUS_ROOT%venv\Scripts\python.exe" "%SIRIUS_ROOT%build_backend.py" --cached %*
+        if not errorlevel 1 exit /b 0
+    )
     echo [SIRIUS] The project's Python environment could not be started. Trying another Python installation...
 )
 
 where py >nul 2>nul
 if not errorlevel 1 (
-    py -3 "%SIRIUS_ROOT%build_backend.py" --cached
+    py -3 "%SIRIUS_ROOT%build_backend.py" --cached %*
     if not errorlevel 1 exit /b 0
 )
 
 where python >nul 2>nul
 if not errorlevel 1 (
-    python "%SIRIUS_ROOT%build_backend.py" --cached
+    python "%SIRIUS_ROOT%build_backend.py" --cached %*
     if not errorlevel 1 exit /b 0
 )
 

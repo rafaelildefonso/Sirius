@@ -22,7 +22,8 @@ npx tauri dev
 ```
 
 > Para **build de produção**, execute `npx tauri build` dentro de `sirius-ui/`.
-> O backend do Tauri é compilado separadamente com `python build_backend.py`.
+> O backend usa cache incremental; para forçar uma recompilação, execute
+> `python build_backend.py --force` antes do build.
 
 O servidor do dashboard será iniciado na porta **8000**. Deixe os terminais abertos.
 
@@ -42,8 +43,7 @@ O servidor do dashboard será iniciado na porta **8000**. Deixe os terminais abe
 ### Gerar o APK
 
 ```bash
-cd sirius_companion
-flutter build apk --debug
+.\build_companion.ps1 -Mode debug
 ```
 
 ### Instalar
@@ -53,7 +53,7 @@ flutter build apk --debug
 flutter install
 
 # Opção 2 — Manual
-# Copie build/app/outputs/flutter-apk/app-debug.apk para o celular
+# Copie sirius_companion/build/app/outputs/flutter-apk/app-debug.apk para o celular
 # Abra o arquivo no celular e instale
 ```
 

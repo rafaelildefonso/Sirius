@@ -18,17 +18,17 @@ Funciona como extensão do seu PC: coleta contexto (localização), permite envi
 ### 1. Gerar o APK
 
 ```bash
-# Navegue até a pasta do app
-cd sirius_companion
-
-# Gerar APK de debug
-flutter build apk --debug
+# Na raiz do repositório, gerar APK de debug usando o cache de dependências
+.\build_companion.ps1 -Mode debug
 
 # Ou APK de release (precisa de keystore configurado)
-flutter build apk --release
+.\build_companion.ps1 -Mode release
+
+# Recriar os artefatos Flutter quando necessário
+.\build_companion.ps1 -Mode release -Clean
 ```
 
-O APK estará em `build/app/outputs/flutter-apk/app-debug.apk` (ou `app-release.apk`).
+O APK estará em `sirius_companion/build/app/outputs/flutter-apk/app-debug.apk` (ou `app-release.apk`).
 
 ### 2. Instalar no celular
 
