@@ -8,6 +8,7 @@ import '../../../../core/storage/models/sync_item.dart' as sync_model;
 import '../../../../core/storage/repositories/note_repository.dart';
 import '../../../../core/device_identity.dart';
 import '../../../../core/storage/database/database.dart';
+import '../../../../core/storage/cross_isolate_refresh.dart';
 import '../../../../core/ai/ai_service.dart';
 import '../../../../core/ai/gemma_engine.dart';
 import '../../../../core/ai/hf_auth_webview.dart';
@@ -30,25 +31,21 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     with WidgetsBindingObserver {
   int _taskTick = 0;
   AppLifecycleListener? _lifecycleListener;
-  Timer? _taskRefreshTimer;
 
   @override
   void initState() {
     super.initState();
     _lifecycleListener = AppLifecycleListener(
       onResume: () async {
+        // Notification actions / WorkManager tasks wrote the DB from another
+        // isolate while we were paused — force a re-read.
+        CrossIsolateRefresh.refreshNow();
+        unawaited(TaskAlarmService.ensureTodayNotificationsActive());
         await ref.read(homeControllerProvider.notifier).loadStatus();
         await ref.read(homeControllerProvider.notifier).checkConnectivity();
         _refreshTasks();
       },
     );
-    // SQLite writes made by WorkManager/foreground background services can
-    // happen in another isolate, so Drift's stream is not always notified in
-    // this UI isolate. Recreate the query periodically while this screen is
-    // visible so synced tasks appear without closing and reopening the app.
-    _taskRefreshTimer = Timer.periodic(const Duration(seconds: 10), (_) {
-      if (mounted) _refreshTasks();
-    });
     WidgetsBinding.instance.addPostFrameCallback((_) {
       ref.read(homeControllerProvider.notifier).loadStatus();
       ref.read(homeControllerProvider.notifier).checkConnectivity();
@@ -57,7 +54,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
 
   @override
   void dispose() {
-    _taskRefreshTimer?.cancel();
     _lifecycleListener?.dispose();
     super.dispose();
   }
@@ -2292,7 +2288,7 @@ class _SettingsTile extends StatelessWidget {
 //
 // Moved to features/tasks/presentation/create_task_screen.dart
 
-class _UpcomingTasksSection extends StatelessWidget {
+class _UpcomingTasksSection extends StatefulWidget {
   final int tick;
   final VoidCallback onChanged;
   final void Function(ScheduledTask task) onEdit;
@@ -2302,6 +2298,32 @@ class _UpcomingTasksSection extends StatelessWidget {
     required this.onChanged,
     required this.onEdit,
   });
+
+  @override
+  State<_UpcomingTasksSection> createState() => _UpcomingTasksSectionState();
+}
+
+class _UpcomingTasksSectionState extends State<_UpcomingTasksSection> {
+  // A stable stream avoids resubscribing (and re-querying) on every parent
+  // rebuild. The drift watch emits whenever the tasks table changes, including
+  // writes from other isolates (cross_isolate_refresh marker).
+  late Stream<List<ScheduledTask>> _stream;
+
+  @override
+  void initState() {
+    super.initState();
+    _stream = TaskAlarmService.watchPendingTasks();
+  }
+
+  @override
+  void didUpdateWidget(covariant _UpcomingTasksSection oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.tick != widget.tick) {
+      // Explicit refresh requested (e.g. right after a manual sync pulled
+      // new rows) — recreate the query stream.
+      _stream = TaskAlarmService.watchPendingTasks();
+    }
+  }
 
   String _formatDate(DateTime d) {
     final now = DateTime.now();
@@ -2337,8 +2359,7 @@ class _UpcomingTasksSection extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<List<ScheduledTask>>(
-      key: ValueKey(tick),
-      stream: TaskAlarmService.watchPendingTasks(),
+      stream: _stream,
       builder: (context, snapshot) {
         final tasks = snapshot.data ?? [];
         if (tasks.isEmpty) {
@@ -2354,7 +2375,7 @@ class _UpcomingTasksSection extends StatelessWidget {
                   (task) => Card(
                     margin: const EdgeInsets.only(bottom: 8),
                     child: ListTile(
-                      onTap: () => onEdit(task),
+                      onTap: () => widget.onEdit(task),
                       leading: Icon(
                         task.dueAt?.isBefore(DateTime.now()) ?? false
                             ? Icons.notifications_active_rounded
@@ -2388,7 +2409,7 @@ class _UpcomingTasksSection extends StatelessWidget {
                         tooltip: 'Concluir',
                         onPressed: () async {
                           await TaskAlarmService.markDone(task.remoteId);
-                          onChanged();
+                          widget.onChanged();
                         },
                       ),
                     ),

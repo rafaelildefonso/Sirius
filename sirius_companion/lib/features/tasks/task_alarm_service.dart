@@ -254,16 +254,19 @@ class TaskAlarmService {
   /// If [isDateRange] is true, creates a date-range task with [startDate] and [endDate].
   /// [dueAt] is optional for date-range tasks (will be null).
   /// If [isDateRange] is false, [dueAt] is required (time-specific task).
+  /// [notes] is the free-form description shown on the task notification.
   static Future<String> createQuickTask(
     String title, {
     required DateTime? dueAt,
     DateTime? startDate,
     DateTime? endDate,
     bool isDateRange = false,
+    String? notes,
   }) async {
     final remoteId = const Uuid().v4();
     final now = DateTime.now();
     final cleanTitle = title.trim();
+    final cleanNotes = notes?.trim();
 
     // Re-check notification/exact-alarm permissions right before scheduling:
     // if they were denied after the first prompt, zonedSchedule would throw
@@ -274,6 +277,9 @@ class TaskAlarmService {
     await db.into(db.scheduledTasks).insert(ScheduledTasksCompanion.insert(
           remoteId: remoteId,
           title: cleanTitle,
+          notes: cleanNotes == null || cleanNotes.isEmpty
+              ? const Value.absent()
+              : Value(cleanNotes),
           dueAt: dueAt == null ? const Value.absent() : Value(dueAt),
           startDate: startDate == null ? const Value.absent() : Value(startDate),
           endDate: endDate == null ? const Value.absent() : Value(endDate),
@@ -290,6 +296,9 @@ class TaskAlarmService {
       'timestamp': now.toIso8601String(),
       'is_date_range': isDateRange,
     };
+    if (cleanNotes != null && cleanNotes.isNotEmpty) {
+      payload['notes'] = cleanNotes;
+    }
     if (dueAt != null) {
       payload['due_at'] = dueAt.toIso8601String();
     }
@@ -332,7 +341,13 @@ class TaskAlarmService {
       
       if (startDate != null && endDate != null &&
           !startDate.isAfter(todayEnd) && !endDate.isBefore(todayStart)) {
-        await _showDateRangeNotification(remoteId, cleanTitle, startDate!, endDate!);
+        await _showDateRangeNotification(
+          remoteId,
+          cleanTitle,
+          startDate!,
+          endDate!,
+          cleanNotes,
+        );
         await markNotifiedLocally(remoteId);
       }
     }
@@ -606,7 +621,13 @@ class TaskAlarmService {
 
       print('[TaskAlarm] Firing ${rows.length} date-range task notification(s) for today');
       for (final t in rows) {
-        await _showDateRangeNotification(t.remoteId, t.title, t.startDate!, t.endDate!);
+        await _showDateRangeNotification(
+          t.remoteId,
+          t.title,
+          t.startDate!,
+          t.endDate!,
+          t.notes,
+        );
       }
     } catch (e) {
       print('[TaskAlarm] fireDateRangeNotificationsForToday failed: $e');
@@ -636,13 +657,107 @@ class TaskAlarmService {
 
       print('[TaskAlarm] Catching up ${rows.length} missed date-range notification(s)');
       for (final t in rows) {
-        await _showDateRangeNotification(t.remoteId, t.title, t.startDate!, t.endDate!);
+        await _showDateRangeNotification(
+          t.remoteId,
+          t.title,
+          t.startDate!,
+          t.endDate!,
+          t.notes,
+        );
         await markNotifiedLocally(t.remoteId);
       }
     } catch (e) {
       print('[TaskAlarm] catchUpMissedDateRangeNotifications failed: $e');
     }
   }
+
+  /// Re-shows today's date-range task notifications that are no longer active.
+  ///
+  /// Android (and OEM skins) can silently drop a notification: system UI
+  /// restart, aggressive battery managers, the app being force-stopped after
+  /// a backup/restore. Because those notifications are `ongoing` they can
+  /// never be re-created by the user — only this check puts them back.
+  ///
+  /// Fires on app start, on resume and from a 15-minute WorkManager task.
+  static Future<void> ensureTodayNotificationsActive() async {
+    try {
+      await _ensureBackgroundReady();
+      await _ensureTimezone();
+    } catch (e) {
+      print('[TaskAlarm] re-assert init failed: $e');
+      return;
+    }
+
+    final db = AppDatabase();
+    final today = DateTime.now();
+    final todayStart = DateTime(today.year, today.month, today.day);
+    final todayEnd = todayStart
+        .add(const Duration(days: 1))
+        .subtract(const Duration(milliseconds: 1));
+
+    try {
+      final rows = await (db.select(db.scheduledTasks)
+            ..where((tbl) =>
+                tbl.isDateRange.equals(true) &
+                tbl.status.isIn(['pending', 'notified']) &
+                (tbl.startDate.isSmallerOrEqual(Variable(todayEnd))) &
+                (tbl.endDate.isBiggerOrEqual(Variable(todayStart)))))
+          .get();
+      if (rows.isEmpty) return;
+
+      List<ActiveNotification> active;
+      try {
+        active = await _plugin.getActiveNotifications();
+      } catch (e) {
+        // Never guess: without the shade listing we would re-post a
+        // duplicate for every task on every pass.
+        print('[TaskAlarm] getActiveNotifications unavailable: $e');
+        return;
+      }
+
+      final activeIds = active.map((n) => n.id).toSet();
+      final activeTitles = active.map((n) => (n.title ?? '').trim()).toSet();
+
+      var restored = 0;
+      for (final t in rows) {
+        final expectedTitle = dateRangeNotificationTitle(
+          t.title,
+          t.startDate!,
+          t.endDate!,
+        );
+        if (activeIds.contains(t.remoteId.hashCode) ||
+            activeTitles.contains(expectedTitle)) {
+          continue;
+        }
+        print('[TaskAlarm] Restoring dropped notification: $expectedTitle');
+        await _showDateRangeNotification(
+          t.remoteId,
+          t.title,
+          t.startDate!,
+          t.endDate!,
+          t.notes,
+        );
+        restored++;
+      }
+      if (restored > 0) {
+        print('[TaskAlarm] Re-asserted $restored date-range notification(s)');
+      }
+    } catch (e) {
+      print('[TaskAlarm] ensureTodayNotificationsActive failed: $e');
+    }
+  }
+
+  /// Formats `dd/MM` for a date.
+  static String _fmtDay(DateTime d) =>
+      '${d.day.toString().padLeft(2, '0')}/${d.month.toString().padLeft(2, '0')}';
+
+  /// Headline shown on date-range task notifications: `Nome - (01/01 a 01/01)`.
+  static String dateRangeNotificationTitle(
+    String title,
+    DateTime startDate,
+    DateTime endDate,
+  ) =>
+      '$title - (${_fmtDay(startDate)} a ${_fmtDay(endDate)})';
 
   /// Notification details for date-range tasks: non-dismissible, only "Concluir" action.
   static AndroidNotificationDetails _dateRangeDetails() {
@@ -676,14 +791,13 @@ class TaskAlarmService {
     String remoteId,
     String title,
     DateTime startDate,
-    DateTime endDate,
-  ) async {
-    final startStr = '${startDate.day.toString().padLeft(2, '0')}/${startDate.month.toString().padLeft(2, '0')}';
-    final endStr = '${endDate.day.toString().padLeft(2, '0')}/${endDate.month.toString().padLeft(2, '0')}';
+    DateTime endDate, [
+    String? notes,
+  ]) async {
     await _plugin.show(
       id: remoteId.hashCode,
-      title: '⏰ Tarefa do dia',
-      body: '$title ($startStr a $endStr)',
+      title: dateRangeNotificationTitle(title, startDate, endDate),
+      body: (notes ?? '').trim(),
       notificationDetails: NotificationDetails(android: _dateRangeDetails()),
       payload: '$_payloadPrefix$remoteId|$title',
     );
@@ -825,6 +939,7 @@ class TaskAlarmService {
             title,
             rangeStart,
             rangeEnd,
+            map['notes'] as String?,
           );
           await markNotifiedLocally(remoteId);
         }

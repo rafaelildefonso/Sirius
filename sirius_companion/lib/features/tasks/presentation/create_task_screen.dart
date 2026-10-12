@@ -150,6 +150,7 @@ class _CreateTaskScreenState extends ConsumerState<CreateTaskScreen> {
           startDate: _startDate,
           endDate: _endDate,
           isDateRange: true,
+          notes: notes,
         );
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
@@ -363,7 +364,7 @@ class _CreateTaskScreenState extends ConsumerState<CreateTaskScreen> {
               ),
               const SizedBox(height: 8),
               Text(
-                'Se definido, a notificação das 00:00 incluirá o horário. Se não, será apenas "Tarefa do dia".',
+                'Se definido, o horário fica na tarefa. A notificação de 00:00 mostra "Nome - (01/01 a 01/01)" com a descrição da tarefa.',
                 style: TextStyle(color: const Color(0xFF5E6A7E), fontSize: 12),
               ),
               const SizedBox(height: 12),

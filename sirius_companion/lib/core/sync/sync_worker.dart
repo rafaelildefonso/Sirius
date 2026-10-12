@@ -24,6 +24,7 @@ typedef SyncProgressCallback = void Function(String message, double progress);
 const String syncTaskName = 'sirius_sync_task';
 const String healthCheckTaskName = 'sirius_health_check';
 const String taskPullTaskName = 'sirius_task_pull';
+const String notifReassertTaskName = 'sirius_notif_reassert';
 const String _lastSyncStorageKey = 'sirius_last_sync_at';
 
 /// Initialize WorkManager
@@ -75,6 +76,15 @@ Future<void> initWorkManager() async {
       ),
       initialDelay: const Duration(minutes: 3),
     );
+
+    // Re-assert the ongoing daily task notifications. Android/OEMs can drop
+    // them without any callback, so check the shade on a fixed cadence.
+    await Workmanager().registerPeriodicTask(
+      'sirius_notif_reassert',
+      notifReassertTaskName,
+      frequency: const Duration(minutes: 15),
+      initialDelay: const Duration(minutes: 4),
+    );
   } catch (e) {
     print('[WorkManager] Init failed: $e');
   }
@@ -90,6 +100,8 @@ void callbackDispatcher() {
       await BackgroundHealthMonitor.restartIfDead();
     } else if (taskName == taskPullTaskName) {
       await SyncWorker.pullTasksOnly();
+    } else if (taskName == notifReassertTaskName) {
+      await TaskAlarmService.ensureTodayNotificationsActive();
     }
     return Future.value(true);
   });

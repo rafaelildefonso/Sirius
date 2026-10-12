@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'core/storage/database/database.dart';
+import 'core/storage/cross_isolate_refresh.dart';
 import 'core/sync/sync_worker.dart';
 import 'core/sync/foreground_sync.dart';
 import 'core/sync/background_health_monitor.dart';
@@ -118,6 +119,11 @@ class _SiriusCompanionAppState extends ConsumerState<SiriusCompanionApp> {
     try {
       await TaskAlarmService.initialize(_notificationPlugin);
       await TaskAlarmService.rescheduleMissingAlarms();
+      // Notification actions and WorkManager tasks write the DB from another
+      // isolate; without this the task list on the home screen goes stale.
+      CrossIsolateRefresh.start();
+      // Android can silently drop the ongoing daily notification.
+      unawaited(TaskAlarmService.ensureTodayNotificationsActive());
     } catch (_) {}
 
     ForegroundSyncService.instance.start();
