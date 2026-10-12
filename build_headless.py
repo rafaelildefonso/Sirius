@@ -22,7 +22,6 @@ import sys
 from pathlib import Path
 from typing import Iterable
 
-
 HERE = Path(__file__).resolve().parent
 DIST = HERE / "dist"
 BUILD = HERE / "build"

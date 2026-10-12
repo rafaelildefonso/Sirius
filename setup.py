@@ -11,7 +11,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-
 ROOT = Path(__file__).resolve().parent
 SETUP_STATE = ROOT / ".runtime_setup_state.json"
 REQUIREMENTS = ROOT / "requirements.txt"
