@@ -151,6 +151,70 @@ def organize_task_in_obsidian(
         return None
 
 
+def update_task_in_obsidian(
+    old_title: str,
+    new_title: str,
+    due_at: str | None = None,
+    vault_path: str | None = None,
+    tasks_subpath: str = "Tarefas",
+) -> Path | None:
+    """Rewrite the markdown line whose description matches `old_title`.
+
+    Lines look like `- [ ] description 🛫 2026-08-16` (checkbox state preserved).
+    The match is by old title, so the first matching line in the tasks folder wins.
+
+    Returns the path of the file that was rewritten, or None if nothing matched.
+    """
+    old = (old_title or "").strip()
+    new = (new_title or "").strip()
+    if not old or not new:
+        return None
+    try:
+        vault = Path(vault_path) if vault_path else _find_vault()
+        if not vault or not vault.exists():
+            return None
+        tasks_root = vault / (tasks_subpath or "Tarefas")
+        if not tasks_root.is_dir():
+            return None
+
+        date_part = ""
+        if due_at:
+            date_part = due_at[:10] if len(due_at) >= 10 else due_at
+
+        for md in sorted(tasks_root.rglob("*.md")):
+            try:
+                text = md.read_text(encoding="utf-8", errors="ignore")
+            except Exception:
+                continue
+            lines = text.splitlines(keepends=True)
+            changed = False
+            for i, line in enumerate(lines):
+                stripped = line.strip()
+                if not stripped.startswith("- [ ] ") and not stripped.startswith("- [x] "):
+                    continue
+                desc = stripped[6:].strip()
+                m = re.match(r"^(.*?)(?:\s+🛫\s+\d{4}-\d{2}-\d{2})?(?:\s+[🔴🟠🟢])?"
+                             r"(?:\s+✅\s+\d{4}-\d{2}-\d{2})?$", desc)
+                base = (m.group(1).strip() if m else desc)
+                if base != old:
+                    continue
+                checkbox = stripped[:5]
+                rebuilt = f"{checkbox} {new}"
+                if date_part:
+                    rebuilt += f" 🛫 {date_part}"
+                lines[i] = rebuilt + "\n"
+                changed = True
+                break  # first match wins
+            if changed:
+                md.write_text("".join(lines), encoding="utf-8")
+                print(f"[ObsidianTasks] Task updated: {old} -> {new} in {md}")
+                return md
+        return None
+    except Exception as e:
+        print(f"[ObsidianTasks] Failed to update task: {e}")
+        return None
+
+
 def _find_vault() -> Path | None:
     """Try common Obsidian vault locations."""
     home = Path.home()

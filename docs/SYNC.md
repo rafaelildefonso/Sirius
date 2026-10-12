@@ -113,10 +113,13 @@ Todos exigem headers `Authorization: Bearer <device_token>` +
 | `place_confirmation` | geofence ENTER/EXIT/DWELL confirmado | ack (processado) |
 | `quick_task` | usuário cria lembrete no app | SQLite `add_scheduled_task` |
 | `task_done` / `task_snooze` | alarme dispensado/adiado | SQLite `complete/snooze_scheduled_task` |
+| `task_edit` | usuário edita tarefa na home (título/prazo/notas) | SQLite `update_scheduled_task` + reescrita da linha no Obsidian (`update_task_in_obsidian`); alarme local cancelado e re-armado |
 
 Retry: itens que falham voltam à fila com backoff exponencial
 (30 s → 2 min → 10 min → 1 h); após 10 tentativas viram dead-letter
-(`constants.dart`).
+(`constants.dart`) — exceto as ações duráveis de tarefa
+(`quick_task`/`task_done`/`task_snooze`/`task_edit`), que continuam com
+retry mesmo após o limite (`sync_repository.dart::getPending`).
 
 ## 6. Push PC → celular
 
@@ -136,7 +139,7 @@ Retry: itens que falham voltam à fila com backoff exponencial
 |---|---|---|
 | WorkManager periódico | 15 min (+ tarefa única 10 s após registro) | `sync_worker.dart::initWorkManager` |
 | Sync em foreground | 45 s com app aberto; catch-up ao abrir/regain de rede | `foreground_sync.dart` |
-| Event-driven | criar/concluir/sonecar dispara sync ~1 s depois | `TaskAlarmService` → `SyncWorker.triggerSync` |
+| Event-driven | criar/concluir/sonecar/editar dispara sync ~1 s depois | `TaskAlarmService` → `SyncWorker.triggerSync` |
 | Manual | botão na home | `home_controller.dart` |
 
 Cada ciclo `performSync()`: restaurar URL salva → ping → push pendentes →

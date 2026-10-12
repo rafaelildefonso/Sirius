@@ -70,7 +70,8 @@ enum SyncItemType {
   gemmaFallback('gemma_fallback'),
   quickTask('quick_task'),
   taskDone('task_done'),
-  taskSnooze('task_snooze');
+  taskSnooze('task_snooze'),
+  taskEdit('task_edit');
   
   const SyncItemType(this.value);
   final String value;

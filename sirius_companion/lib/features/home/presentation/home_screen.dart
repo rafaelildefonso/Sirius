@@ -13,6 +13,7 @@ import '../../../../core/ai/gemma_engine.dart';
 import '../../../../core/ai/hf_auth_webview.dart';
 import '../../../../features/tasks/task_alarm_service.dart';
 import '../../../../features/tasks/presentation/create_task_screen.dart';
+import '../../../../features/tasks/presentation/edit_task_screen.dart';
 import '../../locations/presentation/places_screen.dart';
 import '../../notes/presentation/notes_screen.dart';
 import '../../notes/presentation/note_editor_screen.dart';
@@ -89,6 +90,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     }
   }
 
+  void _openEditTaskModal(ScheduledTask task) async {
+    final result = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(builder: (_) => EditTaskScreen(task: task)),
+    );
+    if (result == true) {
+      _refreshTasks();
+    }
+  }
+
   void _openQuickNoteModal() {
     Navigator.push(
       context,
@@ -141,7 +152,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
               onQuickNote: _openQuickNoteModal,
             ),
             const SizedBox(height: 16),
-            _UpcomingTasksSection(tick: _taskTick, onChanged: _refreshTasks),
+            _UpcomingTasksSection(
+              tick: _taskTick,
+              onChanged: _refreshTasks,
+              onEdit: _openEditTaskModal,
+            ),
             const SizedBox(height: 16),
             _QuickActions(
               isSyncing: state.isSyncing,
@@ -2280,8 +2295,13 @@ class _SettingsTile extends StatelessWidget {
 class _UpcomingTasksSection extends StatelessWidget {
   final int tick;
   final VoidCallback onChanged;
+  final void Function(ScheduledTask task) onEdit;
 
-  const _UpcomingTasksSection({required this.tick, required this.onChanged});
+  const _UpcomingTasksSection({
+    required this.tick,
+    required this.onChanged,
+    required this.onEdit,
+  });
 
   String _formatDate(DateTime d) {
     final now = DateTime.now();
@@ -2334,6 +2354,7 @@ class _UpcomingTasksSection extends StatelessWidget {
                   (task) => Card(
                     margin: const EdgeInsets.only(bottom: 8),
                     child: ListTile(
+                      onTap: () => onEdit(task),
                       leading: Icon(
                         task.dueAt?.isBefore(DateTime.now()) ?? false
                             ? Icons.notifications_active_rounded

@@ -417,6 +417,84 @@ class TaskAlarmService {
     await SyncWorker.triggerSync();
   }
 
+  /// Edits a task locally (title/notes/due) and queues a `task_edit` item for
+  /// the PC. The alarm is cancelled and re-armed because the title and due
+  /// time are baked into the notification payload at schedule time.
+  ///
+  /// The task mode (time-specific vs date-range) is preserved from the
+  /// existing task; only [title], [notes] and the dates of that mode can
+  /// change. Returns false when the task does not exist or is already done.
+  static Future<bool> editTask(
+    String remoteId, {
+    required String title,
+    String? notes,
+    DateTime? dueAt,
+    DateTime? startDate,
+    DateTime? endDate,
+  }) async {
+    final db = AppDatabase();
+    final task = await (db.select(db.scheduledTasks)
+          ..where((tbl) => tbl.remoteId.equals(remoteId)))
+        .getSingleOrNull();
+    if (task == null || task.status == 'done') return false;
+
+    final cleanTitle = title.trim();
+    if (cleanTitle.isEmpty) return false;
+    final cleanNotes = notes?.trim();
+    final isDateRange = task.isDateRange;
+    if (isDateRange) {
+      if (startDate == null || endDate == null) return false;
+    } else if (dueAt == null) {
+      return false;
+    }
+
+    await ensurePermissions();
+
+    final now = DateTime.now();
+    await (db.update(db.scheduledTasks)
+          ..where((tbl) => tbl.remoteId.equals(remoteId)))
+        .write(ScheduledTasksCompanion(
+      title: Value(cleanTitle),
+      notes: Value((cleanNotes == null || cleanNotes.isEmpty) ? null : cleanNotes),
+      dueAt: isDateRange ? const Value(null) : Value(dueAt),
+      startDate: isDateRange ? Value(startDate) : const Value(null),
+      endDate: isDateRange ? Value(endDate) : const Value(null),
+      status: const Value('pending'),
+      alarmScheduled: const Value(false),
+      updatedAt: Value(now),
+    ));
+
+    // Stop whatever is ringing/scheduled and re-arm with the new data.
+    await _cancelAlarmsFor(remoteId);
+    if (!isDateRange && dueAt != null && dueAt.isAfter(now)) {
+      await _scheduleAlarm(
+        remoteId: remoteId,
+        title: cleanTitle,
+        dueAt: dueAt,
+      );
+    } else if (isDateRange) {
+      await _scheduleDailyDateRangeAlarm();
+    }
+
+    await SyncRepository(db).enqueue(
+      type: SyncItemType.taskEdit.value,
+      payloadJson: jsonEncode({
+        'task_id': remoteId,
+        'title': cleanTitle,
+        'notes': (cleanNotes == null || cleanNotes.isEmpty) ? null : cleanNotes,
+        'timestamp': now.toIso8601String(),
+        if (isDateRange) ...{
+          'start_date': startDate!.toIso8601String(),
+          'end_date': endDate!.toIso8601String(),
+        } else
+          'due_at': dueAt!.toIso8601String(),
+      }),
+      clientId: const Uuid().v4(),
+    );
+    await SyncWorker.triggerSync();
+    return true;
+  }
+
   // ── Queries for UI ────────────────────────────────────────────────────────
 
   static Future<List<ScheduledTask>> getPendingTasks({int limit = 20}) async {

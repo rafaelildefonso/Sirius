@@ -613,6 +613,49 @@ class Repository:
         self.db.commit()
         return True
 
+    def update_scheduled_task(
+        self,
+        task_id: str,
+        title: Optional[str] = None,
+        notes: Optional[str] = None,
+        due_at: Optional[str] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+    ) -> bool:
+        """Edit an existing scheduled task. Only non-None fields are changed; done tasks are immutable."""
+        sets: list[str] = []
+        params: list[object] = []
+        if title is not None:
+            sets.append("title = ?")
+            params.append(title)
+        if notes is not None:
+            sets.append("notes = ?")
+            params.append(notes)
+        if due_at is not None:
+            sets.append("due_at = ?")
+            params.append(due_at)
+        if start_date is not None:
+            sets.append("start_date = ?")
+            params.append(start_date)
+        if end_date is not None:
+            sets.append("end_date = ?")
+            params.append(end_date)
+        if not sets:
+            return False
+        # A rescheduled task that already fired must fire again at the new time.
+        if due_at is not None:
+            sets.append("status = 'pending'")
+            sets.append("notified_at = NULL")
+        sets.append("updated_at = ?")
+        params.append(datetime.now().isoformat())
+        params.append(task_id)
+        cur = self.db.execute(
+            f"UPDATE scheduled_tasks SET {', '.join(sets)} WHERE id = ? AND status != 'done'",
+            tuple(params),
+        )
+        self.db.commit()
+        return cur.rowcount > 0
+
     def _update_scheduled_status(self, task_id: str, status: str) -> bool:
         cur = self.db.execute(
             "UPDATE scheduled_tasks SET status = ?, updated_at = ? WHERE id = ? AND status != 'done'",

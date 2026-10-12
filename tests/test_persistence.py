@@ -405,3 +405,109 @@ class TestEmbedding:
         assert stored is not None
         restored = np.frombuffer(stored, dtype=np.float32)
         assert np.allclose(restored, vec)
+
+
+# ---------------------------------------------------------------------------
+# Scheduled tasks tests
+# ---------------------------------------------------------------------------
+
+class TestScheduledTasks:
+    def test_add_and_get(self, repo: Repository):
+        task = repo.add_scheduled_task(
+            title="Estudar Flutter",
+            due_at="2026-10-10T09:00:00",
+            notes="capítulo 3",
+            source="phone",
+            task_id="task-1",
+        )
+        assert task["id"] == "task-1"
+        assert task["title"] == "Estudar Flutter"
+        assert task["status"] == "pending"
+
+    def test_update_partial_fields(self, repo: Repository):
+        repo.add_scheduled_task(
+            title="Original",
+            due_at="2026-10-10T09:00:00",
+            notes="velho",
+            task_id="task-2",
+        )
+        ok = repo.update_scheduled_task("task-2", due_at="2026-10-12T18:30:00")
+        assert ok
+        task = repo.get_scheduled_task("task-2")
+        assert task["title"] == "Original"          # untouched
+        assert task["notes"] == "velho"             # untouched
+        assert task["due_at"] == "2026-10-12T18:30:00"
+
+    def test_update_resets_notified_to_pending(self, repo: Repository):
+        repo.add_scheduled_task(title="Rangou", due_at="2026-10-10T09:00:00", task_id="task-3")
+        repo.mark_scheduled_task_notified("task-3")
+        assert repo.get_scheduled_task("task-3")["status"] == "notified"
+
+        repo.update_scheduled_task("task-3", due_at="2026-10-11T09:00:00")
+        task = repo.get_scheduled_task("task-3")
+        assert task["status"] == "pending"
+        assert task["notified_at"] is None
+
+    def test_update_done_task_is_immutable(self, repo: Repository):
+        repo.add_scheduled_task(title="Feita", due_at="2026-10-10T09:00:00", task_id="task-4")
+        repo.complete_scheduled_task("task-4")
+        ok = repo.update_scheduled_task("task-4", title="Mudada")
+        assert not ok
+        assert repo.get_scheduled_task("task-4")["title"] == "Feita"
+
+    def test_update_missing_task(self, repo: Repository):
+        assert not repo.update_scheduled_task("nope", title="X")
+
+    def test_update_without_fields(self, repo: Repository):
+        repo.add_scheduled_task(title="Algo", due_at="2026-10-10T09:00:00", task_id="task-5")
+        assert not repo.update_scheduled_task("task-5")
+
+
+# ---------------------------------------------------------------------------
+# Obsidian task mirror tests
+# ---------------------------------------------------------------------------
+
+class TestObsidianTaskMirror:
+    def _write_vault_file(self, tmp_path: Path) -> Path:
+        tasks_dir = tmp_path / "Tarefas"
+        tasks_dir.mkdir(parents=True, exist_ok=True)
+        md = tasks_dir / "2026-10-08.md"
+        md.write_text(
+            "# Tarefas — 2026-10-08\n\n"
+            "- [ ] Comprar pão 🛫 2026-10-08\n"
+            "- [x] Ligar pro dentista 🛫 2026-10-07\n"
+            "- [ ] Outra tarefa 🛫 2026-10-09\n",
+            encoding="utf-8",
+        )
+        return md
+
+    def test_update_rewrites_line_and_keeps_checkbox(self, tmp_path: Path):
+        from actions.obsidian_tasks import update_task_in_obsidian
+        md = self._write_vault_file(tmp_path)
+        result = update_task_in_obsidian(
+            "Comprar pão", "Comprar pão integral",
+            due_at="2026-10-12T18:00:00", vault_path=str(tmp_path),
+        )
+        assert result == md
+        text = md.read_text(encoding="utf-8")
+        assert "- [ ] Comprar pão integral 🛫 2026-10-12" in text
+        assert "- [x] Ligar pro dentista 🛫 2026-10-07" in text  # untouched
+        assert "- [ ] Outra tarefa 🛫 2026-10-09" in text        # untouched
+
+    def test_update_completed_task_line(self, tmp_path: Path):
+        from actions.obsidian_tasks import update_task_in_obsidian
+        md = self._write_vault_file(tmp_path)
+        update_task_in_obsidian(
+            "Ligar pro dentista", "Ligar pro dentista (2ª tentativa)",
+            vault_path=str(tmp_path),
+        )
+        text = md.read_text(encoding="utf-8")
+        assert "- [x] Ligar pro dentista (2ª tentativa)" in text
+
+    def test_no_match_returns_none(self, tmp_path: Path):
+        from actions.obsidian_tasks import update_task_in_obsidian
+        md = self._write_vault_file(tmp_path)
+        before = md.read_text(encoding="utf-8")
+        result = update_task_in_obsidian("Inexistente", "Nova", vault_path=str(tmp_path))
+        assert result is None
+        assert md.read_text(encoding="utf-8") == before

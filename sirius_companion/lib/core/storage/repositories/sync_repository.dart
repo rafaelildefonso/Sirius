@@ -41,9 +41,10 @@ class SyncRepository {
                   // offline notification action cannot be lost before the
                   // next successful manual sync. This also preserves the
                   // creation item when a task was created on the phone.
-                  tbl.type.equals(SyncItemType.quickTask.value) |
-                  tbl.type.equals(SyncItemType.taskDone.value) |
-                  tbl.type.equals(SyncItemType.taskSnooze.value)))
+                   tbl.type.equals(SyncItemType.quickTask.value) |
+                   tbl.type.equals(SyncItemType.taskDone.value) |
+                   tbl.type.equals(SyncItemType.taskSnooze.value) |
+                   tbl.type.equals(SyncItemType.taskEdit.value)))
           ..orderBy([(tbl) => OrderingTerm.asc(tbl.createdAt)])
           ..limit(limit))
         .get();

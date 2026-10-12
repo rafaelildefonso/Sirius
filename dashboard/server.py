@@ -164,6 +164,72 @@ def _update_quick_task(task_id: str, action: str, minutes: int = 5) -> bool:
         print(f"[Tasks] Update {action} failed for {task_id}: {e}")
         return False
 
+def _edit_quick_task(payload: dict) -> tuple[bool, dict | None, dict | None]:
+    """Edit an existing scheduled task. Returns (ok, old_task, new_task)."""
+    task_id = str(payload.get("task_id") or payload.get("id") or "").strip()
+    if not task_id:
+        return False, None, None
+    try:
+        from persistence.repository import Repository
+        repo = Repository()
+        old = repo.get_scheduled_task(task_id)
+        if not old or old.get("status") == "done":
+            return False, old, None
+
+        kwargs: dict = {}
+        if payload.get("title") is not None:
+            title = str(payload["title"]).strip()
+            if not title:
+                return False, old, None
+            kwargs["title"] = title
+        if "notes" in payload:
+            notes = payload.get("notes")
+            kwargs["notes"] = str(notes).strip() or None
+        if payload.get("due_at") is not None:
+            due_iso = _parse_due_at(payload.get("due_at"))
+            if not due_iso:
+                return False, old, None
+            kwargs["due_at"] = due_iso
+        if payload.get("start_date") is not None:
+            kwargs["start_date"] = str(payload.get("start_date"))[:10]
+        if payload.get("end_date") is not None:
+            kwargs["end_date"] = str(payload.get("end_date"))[:10]
+
+        if not kwargs:
+            return False, old, None
+        ok = repo.update_scheduled_task(task_id, **kwargs)
+        if not ok:
+            return False, old, None
+        new = repo.get_scheduled_task(task_id)
+        print(f"[Tasks] Edited '{new['title'] if new else task_id}' (id={task_id}, fields={list(kwargs)})")
+        return True, old, new
+    except Exception as e:
+        print(f"[Tasks] Edit failed for {task_id}: {e}")
+        return False, None, None
+
+
+def _sync_task_edit_to_obsidian(old_task: dict | None, new_task: dict | None) -> None:
+    """Best-effort: rewrite the task's markdown line in the Obsidian vault after an edit."""
+    if not old_task or not new_task:
+        return
+    try:
+        from core.config_loader import get_all_config
+        from actions.obsidian_tasks import update_task_in_obsidian
+        cfg = get_all_config()
+        vault_path = cfg.get("obsidian_vault_path")
+        if not vault_path:
+            return
+        update_task_in_obsidian(
+            old_task.get("title", ""),
+            new_task.get("title", ""),
+            due_at=new_task.get("due_at"),
+            vault_path=vault_path,
+            tasks_subpath=cfg.get("obsidian_tasks_subpath", "Tarefas"),
+        )
+    except Exception as e:
+        print(f"[Tasks] Failed to update task in Obsidian: {e}")
+
+
 _KEY_CHARS = [c for c in (string.ascii_uppercase + string.digits)
               if c not in ('O', 'I', 'L', '0', '1')]
 
@@ -1592,6 +1658,15 @@ sessionStorage.setItem('sirius_token','{tok}');
                                         "status": "processed" if ok else "failed",
                                         "server_id": f"tsnooze_{int(time.time()*1000)}"})
 
+                    elif itype == "task_edit":
+                        ok, old_task, new_task = _edit_quick_task(payload)
+                        if ok:
+                            _sync_task_edit_to_obsidian(old_task, new_task)
+                        results.append({"client_id": client_id,
+                                        "status": "processed" if ok else "failed",
+                                        "server_id": f"tedit_{int(time.time()*1000)}",
+                                        "task": new_task if ok else None})
+
                     elif itype == "note":
                         # Note synced from companion — the organizer resolves
                         # the configured vault/notes folder itself and appends
@@ -1704,6 +1779,7 @@ sessionStorage.setItem('sirius_token','{tok}');
                         "quick_task": "tarefa",
                         "task_done": "tarefa",
                         "task_snooze": "tarefa",
+                        "task_edit": "tarefa editada",
                         "place_confirmation": "confirmação",
                         "gemma_fallback": "comando",
                     }
@@ -1741,6 +1817,9 @@ sessionStorage.setItem('sirius_token','{tok}');
                                 received_summaries.append("Tarefa concluída")
                             elif t == "task_snooze":
                                 received_summaries.append("Tarefa adiada")
+                            elif t == "task_edit":
+                                task_title = p.get("title") or "tarefa"
+                                received_summaries.append(f"Tarefa '{task_title}' editada")
 
                 if received_summaries:
                     summary_text = "; ".join(received_summaries)
@@ -1857,6 +1936,24 @@ sessionStorage.setItem('sirius_token','{tok}');
             minutes = int((body or {}).get("minutes", 5) or 5)
             ok = _update_quick_task(task_id, "snooze", minutes=minutes)
             return JSONResponse({"ok": ok}, status_code=200 if ok else 404)
+
+        @app.post("/api/tasks/{task_id}/edit")
+        async def task_edit(task_id: str, req: Request):
+            device_id = req.headers.get("X-Device-ID", "").strip()
+            token = req.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+            if not self._validate_device_token(token, device_id):
+                return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
+            try:
+                body = await req.json()
+            except Exception:
+                body = {}
+            payload = dict(body or {})
+            payload["task_id"] = task_id
+            ok, old_task, new_task = _edit_quick_task(payload)
+            if not ok:
+                return JSONResponse({"ok": False, "error": "Task not found or invalid fields"}, status_code=404)
+            _sync_task_edit_to_obsidian(old_task, new_task)
+            return JSONResponse({"ok": True, "task": new_task})
 
         @app.post("/api/tasks/{task_id}/dismiss")
         async def task_dismiss(task_id: str, req: Request):
