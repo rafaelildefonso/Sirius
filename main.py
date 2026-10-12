@@ -3296,6 +3296,15 @@ def main():
     except Exception as e:
         print(f"[MAIN] Date range notifier disabled: {e}")
 
+    # Put today's sticky task toasts back when Windows drops them from
+    # Action Center (reboot, "clear all notifications", history overflow).
+    try:
+        from core.task_toast_reassert import start_reassert
+        start_reassert()
+        print("[DEBUG main] TaskToastReassert started.")
+    except Exception as e:
+        print(f"[MAIN] Toast re-assert disabled: {e}")
+
     def runner():
         # Check WS server status FIRST — before blocking on onboarding
         if not _ws.was_started():

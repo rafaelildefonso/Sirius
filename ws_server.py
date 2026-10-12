@@ -182,9 +182,16 @@ def show_sticky_task_notification(
     message: str,
     on_done: Callable[[], None] | None = None,
     on_snooze: Callable[[], None] | None = None,
+    tag: str | None = None,
+    group: str | None = None,
 ) -> bool:
     """Persistent Windows toast (scenario=reminder): stays on screen until the
-    user dismisses it. Returns True if the persistent toast was shown."""
+    user dismisses it. Returns True if the persistent toast was shown.
+
+    [tag]/[group] make the toast addressable: Windows replaces an existing
+    toast with the same tag+group instead of stacking a duplicate, and
+    [task_toast_is_active] can find it again in Action Center.
+    """
     try:
         from windows_toasts import (
             InteractableWindowsToaster,
@@ -219,10 +226,14 @@ def show_sticky_task_notification(
                 ).start()
 
         toast = Toast(
-            text_fields=[title, message],
+            text_fields=[title, message] if str(message).strip() else [title],
             scenario=ToastScenario.Reminder,
             on_activated=_handle_activated,
         )
+        if tag:
+            toast.tag = tag
+        if group:
+            toast.group = group
 
         if on_done:
             toast.AddAction(ToastButton(content="Concluído", arguments="sirius_done"))
@@ -242,6 +253,56 @@ def show_sticky_task_notification(
     return False
 
 
+_TASK_TOAST_GROUP = "sirius_tasks"
+_TASK_TOAST_AUM_ID = r"{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\cmd.exe"
+
+
+def _task_toast_tag(task_id: str) -> str:
+    """Deterministic toast tag so re-firing a task replaces its old toast."""
+    return f"sirius-task-{task_id}"
+
+
+def _task_toast_aum_id() -> str:
+    """AUMID `InteractableWindowsToaster("SIRIUS")` actually posts under."""
+    try:
+        from windows_toasts import InteractableWindowsToaster
+
+        return str(InteractableWindowsToaster("SIRIUS")._AUMID)
+    except Exception:
+        return _TASK_TOAST_AUM_ID
+
+
+def task_toast_is_active(task_id: str) -> bool | None:
+    """Is the sticky toast for [task_id] still listed in Action Center?
+
+    Returns True/False when the toast history could be read, or None when it
+    could not (caller must not treat None as "missing" — that would make us
+    re-pop a toast that is already on screen).
+    """
+    tag = _task_toast_tag(task_id)
+    try:
+        from winrt.windows.ui.notifications import ToastNotificationManager
+
+        history = ToastNotificationManager.history.get_history_with_id(_task_toast_aum_id())
+        for note in history:
+            if getattr(note, "tag", "") == tag:
+                return True
+        return False
+    except Exception as e:
+        print(f"[TaskToast] history lookup failed for {tag}: {e}")
+        return None
+
+
+def _fmt_day(iso_date: str) -> str:
+    """`2026-01-05` -> `05/01`; falls back to the raw value when unparsable."""
+    try:
+        from datetime import datetime as _dt
+
+        return _dt.fromisoformat(str(iso_date)).strftime("%d/%m")
+    except (ValueError, TypeError):
+        return str(iso_date)
+
+
 def notify_pair_request(info: dict) -> None:
     """Broadcast a companion-app pairing request to the React UI.
 
@@ -249,6 +310,21 @@ def notify_pair_request(info: dict) -> None:
     Approve/Reject prompt and answers with {type: "pair_approve"}.
     """
     manager.broadcast_sync(WsMessage("pair_request", dict(info)))
+
+
+def _broadcast_task_resolved(task_id: str, action: str) -> None:
+    """Tell the React UI an alarm banner can be dropped.
+
+    Always broadcast, even when the DB update was a no-op (task already
+    done/dismissed): the banner has to clear either way.
+    """
+    try:
+        manager.broadcast_sync(WsMessage("task_alarm_resolved", {
+            "id": task_id,
+            "action": action,
+        }))
+    except Exception as e:
+        print(f"[TaskAlarm] broadcast task_alarm_resolved failed for {task_id}: {e}")
 
 
 def notify_task_alarm(task: dict) -> None:
@@ -274,13 +350,9 @@ def notify_task_alarm(task: dict) -> None:
             from persistence.repository import Repository
             completed = Repository().complete_scheduled_task(task_id)
             print(f"[TaskAlarm] Task done via toast: {task_id} (updated={completed})")
-            if completed:
-                manager.broadcast_sync(WsMessage("task_alarm_resolved", {
-                    "id": task_id,
-                    "action": "done",
-                }))
         except Exception as e:
             print(f"[TaskAlarm] Complete failed for {task_id}: {e}")
+        _broadcast_task_resolved(task_id, "done")
 
     def _snooze():
         try:
@@ -289,9 +361,11 @@ def notify_task_alarm(task: dict) -> None:
             print(f"[TaskAlarm] Task snoozed via toast: {task_id}")
         except Exception as e:
             print(f"[TaskAlarm] Snooze failed for {task_id}: {e}")
+        _broadcast_task_resolved(task_id, "snooze")
 
     show_sticky_task_notification(
-        "SIRIUS — Tarefa agendada", message, on_done=_done, on_snooze=_snooze
+        "SIRIUS — Tarefa agendada", message, on_done=_done, on_snooze=_snooze,
+        tag=_task_toast_tag(task_id), group=_TASK_TOAST_GROUP,
     )
 
     try:
@@ -306,43 +380,99 @@ def notify_task_alarm(task: dict) -> None:
     print(f"[TaskAlarm] Fired: {title} ({due_txt}) [{task_id}]")
 
 
-def notify_date_range_task_alarm(task: dict) -> None:
-    """Fire a date-range task notification at 00:00: sticky toast with ONLY 'Concluir' button."""
-    task_id = str(task.get("id", ""))
+def _date_range_text(task: dict) -> tuple[str, str]:
+    """Headline `Nome - (01/01 a 01/01)` and the description for a task."""
     title = str(task.get("title") or "Tarefa")
-    start_date = str(task.get("start_date") or "")
-    end_date = str(task.get("end_date") or "")
-    message = f"{title} ({start_date} a {end_date})"
+    headline = f"{title} ({_fmt_day(task.get('start_date') or '')} a {_fmt_day(task.get('end_date') or '')})"
+    return headline, str(task.get("notes") or "").strip()
+
+
+def show_date_range_toast(task: dict) -> bool:
+    """Sticky toast for a date-range task: headline + description, only 'Concluir'."""
+    task_id = str(task.get("id") or "")
+    headline, notes = _date_range_text(task)
 
     def _done():
         try:
             from persistence.repository import Repository
             completed = Repository().complete_scheduled_task(task_id)
             print(f"[DateRangeAlarm] Task done via toast: {task_id} (updated={completed})")
-            if completed:
-                manager.broadcast_sync(WsMessage("task_alarm_resolved", {
-                    "id": task_id,
-                    "action": "done",
-                }))
         except Exception as e:
             print(f"[DateRangeAlarm] Complete failed for {task_id}: {e}")
+        _broadcast_task_resolved(task_id, "done")
 
-    # No snooze for date-range tasks - only "Concluir" button
-    show_sticky_task_notification(
-        "SIRIUS — Tarefa do dia", message, on_done=_done, on_snooze=None
+    return show_sticky_task_notification(
+        headline,
+        notes,
+        on_done=_done,
+        on_snooze=None,
+        tag=_task_toast_tag(task_id),
+        group=_TASK_TOAST_GROUP,
     )
+
+
+def notify_date_range_task_alarm(task: dict) -> None:
+    """Fire a date-range task notification at 00:00: sticky toast with ONLY 'Concluir' button.
+
+    Headline is `Nome - (01/01 a 01/01)` and the body is the task description,
+    mirroring the phone notification.
+    """
+    task_id = str(task.get("id", ""))
+    title = str(task.get("title") or "Tarefa")
+    start_date = str(task.get("start_date") or "")
+    end_date = str(task.get("end_date") or "")
+    headline, notes = _date_range_text(task)
+
+    show_date_range_toast(task)
 
     try:
         manager.broadcast_sync(WsMessage("date_range_task_alarm", {
             "id": task_id,
-            "text": title,
-            "message": message,
+            "text": headline,
+            "message": headline,
+            "body": notes,
             "start_date": start_date,
             "end_date": end_date,
         }))
     except Exception:
         pass
     print(f"[DateRangeAlarm] Fired: {title} ({start_date} a {end_date}) [{task_id}]")
+
+
+def reassert_today_task_toasts() -> None:
+    """Put back today's sticky task toasts that Windows dropped.
+
+    Action Center only keeps a bounded number of toasts, and entries can be
+    cleared by a reboot or by the user pressing "limpar notificações". Without
+    this pass the reminder simply never comes back. Runs at startup and every
+    15 minutes.
+    """
+    try:
+        from persistence.repository import Repository
+
+        tasks = Repository().get_date_range_tasks_for_today()
+    except Exception as e:
+        print(f"[TaskToast] re-assert could not read tasks: {e}")
+        return
+    if not tasks:
+        return
+
+    restored = 0
+    for task in tasks:
+        task_id = str(task.get("id") or "")
+        if not task_id:
+            continue
+        # None = history unreadable; leave it alone rather than re-popping a
+        # toast that is already on screen every 15 minutes.
+        if task_toast_is_active(task_id) is not False:
+            continue
+        headline, _ = _date_range_text(task)
+        print(f"[TaskToast] Restoring dropped toast: {headline} [{task_id}]")
+        if show_date_range_toast(task):
+            restored += 1
+
+    if restored:
+        print(f"[TaskToast] Re-asserted {restored} date-range toast(s)")
 
 
 def _create_desktop_shortcut() -> None:
