@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { isWindowVisible, setWindowVisible } from "../lib/windowState";
 
 export interface WsMessage {
   type: string;
@@ -29,6 +30,15 @@ export type PermissionItem = {
 };
 
 const WS_URL = "ws://127.0.0.1:8765";
+
+// Cap on the in-memory log buffer — long sessions used to grow this
+// without bound (React state + DOM nodes retained forever).
+const LOG_LIMIT = 500;
+
+function appendLog(prev: LogEntry[], entry: LogEntry): LogEntry[] {
+  if (prev.length < LOG_LIMIT) return [...prev, entry];
+  return [...prev.slice(-(LOG_LIMIT - 50)), entry];
+}
 
 export function useWebSocket() {
   const wsRef = useRef<WebSocket | null>(null);
@@ -250,11 +260,24 @@ export function useWebSocket() {
     };
 
     const handleMessage = (data: WsMessage) => {
+      // Suspend mode: drop high-frequency visual payloads while the window
+      // is hidden. The backend already suppresses these; this is the second
+      // line of defence (and covers any broadcast that slips through).
+      if (!isWindowVisible()) {
+        switch (data.type) {
+          case "audio_bins":
+          case "voice_level":
+          case "camera_frame":
+            return;
+          default:
+            break;
+        }
+      }
       switch (data.type) {
         case "log": {
           const text = String(data.text ?? "");
           const tag = tagFromText(text);
-          setLogs((prev) => [...prev, { text, tag }]);
+          setLogs((prev) => appendLog(prev, { text, tag }));
           break;
         }
         case "state": {
@@ -302,13 +325,13 @@ export function useWebSocket() {
         }
         case "sync_received": {
           const text = String(data.text ?? "");
-          setLogs((prev) => [...prev, { text, tag: "sys" }]);
+          setLogs((prev) => appendLog(prev, { text, tag: "sys" }));
           break;
         }
         case "sync_summary": {
           setNotification(String(data.text ?? ""));
           const summaryText = String(data.text ?? "");
-          setLogs((prev) => [...prev, { text: summaryText, tag: "sys" }]);
+          setLogs((prev) => appendLog(prev, { text: summaryText, tag: "sys" }));
           break;
         }
         case "task_alarm": {
@@ -435,7 +458,9 @@ export function useWebSocket() {
           } else {
             // Save failed — log error and close wizard anyway to avoid stuck state
             const errMsg = data.error ? String(data.error) : "Unknown error";
-            setLogs((prev) => [...prev, { text: `ERR: Onboarding save failed — ${errMsg}`, tag: "err" }]);
+            setLogs((prev) =>
+              appendLog(prev, { text: `ERR: Onboarding save failed — ${errMsg}`, tag: "err" })
+            );
             setNotification(`Onboarding save failed: ${errMsg}. You can reconfigure in Settings.`);
             send({ type: "onboarding_done" });
           }
@@ -443,7 +468,14 @@ export function useWebSocket() {
           break;
         }
         case "hide_interface":
-            getCurrentWindow().hide().catch(() => {});
+            getCurrentWindow()
+              .hide()
+              .then(() => {
+                // JS-initiated hide() emits no Rust window event — sync here.
+                setWindowVisible(false);
+                send({ type: "set_visibility", visible: false });
+              })
+              .catch(() => {});
             break;
         case "close_app":
             invoke("exit_app").catch(() => {});

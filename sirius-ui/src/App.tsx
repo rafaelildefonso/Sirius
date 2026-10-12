@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useWebSocket } from "./hooks/useWebSocket";
+import { setWindowVisible } from "./lib/windowState";
 import HudCanvas from "./components/HudCanvas";
 import LogPanel from "./components/LogPanel";
 import SettingsModal from "./components/SettingsModal";
@@ -199,6 +200,7 @@ function App() {
           win.isMinimized(),
         ]);
         const derived = visible && !minimized;
+        setWindowVisible(derived);
         if (derived !== lastVisibilityRef.current) {
           lastVisibilityRef.current = derived;
           send({ type: "set_visibility", visible: derived });
@@ -209,15 +211,16 @@ function App() {
     };
 
     reportVisibility();
-    const pollId = window.setInterval(reportVisibility, 1500);
+    // Safety net only — the real triggers are the Tauri events below.
+    const pollId = window.setInterval(reportVisibility, 5000);
     const unlistenMute = listen("toggle-mute", () => {
       send({ type: "toggle_mute" });
     });
     const unlistenShown = listen("window-shown", () => {
-      send({ type: "set_visibility", visible: true });
+      reportVisibility();
     });
     const unlistenHidden = listen("window-hidden", () => {
-      send({ type: "set_visibility", visible: false });
+      reportVisibility();
     });
     const unlistenFocus = getCurrentWindow()
       .onFocusChanged(reportVisibility)

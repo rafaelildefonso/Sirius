@@ -533,6 +533,10 @@ class ConnectionManager:
     def __init__(self):
         self._lock = threading.Lock()
         self._connections: set[Any] = set()  # websocket objects
+        # Per-connection window visibility (default True). Used to suppress
+        # high-frequency visual broadcasts for clients whose window is hidden,
+        # without affecting other connected clients.
+        self._conn_visible: dict[Any, bool] = {}
         self._loop: asyncio.AbstractEventLoop | None = None
 
         # Pending permission request
@@ -565,11 +569,25 @@ class ConnectionManager:
         with self._lock:
             return len(self._connections) > 0
 
+    def has_visible_connections(self) -> bool:
+        """True when at least one client reports its window as visible."""
+        with self._lock:
+            return any(
+                self._conn_visible.get(ws, True) for ws in self._connections
+            )
+
+    def set_connection_visible(self, ws: Any, visible: bool) -> None:
+        """Mark a specific client's window as visible/hidden."""
+        with self._lock:
+            if ws in self._connections:
+                self._conn_visible[ws] = visible
+
     def add(self, ws: Any) -> None:
         had_clients = False
         with self._lock:
             had_clients = len(self._connections) > 0
             self._connections.add(ws)
+            self._conn_visible[ws] = True
         # Notify anyone waiting for the first client to connect
         if self._client_event is not None:
             self._client_event.set()
@@ -580,24 +598,45 @@ class ConnectionManager:
     def remove(self, ws: Any) -> None:
         with self._lock:
             self._connections.discard(ws)
+            self._conn_visible.pop(ws, None)
 
-    async def broadcast(self, msg: WsMessage) -> None:
+    async def broadcast(self, msg: WsMessage, ui_only: bool = False) -> None:
+        with self._lock:
+            if ui_only:
+                targets = [
+                    ws for ws in list(self._connections)
+                    if self._conn_visible.get(ws, True)
+                ]
+            else:
+                targets = list(self._connections)
+        if not targets:
+            return
         data = msg.to_json()
         dead: set[Any] = set()
-        with self._lock:
-            for ws in list(self._connections):
-                try:
-                    await ws.send(data)
-                except Exception:
-                    dead.add(ws)
-            self._connections -= dead
+        for ws in targets:
+            try:
+                await ws.send(data)
+            except Exception:
+                dead.add(ws)
+        if dead:
+            with self._lock:
+                for ws in dead:
+                    self._connections.discard(ws)
+                    self._conn_visible.pop(ws, None)
 
-    def broadcast_sync(self, msg: WsMessage) -> None:
-        """Thread-safe synchronous broadcast. Call from any thread."""
+    def broadcast_sync(self, msg: WsMessage, ui_only: bool = False) -> None:
+        """Thread-safe synchronous broadcast. Call from any thread.
+
+        ui_only=True skips work entirely when no visible client is
+        connected — used for high-frequency visual messages (state,
+        voice level, audio bins, camera frames).
+        """
         if self._loop is None or self._loop.is_closed():
             return
+        if ui_only and not self.has_visible_connections():
+            return
         try:
-            asyncio.run_coroutine_threadsafe(self.broadcast(msg), self._loop)
+            asyncio.run_coroutine_threadsafe(self.broadcast(msg, ui_only), self._loop)
         except Exception:
             pass
 
@@ -724,6 +763,7 @@ async def _handler(ws: websockets.asyncio.server.ServerConnection) -> None:
 
             elif msg_type == "set_visibility":
                 visible = data.get("visible", True)
+                manager.set_connection_visible(ws, bool(visible))
                 if manager.on_visibility:
                     manager.on_visibility(visible)
 
@@ -2263,6 +2303,9 @@ class WsUI:
         self._visibility_set = True
         self._recalc_muted()
         manager.broadcast_sync(WsMessage("muted", {"muted": self.muted}))
+        if visible:
+            # State broadcasts are suppressed while hidden — re-sync on show.
+            self.send_current_state()
         cb = getattr(self, "on_visibility", None)
         if cb:
             cb(visible)
@@ -2290,18 +2333,21 @@ class WsUI:
 
     def set_state(self, state: str) -> None:
         self._current_state = state
-        manager.broadcast_sync(WsMessage("state", {"state": state}))
+        # ui_only: suppressed for hidden windows, re-sent on show.
+        manager.broadcast_sync(WsMessage("state", {"state": state}), ui_only=True)
 
     def send_current_state(self) -> None:
         """Broadcast the current assistant state to all connected clients.
         Used when a new frontend connects, so it doesn't stay on INITIALISING."""
-        manager.broadcast_sync(WsMessage("state", {"state": self._current_state}))
+        manager.broadcast_sync(WsMessage("state", {"state": self._current_state}), ui_only=True)
 
     def set_voice_level(self, level: float) -> None:
-        manager.broadcast_sync(WsMessage("voice_level", {"level": level}))
+        manager.broadcast_sync(WsMessage("voice_level", {"level": level}), ui_only=True)
 
     def send_audio_bins(self, bins: list[float], source: str) -> None:
-        manager.broadcast_sync(WsMessage("audio_bins", {"bins": bins, "source": source}))
+        manager.broadcast_sync(
+            WsMessage("audio_bins", {"bins": bins, "source": source}), ui_only=True
+        )
 
     def show_content(self, title: str, text: str) -> None:
         manager.broadcast_sync(WsMessage("content_panel", {"title": title, "text": text}))
@@ -2427,12 +2473,15 @@ class WsUI:
         base64-encoded JPEG) and broadcasts it as 'camera_frame'.
         """
         def _send_frame(img_bytes_or_b64):
+            # Skip base64 encoding + WS write while every window is hidden
+            if not manager.has_visible_connections():
+                return
             if isinstance(img_bytes_or_b64, bytes):
                 import base64
                 b64 = base64.b64encode(img_bytes_or_b64).decode("ascii")
             else:
                 b64 = img_bytes_or_b64
-            manager.broadcast_sync(WsMessage("camera_frame", {"image": b64}))
+            manager.broadcast_sync(WsMessage("camera_frame", {"image": b64}), ui_only=True)
         return _send_frame
 
     def stop_camera_stream(self) -> None:
@@ -2441,12 +2490,14 @@ class WsUI:
 
     def show_camera_frame(self, img_bytes_or_b64) -> None:
         """Send a single camera frame (bytes or base64 str)."""
+        if not manager.has_visible_connections():
+            return
         if isinstance(img_bytes_or_b64, bytes):
             import base64
             b64 = base64.b64encode(img_bytes_or_b64).decode("ascii")
         else:
             b64 = img_bytes_or_b64
-        manager.broadcast_sync(WsMessage("camera_frame", {"image": b64}))
+        manager.broadcast_sync(WsMessage("camera_frame", {"image": b64}), ui_only=True)
 
     # ── proactive suggestion ─────────────────────────────────────────
 

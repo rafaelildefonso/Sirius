@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { isWindowVisible } from "../lib/windowState";
 
 function Header() {
   const [time, setTime] = useState("");
@@ -6,6 +7,8 @@ function Header() {
 
   useEffect(() => {
     const tick = () => {
+      // Keep the timer, skip the work while the window is hidden.
+      if (!isWindowVisible()) return;
       const now = new Date();
       setTime(
         now.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })

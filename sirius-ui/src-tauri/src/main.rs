@@ -439,7 +439,9 @@ fn main() {
                 if is_autostart_launch() {
                     log_msg("[Tauri] Autostart launch — starting minimized to tray.");
                     let _ = window.hide();
-                    let _ = window.emit("window-hidden", ());
+                    // Emit on the app handle (same as toggle/close paths) so the
+                    // frontend's global `listen("window-hidden")` receives it.
+                    let _ = app.emit("window-hidden", ());
                 }
             }
 

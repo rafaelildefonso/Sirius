@@ -1,4 +1,5 @@
 import { useRef, useEffect } from "react";
+import { isWindowVisible, onWindowVisibleChange } from "../lib/windowState";
 
 interface AudioBinsData {
   bins: number[];
@@ -36,6 +37,12 @@ function HudCanvas({ state, voiceLevel, muted, audioBins }: HudCanvasProps) {
   const tickRef = useRef(0);
   const rafRef = useRef<number>(0);
   const prevBinsRef = useRef<number[]>([]);
+  // Latest props, read by the draw loop through a ref. This keeps the
+  // effect below running once instead of tearing the rAF loop, the resize
+  // listener and the canvas backing store down on every audio/state
+  // message (voiceLevel alone changes ~15x/s while the mic is open).
+  const propsRef = useRef<HudCanvasProps>({ state, voiceLevel, muted, audioBins });
+  propsRef.current = { state, voiceLevel, muted, audioBins };
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -53,13 +60,24 @@ function HudCanvas({ state, voiceLevel, muted, audioBins }: HudCanvasProps) {
     resize();
     window.addEventListener("resize", resize);
 
-    const isSpeaking = state === "SPEAKING";
-    const isListening = state === "LISTENING";
-    const isMuted = state === "MUTED";
-    const color = COLOR_MAP[state] ?? "#00aaff";
-    const { r, g, b } = hexToRgb(color);
+    let running = false;
 
     const draw = () => {
+      // Suspend mode: stop scheduling frames while the window is hidden.
+      // Tauri WebView2 does not reliably throttle rAF for a merely hidden
+      // (non-minimized) window, so the loop has to stop itself.
+      if (!isWindowVisible() || document.visibilityState === "hidden") {
+        running = false;
+        return;
+      }
+
+      const { state, muted, audioBins } = propsRef.current;
+      const isSpeaking = state === "SPEAKING";
+      const isListening = state === "LISTENING";
+      const isMuted = state === "MUTED";
+      const color = COLOR_MAP[state] ?? "#00aaff";
+      const { r, g, b } = hexToRgb(color);
+
       tickRef.current++;
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
@@ -140,13 +158,34 @@ function HudCanvas({ state, voiceLevel, muted, audioBins }: HudCanvasProps) {
       rafRef.current = requestAnimationFrame(draw);
     };
 
-    rafRef.current = requestAnimationFrame(draw);
+    const start = () => {
+      if (running) return;
+      running = true;
+      rafRef.current = requestAnimationFrame(draw);
+    };
 
-    return () => {
-      window.removeEventListener("resize", resize);
+    const stop = () => {
+      running = false;
       cancelAnimationFrame(rafRef.current);
     };
-  }, [state, voiceLevel, muted, audioBins]);
+
+    const hiddenByDocument = () => document.visibilityState === "hidden";
+    const sync = () => {
+      if (!isWindowVisible() || hiddenByDocument()) stop();
+      else start();
+    };
+
+    sync();
+    const unsubscribe = onWindowVisibleChange(sync);
+    document.addEventListener("visibilitychange", sync);
+
+    return () => {
+      stop();
+      window.removeEventListener("resize", resize);
+      document.removeEventListener("visibilitychange", sync);
+      unsubscribe();
+    };
+  }, []);
 
   return <canvas ref={canvasRef} className="w-full h-full block" />;
 }

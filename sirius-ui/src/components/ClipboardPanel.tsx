@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { isWindowVisible } from "../lib/windowState";
 
 interface ClipboardPanelProps {
   sendCommand: (text: string) => void;
@@ -13,6 +14,8 @@ function ClipboardPanel({ sendCommand }: ClipboardPanelProps) {
 
   useEffect(() => {
     const poll = async () => {
+      // Clipboard watching is a visual feature — skip while hidden.
+      if (!isWindowVisible()) return;
       try {
         const clip = await navigator.clipboard.readText();
         if (clip && clip.length >= 10 && clip !== lastClipRef.current) {

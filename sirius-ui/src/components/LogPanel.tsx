@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { LogEntry } from "../hooks/useWebSocket";
+import { isWindowVisible } from "../lib/windowState";
 
 interface LogPanelProps {
   logs: LogEntry[];
@@ -18,6 +19,9 @@ function LogPanel({ logs }: LogPanelProps) {
   const [displayed, setDisplayed] = useState<string[]>([]);
   const animatingRef = useRef(false);
   const idxRef = useRef(0);
+  // Identity of the last entry rendered — detects a new log even when the
+  // buffer is capped and `logs.length` stops growing.
+  const lastEntryRef = useRef<LogEntry | null>(null);
 
   useEffect(() => {
     if (containerRef.current) {
@@ -27,17 +31,28 @@ function LogPanel({ logs }: LogPanelProps) {
 
   useEffect(() => {
     if (logs.length === 0) {
+      lastEntryRef.current = null;
       setDisplayed([]);
       return;
     }
-    if (displayed.length < logs.length) {
+    const lastEntry = logs[logs.length - 1];
+    if (lastEntry !== lastEntryRef.current) {
       // New entry arrived — reset to show previous entries fully + start animating new one
+      lastEntryRef.current = lastEntry;
       const fullPrev = logs.slice(0, -1).map((e) => e.text);
-      const newText = logs[logs.length - 1].text;
+      const newText = lastEntry.text;
+      if (!isWindowVisible()) {
+        // Typewriter runs a setState every 6ms — skip it while hidden.
+        idxRef.current = newText.length;
+        animatingRef.current = false;
+        setDisplayed([...fullPrev, newText]);
+        return;
+      }
       setDisplayed([...fullPrev, ""]);
       idxRef.current = 0;
       animatingRef.current = true;
       const interval = setInterval(() => {
+        if (!isWindowVisible()) idxRef.current = newText.length;
         idxRef.current++;
         if (idxRef.current >= newText.length) {
           clearInterval(interval);
