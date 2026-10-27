@@ -213,8 +213,8 @@ def _sync_task_edit_to_obsidian(old_task: dict | None, new_task: dict | None) ->
     if not old_task or not new_task:
         return
     try:
-        from core.config_loader import get_all_config
         from actions.obsidian_tasks import update_task_in_obsidian
+        from core.config_loader import get_all_config
         cfg = get_all_config()
         vault_path = cfg.get("obsidian_vault_path")
         if not vault_path:
