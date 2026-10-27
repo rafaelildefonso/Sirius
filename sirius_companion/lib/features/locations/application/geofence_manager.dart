@@ -8,6 +8,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:uuid/uuid.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:drift/drift.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
 import '../background/location_isolate.dart';
 import '../../../../core/storage/database/database.dart';
 import '../../../../core/storage/repositories/sync_repository.dart';
@@ -432,14 +433,31 @@ void onStart(ServiceInstance service) async {
   });
 
   // Periodic sync — silent, no notification update.
+  // Gated on Wi-Fi/Ethernet: the SIRIUS server lives on the local network, so
+  // on cellular this sync can never succeed — it would just burn radio + CPU
+  // on a doomed reachability check every 60 s.
   Timer.periodic(const Duration(seconds: 60), (_) async {
     try {
+      if (!await _isOnLocalNetworkReady()) return;
       await SyncWorker.performSync();
     } catch (_) {}
   });
 
   // Immediate first sync
   await SyncWorker.performSync();
+}
+
+/// True when the device is on Wi-Fi or wired Ethernet — i.e. the networks
+/// where the LAN-hosted SIRIUS PC is actually reachable. Mobile data cannot
+/// reach it, so callers use this to skip doomed sync attempts entirely.
+Future<bool> _isOnLocalNetworkReady() async {
+  try {
+    final results = await Connectivity().checkConnectivity();
+    return results.any((r) =>
+        r == ConnectivityResult.wifi || r == ConnectivityResult.ethernet);
+  } catch (_) {
+    return false;
+  }
 }
 
 // Riverpod providers for reactive UI

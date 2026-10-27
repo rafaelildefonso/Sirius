@@ -29,8 +29,11 @@ class ForegroundSyncService with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     _connectivitySub =
         Connectivity().onConnectivityChanged.listen((results) {
-      final online = results.any((r) => r != ConnectivityResult.none);
-      if (online) SyncWorker.performSync();
+      // Only sync when Wi-Fi/Ethernet comes back — the PC is a LAN host and
+      // is unreachable over cellular, so syncing there would just time out.
+      final onLocalNetwork = results.any((r) =>
+          r == ConnectivityResult.wifi || r == ConnectivityResult.ethernet);
+      if (onLocalNetwork) SyncWorker.performSync();
     });
     // Catch-up for anything that arrived while the app was closed.
     SyncWorker.performSync();
@@ -39,7 +42,21 @@ class ForegroundSyncService with WidgetsBindingObserver {
     // background sync is handled by the foreground service.
     _timer = Timer.periodic(
       _foregroundInterval,
-      (_) => SyncWorker.performSync(),
+      (_) async {
+        // Same gate as the background service: skip the cycle entirely when
+        // on cellular (the PC can't be reached, so the request would only
+        // burn battery on a doomed reachability check).
+        try {
+          final results = await Connectivity().checkConnectivity();
+          final onLocalNetwork = results.any((r) =>
+              r == ConnectivityResult.wifi ||
+              r == ConnectivityResult.ethernet);
+          if (!onLocalNetwork) return;
+        } catch (_) {
+          return;
+        }
+        SyncWorker.performSync();
+      },
     );
   }
 

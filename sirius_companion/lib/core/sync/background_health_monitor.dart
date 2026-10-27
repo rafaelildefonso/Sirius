@@ -5,16 +5,21 @@ import 'package:shared_preferences/shared_preferences.dart';
 /// Centralized monitor that keeps the foreground service alive.
 ///
 /// Strategy:
-/// 1. Writes a heartbeat timestamp every 30 s from inside the service.
-/// 2. A WorkManager periodic task (every 15 min) checks the heartbeat.
-///    If the service has not written in > 2 min the task restarts it.
+/// 1. Writes a heartbeat timestamp every 5 min from inside the service.
+///    (Deliberately infrequent: each write hits SharedPreferences/XML on
+///    disk, and a 30 s cadence was a constant background battery cost. The
+///    trade-off is slower zombie detection — up to ~15 min instead of ~2 min —
+///    which is fine because `onTaskRemoved` + the in-service 5-min watchdog
+///    already cover the common kill scenarios.)
+/// 2. A WorkManager periodic task checks the heartbeat. If the service has
+///    not written in > 12 min the task restarts it.
 /// 3. The app's main isolate also checks on resume and restarts if needed.
 class BackgroundHealthMonitor {
   BackgroundHealthMonitor._();
 
   static const _heartbeatKey = 'sirius_bg_heartbeat';
-  static const Duration _heartbeatInterval = Duration(seconds: 30);
-  static const Duration _staleThreshold = Duration(minutes: 2);
+  static const Duration _heartbeatInterval = Duration(minutes: 5);
+  static const Duration _staleThreshold = Duration(minutes: 12);
 
   static Timer? _heartbeatTimer;
 

@@ -20,8 +20,11 @@ import 'background_health_monitor.dart';
 /// Progress callback for sync operations
 typedef SyncProgressCallback = void Function(String message, double progress);
 
-/// WorkManager task name
+/// WorkManager task names
 const String syncTaskName = 'sirius_sync_task';
+const String maintenanceTaskName = 'sirius_maintenance';
+// Legacy periodic task names — still cancelled on init (see initWorkManager)
+// and still handled by the dispatcher for any instances already enqueued.
 const String healthCheckTaskName = 'sirius_health_check';
 const String taskPullTaskName = 'sirius_task_pull';
 const String notifReassertTaskName = 'sirius_notif_reassert';
@@ -32,58 +35,37 @@ Future<void> initWorkManager() async {
   try {
     await Workmanager().initialize(callbackDispatcher, isInDebugMode: false);
 
-    // Register periodic sync task
-    await Workmanager().registerPeriodicTask(
+    // Cancel the four legacy periodic tasks (pre-consolidation) so devices
+    // upgrading from an older build don't keep running them forever.
+    final wm = Workmanager();
+    for (final legacy in const [
       'sirius_periodic_sync',
-      syncTaskName,
-      frequency: const Duration(minutes: 15),
+      'sirius_bg_health_check',
+      'sirius_periodic_task_pull',
+      'sirius_notif_reassert',
+    ]) {
+      try {
+        await wm.cancelByUniqueName(legacy);
+      } catch (_) {}
+    }
+
+    // Single unified periodic maintenance task (replaces the four separate
+    // 15-min tasks). One enqueued job instead of four is far friendlier to
+    // Doze/battery; each cycle runs the health check, task pull, full sync
+    // and notification re-assert in sequence. 60 min is well above the
+    // WorkManager 15-min floor. `unmetered` + `batteryNotLow` mean it only
+    // runs on Wi-Fi/charging-friendly conditions — which is when the phone
+    // can actually reach the PC on the LAN anyway.
+    await wm.registerPeriodicTask(
+      'sirius_periodic_maintenance',
+      maintenanceTaskName,
+      frequency: const Duration(minutes: 60),
       constraints: Constraints(
-        networkType: NetworkType.connected,
+        networkType: NetworkType.unmetered,
         requiresBatteryNotLow: true,
       ),
       backoffPolicy: BackoffPolicy.exponential,
       initialDelay: const Duration(minutes: 1),
-    );
-
-    // Register periodic health check for the foreground service.
-    // Runs independently from the sync task — if the foreground service
-    // dies, this task restarts it even when the network is unavailable.
-    await Workmanager().registerPeriodicTask(
-      'sirius_bg_health_check',
-      healthCheckTaskName,
-      frequency: const Duration(minutes: 15),
-      initialDelay: const Duration(minutes: 2),
-    );
-
-    // Register one-time immediate sync task
-    await Workmanager().registerOneOffTask(
-      'sirius_immediate_sync',
-      syncTaskName,
-      initialDelay: const Duration(seconds: 10),
-      constraints: Constraints(networkType: NetworkType.connected),
-    );
-
-    // Dedicated task pull — runs independently from the foreground service.
-    // This ensures new tasks from the PC are pulled and alarms are scheduled
-    // even when the foreground service has died.
-    await Workmanager().registerPeriodicTask(
-      'sirius_periodic_task_pull',
-      taskPullTaskName,
-      frequency: const Duration(minutes: 15),
-      constraints: Constraints(
-        networkType: NetworkType.connected,
-        requiresBatteryNotLow: true,
-      ),
-      initialDelay: const Duration(minutes: 3),
-    );
-
-    // Re-assert the ongoing daily task notifications. Android/OEMs can drop
-    // them without any callback, so check the shade on a fixed cadence.
-    await Workmanager().registerPeriodicTask(
-      'sirius_notif_reassert',
-      notifReassertTaskName,
-      frequency: const Duration(minutes: 15),
-      initialDelay: const Duration(minutes: 4),
     );
   } catch (e) {
     print('[WorkManager] Init failed: $e');
@@ -94,9 +76,16 @@ Future<void> initWorkManager() async {
 @pragma('vm:entry-point')
 void callbackDispatcher() {
   Workmanager().executeTask((taskName, inputData) async {
-    if (taskName == syncTaskName) {
+    if (taskName == maintenanceTaskName) {
+      // Unified cycle: health first (cheap), then network-bound work.
+      await BackgroundHealthMonitor.restartIfDead();
+      await SyncWorker.pullTasksOnly();
+      await SyncWorker.performSync();
+      await TaskAlarmService.ensureTodayNotificationsActive();
+    } else if (taskName == syncTaskName) {
       await SyncWorker.performSync();
     } else if (taskName == healthCheckTaskName) {
+      // Legacy task still enqueued on devices upgrading from older builds.
       await BackgroundHealthMonitor.restartIfDead();
     } else if (taskName == taskPullTaskName) {
       await SyncWorker.pullTasksOnly();
