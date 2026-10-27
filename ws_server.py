@@ -2298,11 +2298,37 @@ class WsUI:
         self._recalc_muted()
         manager.broadcast_sync(WsMessage("muted", {"muted": self.muted}))
 
+    def _trim_working_set(self) -> None:
+        """Release the backend's committed RAM back to the OS while hidden.
+
+        Mirrors the Tauri shell's EmptyWorkingSet: with SIRIUS minimized to
+        tray, the Python process keeps its whole working set (LLM caches,
+        Playwright/browser state, icon bitmaps) resident for no reason.
+        Pushing it out to the pagefile makes idle tray time nearly free in
+        physical RAM. No-op on non-Windows platforms.
+        """
+        import sys
+
+        if sys.platform != "win32":
+            return
+        try:
+            import ctypes
+
+            k32 = ctypes.windll.kernel32
+            psapi = ctypes.windll.psapi
+            psapi.EmptyWorkingSet(k32.GetCurrentProcess())
+            print("[WS] Backend working set trimmed (window hidden).")
+        except Exception:
+            pass
+
     def _on_visibility_from_ws(self, visible: bool) -> None:
         self._window_visible = visible
         self._visibility_set = True
         self._recalc_muted()
         manager.broadcast_sync(WsMessage("muted", {"muted": self.muted}))
+        if not visible:
+            # Hidden to tray — give the RAM back to the OS.
+            self._trim_working_set()
         if visible:
             # State broadcasts are suppressed while hidden — re-sync on show.
             self.send_current_state()

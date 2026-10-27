@@ -211,8 +211,10 @@ function App() {
     };
 
     reportVisibility();
-    // Safety net only — the real triggers are the Tauri events below.
-    const pollId = window.setInterval(reportVisibility, 5000);
+    // No polling: the Tauri events below are the triggers (the Rust shell
+    // emits window-shown/window-hidden on every show/hide path, and focus
+    // changes are covered by onFocusChanged). Polling every 5 s kept the
+    // event loop and the WS round-trip awake even when nothing changed.
     const unlistenMute = listen("toggle-mute", () => {
       send({ type: "toggle_mute" });
     });
@@ -226,7 +228,6 @@ function App() {
       .onFocusChanged(reportVisibility)
       .catch(() => () => {});
     return () => {
-      window.clearInterval(pollId);
       unlistenMute.then((f) => f());
       unlistenShown.then((f) => f());
       unlistenHidden.then((f) => f());

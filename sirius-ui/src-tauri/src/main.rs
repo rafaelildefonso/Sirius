@@ -242,6 +242,7 @@ fn toggle_window(app: &tauri::AppHandle) {
         if window.is_visible().unwrap_or(false) {
             let _ = window.hide();
             let _ = app.emit("window-hidden", ());
+            trim_working_set();
         } else {
             let _ = window.show();
             let _ = window.set_focus();
@@ -258,6 +259,28 @@ fn focus_window(app: &tauri::AppHandle) {
         let _ = app.emit("window-shown", ());
     }
 }
+
+// ── Working-set trim — give RAM back to the OS while hidden ─────────────────
+// When SIRIUS lives in the tray its UI memory (Chromium/EWebView pages,
+// icon caches, etc.) stays committed. EmptyWorkingSet pushes it all out to
+// the pagefile, so an idle-to-tray instance costs almost no physical RAM.
+#[cfg(windows)]
+fn trim_working_set() {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetCurrentProcess() -> isize;
+    }
+    #[link(name = "psapi")]
+    extern "system" {
+        fn EmptyWorkingSet(hProcess: isize) -> i32;
+    }
+    unsafe {
+        let _ = EmptyWorkingSet(GetCurrentProcess());
+    }
+}
+
+#[cfg(not(windows))]
+fn trim_working_set() {}
 
 fn create_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let show_hide = MenuItemBuilder::with_id("toggle", "Mostrar / Ocultar")
@@ -442,6 +465,7 @@ fn main() {
                     // Emit on the app handle (same as toggle/close paths) so the
                     // frontend's global `listen("window-hidden")` receives it.
                     let _ = app.emit("window-hidden", ());
+                    trim_working_set();
                 }
             }
 
@@ -471,6 +495,7 @@ fn main() {
                 api.prevent_close();
                 let _ = window.hide();
                 let _ = window.emit("window-hidden", ());
+                trim_working_set();
                 log_msg("[Tauri] Window close requested – hiding to tray.");
             }
         })
