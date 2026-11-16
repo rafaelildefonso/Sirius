@@ -122,7 +122,7 @@ class NoteRepository {
 
   Future<List<Note>> getPending() async {
     return await (_db.select(_db.notes)
-          ..where((tbl) => tbl.syncStatus.equals('pending'))
+          ..where((tbl) => tbl.syncStatus.isIn(['pending', 'error', 'syncing']))
           ..orderBy([(t) => OrderingTerm.asc(t.createdAt)]))
         .get();
   }
@@ -201,7 +201,7 @@ class NoteRepository {
 
   Future<int> getPendingCount() async {
     final query = _db.select(_db.notes)
-      ..where((tbl) => tbl.syncStatus.equals('pending'));
+      ..where((tbl) => tbl.syncStatus.isIn(['pending', 'error', 'syncing']));
     final count = await query.get();
     return count.length;
   }

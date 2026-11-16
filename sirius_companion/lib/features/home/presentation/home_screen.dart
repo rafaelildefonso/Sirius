@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'dart:async';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../../../../core/network/api_client.dart';
 import '../application/home_controller.dart';
 import '../../../../core/storage/models/sync_item.dart' as sync_model;
 import '../../../../core/storage/repositories/note_repository.dart';
@@ -15,10 +16,14 @@ import '../../../../core/ai/hf_auth_webview.dart';
 import '../../../../features/tasks/task_alarm_service.dart';
 import '../../../../features/tasks/presentation/create_task_screen.dart';
 import '../../../../features/tasks/presentation/edit_task_screen.dart';
+import '../../../../features/tasks/presentation/routine_screen.dart';
+import '../../../../features/tasks/recurring_task_service.dart';
+import '../../../../features/tasks/routine_service.dart';
 import '../../locations/presentation/places_screen.dart';
 import '../../notes/presentation/notes_screen.dart';
 import '../../notes/presentation/note_editor_screen.dart';
 import '../../pairing/presentation/pairing_screen.dart';
+import 'shutdown_confirmation.dart';
 
 class HomeScreen extends ConsumerStatefulWidget {
   const HomeScreen({super.key});
@@ -30,6 +35,8 @@ class HomeScreen extends ConsumerStatefulWidget {
 class _HomeScreenState extends ConsumerState<HomeScreen>
     with WidgetsBindingObserver {
   int _taskTick = 0;
+  int _tab = 0;
+  bool _shutdownPending = false;
   AppLifecycleListener? _lifecycleListener;
 
   @override
@@ -41,6 +48,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
         // isolate while we were paused — force a re-read.
         CrossIsolateRefresh.refreshNow();
         unawaited(TaskAlarmService.ensureTodayNotificationsActive());
+        unawaited(RoutineService.generateUpcomingOccurrences());
         await ref.read(homeControllerProvider.notifier).loadStatus();
         await ref.read(homeControllerProvider.notifier).checkConnectivity();
         _refreshTasks();
@@ -107,262 +115,417 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   Widget build(BuildContext context) {
     final state = ref.watch(homeControllerProvider);
     final controller = ref.read(homeControllerProvider.notifier);
-    final serverUrlFuture = DeviceIdentity.getServerUrl();
 
     return Scaffold(
       backgroundColor: const Color(0xFF07090F),
-      appBar: AppBar(
-        title: const Text('SIRIUS Companion'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.settings_outlined),
-            onPressed: () => _showSettings(context),
+      appBar: _tab == 0
+          ? AppBar(
+              title: const Text('SIRIUS Companion'),
+              actions: [
+                IconButton(
+                  icon: const Icon(Icons.calendar_view_week_outlined),
+                  tooltip: 'Rotina semanal',
+                  onPressed: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const RoutineScreen()),
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.settings_outlined),
+                  onPressed: () => _showSettings(context),
+                ),
+              ],
+            )
+          : null,
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: _tab,
+        onDestinationSelected: (index) => setState(() => _tab = index),
+        destinations: const [
+          NavigationDestination(
+            icon: Icon(Icons.home_outlined),
+            label: 'Início',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.check_circle_outline),
+            label: 'Tarefas',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.calendar_view_week_outlined),
+            label: 'Rotina',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.sticky_note_2_outlined),
+            label: 'Notas',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.settings_outlined),
+            label: 'Mais',
           ),
         ],
       ),
-      body: RefreshIndicator(
-        onRefresh: () async {
-          await ref.read(homeControllerProvider.notifier).loadStatus();
-          await ref.read(homeControllerProvider.notifier).checkConnectivity();
-          _refreshTasks();
-        },
-        color: const Color(0xFF6366F1),
-        child: ListView(
-          padding: const EdgeInsets.all(16),
-          children: [
-            FutureBuilder<String?>(
-              future: serverUrlFuture,
-              builder: (context, snapshot) {
-                return _ConnectionStatusCard(
-                  state: state,
-                  onRefresh: () => controller.checkConnectivity(),
-                  serverUrl: snapshot.data,
-                );
-              },
-            ),
-            const SizedBox(height: 16),
-            const _AlarmPermissionBanner(),
-            const SizedBox(height: 16),
-            _QuickActionButtons(
-              onQuickTask: _openQuickTaskModal,
-              onQuickNote: _openQuickNoteModal,
-            ),
-            const SizedBox(height: 16),
-            _UpcomingTasksSection(
-              tick: _taskTick,
-              onChanged: _refreshTasks,
+      body: _tab == 1
+          ? _AllTasksScreen(
               onEdit: _openEditTaskModal,
-            ),
-            const SizedBox(height: 16),
-            _QuickActions(
-              isSyncing: state.isSyncing,
-              onSync: () async {
-                final result = await controller.triggerManualSync();
-                // The sync writes tasks into SQLite after this screen has
-                // already built its FutureBuilder. Force the task section to
-                // read the freshly pulled rows immediately.
-                _refreshTasks();
-                if (!mounted) return;
-                if (result != null) {
-                  if (result.success) {
-                    // Show detailed success dialog
-                    showDialog(
-                      context: context,
-                      builder: (ctx) => AlertDialog(
-                        backgroundColor: const Color(0xFF0D1117),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(16),
-                        ),
-                        title: const Row(
-                          children: [
-                            Icon(
-                              Icons.check_circle,
-                              color: Color(0xFF22C55E),
-                              size: 24,
-                            ),
-                            SizedBox(width: 10),
-                            Expanded(
-                              child: Text(
-                                'Sincronização Concluída',
-                                style: TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 18,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                        content: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            const Text(
-                              'Itens enviados ao PC:',
-                              style: TextStyle(
-                                color: Color(0xFF9CA3AF),
-                                fontSize: 12,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                            const SizedBox(height: 8),
-                            if (result.notesSent > 0)
-                              _SyncDetailRow(
-                                icon: Icons.note_alt_outlined,
-                                label: 'Anotações (migradas pro PC)',
-                                count: result.notesSent,
-                                color: const Color(0xFF6366F1),
-                              ),
-                            if (result.visitsSent > 0)
-                              _SyncDetailRow(
-                                icon: Icons.place,
-                                label: 'Visitas a locais',
-                                count: result.visitsSent,
-                                color: const Color(0xFF22C55E),
-                              ),
-                            if (result.syncItemsSent > 0)
-                              _SyncDetailRow(
-                                icon: Icons.sync,
-                                label: 'Comandos/Tarefas',
-                                count: result.syncItemsSent,
-                                color: const Color(0xFFF59E0B),
-                              ),
-                            if (result.notesSent == 0 &&
-                                result.visitsSent == 0 &&
-                                result.syncItemsSent == 0)
-                              const Padding(
-                                padding: EdgeInsets.symmetric(vertical: 8),
-                                child: Text(
-                                  'Nenhum item novo para enviar',
-                                  style: TextStyle(color: Color(0xFF5E6A7E)),
-                                ),
-                              ),
-                            const SizedBox(height: 16),
-                            const Text(
-                              'Itens recebidos do PC:',
-                              style: TextStyle(
-                                color: Color(0xFF9CA3AF),
-                                fontSize: 12,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                            const SizedBox(height: 8),
-                            if (result.itemsPulled > 0)
-                              _SyncDetailRow(
-                                icon: Icons.download,
-                                label: 'Tarefas/Comandos',
-                                count: result.itemsPulled,
-                                color: const Color(0xFF6366F1),
-                              )
-                            else
-                              const Padding(
-                                padding: EdgeInsets.symmetric(vertical: 8),
-                                child: Text(
-                                  'Nenhuma atualização nova',
-                                  style: TextStyle(color: Color(0xFF5E6A7E)),
-                                ),
-                              ),
-                            const SizedBox(height: 16),
-                            const Divider(color: Color(0xFF374151)),
-                            const SizedBox(height: 8),
-                            Text(
-                              'Total: ${result.notesSent + result.visitsSent + result.syncItemsSent} enviados, ${result.itemsPulled} recebidos',
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                            const SizedBox(height: 4),
-                            const Text(
-                              '✓ Anotações salvas no PC • Tarefas mantidas no celular',
-                              style: TextStyle(
-                                color: Color(0xFF22C55E),
-                                fontSize: 11,
-                              ),
-                            ),
-                          ],
-                        ),
-                        actions: [
-                          TextButton(
-                            onPressed: () => Navigator.pop(ctx),
-                            child: const Text(
-                              'OK',
-                              style: TextStyle(color: Color(0xFF6366F1)),
-                            ),
-                          ),
-                        ],
+              onChanged: _refreshTasks,
+            )
+          : _tab == 2
+          ? const RoutineScreen()
+          : _tab == 3
+          ? const NotesScreen()
+          : _tab == 4
+          ? Scaffold(
+              appBar: AppBar(title: const Text('Mais')),
+              body: ListView(
+                padding: const EdgeInsets.all(16),
+                children: [
+                  Card(
+                    child: ListTile(
+                      leading: Icon(
+                        state.isConnected ? Icons.computer : Icons.cloud_off,
                       ),
-                    );
-                  } else {
-                    // Show error dialog
-                    showDialog(
-                      context: context,
-                      builder: (ctx) => AlertDialog(
-                        backgroundColor: const Color(0xFF0D1117),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(16),
-                        ),
-                        title: const Row(
-                          children: [
-                            Icon(
-                              Icons.error_outline,
-                              color: Color(0xFFEF4444),
-                              size: 24,
-                            ),
-                            SizedBox(width: 10),
-                            Expanded(
-                              child: Text(
-                                'Falha na Sincronização',
-                                style: TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 18,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                        content: Text(
-                          result.error ?? 'Erro desconhecido',
-                          style: const TextStyle(color: Color(0xFF9CA3AF)),
-                        ),
-                        actions: [
-                          TextButton(
-                            onPressed: () => Navigator.pop(ctx),
-                            child: const Text(
-                              'OK',
-                              style: TextStyle(color: Color(0xFFEF4444)),
-                            ),
-                          ),
-                        ],
+                      title: const Text('Seu computador'),
+                      subtitle: Text(
+                        state.isConnected
+                            ? 'Conectado ao Sirius'
+                            : 'Indisponível no momento',
                       ),
-                    );
-                  }
-                }
-              },
-              onUnpair: () => _showUnpairDialog(context, controller),
-              onPlaces: _navigateToPlaces,
-              onNotes: _navigateToNotes,
-            ),
-            const SizedBox(height: 16),
-            _StatsRow(
-              pendingCount: state.pendingCount,
-              failedCount: state.failedCount,
-              pendingNotesCount: state.pendingNotesCount,
-              pendingVisitsCount: state.pendingVisitsCount,
-              totalPendingCount: state.totalPendingCount,
-              lastSync: state.lastSync,
-            ),
-            const SizedBox(height: 16),
-            _RecentCommandsSection(commands: state.recentCommands),
-            const SizedBox(height: 16),
-            if (state.lastSync != null || state.lastError != null)
-              _LastSyncInfo(
-                lastSync: state.lastSync,
-                lastError: state.lastError,
+                    ),
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.sync),
+                    title: const Text('Sincronizar agora'),
+                    subtitle: Text(
+                      state.isSyncing
+                          ? 'Sincronização em andamento'
+                          : 'Atualize tarefas, notas e lugares',
+                    ),
+                    enabled: !state.isSyncing,
+                    onTap: () => _syncNow(controller),
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.place_outlined),
+                    title: const Text('Meus lugares'),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: _navigateToPlaces,
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.settings_outlined),
+                    title: const Text('Configurações'),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: () => _showSettings(context),
+                  ),
+                  const Divider(),
+                  ListTile(
+                    leading: const Icon(
+                      Icons.power_settings_new,
+                      color: Colors.redAccent,
+                    ),
+                    title: const Text('Desligar computador'),
+                    enabled: !_shutdownPending,
+                    onTap: () => _confirmComputerShutdown(state.isConnected),
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.link_off),
+                    title: const Text('Desparear computador'),
+                    onTap: () => _showUnpairDialog(context, controller),
+                  ),
+                ],
               ),
-          ],
+            )
+          : RefreshIndicator(
+              onRefresh: () async {
+                await ref.read(homeControllerProvider.notifier).loadStatus();
+                await ref
+                    .read(homeControllerProvider.notifier)
+                    .checkConnectivity();
+                _refreshTasks();
+              },
+              color: const Color(0xFF6366F1),
+              child: ListView(
+                padding: const EdgeInsets.all(16),
+                children: [
+                  Text(
+                    'Seu dia, mais organizado.',
+                    style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    state.isConnected
+                        ? 'Computador conectado'
+                        : 'Computador indisponível',
+                    style: TextStyle(
+                      color: state.isConnected
+                          ? Colors.greenAccent
+                          : Colors.white60,
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                  _QuickActionButtons(
+                    onQuickTask: _openQuickTaskModal,
+                    onQuickNote: _openQuickNoteModal,
+                  ),
+                  const SizedBox(height: 16),
+                  const _AlarmPermissionBanner(),
+                  const SizedBox(height: 16),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: TextButton(
+                      onPressed: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => _AllTasksScreen(
+                            onEdit: _openEditTaskModal,
+                            onChanged: _refreshTasks,
+                          ),
+                        ),
+                      ),
+                      child: const Text('Ver todas as tarefas'),
+                    ),
+                  ),
+                  _UpcomingTasksSection(
+                    tick: _taskTick,
+                    onChanged: _refreshTasks,
+                    onEdit: _openEditTaskModal,
+                  ),
+                  const SizedBox(height: 16),
+                  Card(
+                    child: ListTile(
+                      leading: const Icon(Icons.calendar_view_week_outlined),
+                      title: const Text('Sua rotina'),
+                      subtitle: const Text('Veja seus hábitos e sua semana'),
+                      trailing: const Icon(Icons.chevron_right),
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => const RoutineScreen(),
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                  ExpansionTile(
+                    leading: const Icon(Icons.computer_outlined),
+                    title: const Text('Computador e sincronização'),
+                    subtitle: const Text('Conexão, lugares e informações'),
+                    children: [
+                      _QuickActions(
+                        isSyncing: state.isSyncing,
+                        isConnected: state.isConnected,
+                        onSync: () => _syncNow(controller),
+                        onUnpair: () => _showUnpairDialog(context, controller),
+                        onPlaces: _navigateToPlaces,
+                        onNotes: _navigateToNotes,
+                      ),
+                      const SizedBox(height: 8),
+                      SizedBox(
+                        width: double.infinity,
+                        child: OutlinedButton.icon(
+                          onPressed: !_shutdownPending
+                              ? () =>
+                                    _confirmComputerShutdown(state.isConnected)
+                              : null,
+                          icon: _shutdownPending
+                              ? const SizedBox(
+                                  width: 18,
+                                  height: 18,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : const Icon(Icons.power_settings_new),
+                          label: Text(
+                            _shutdownPending
+                                ? 'Enviando pedido...'
+                                : 'Desligar computador',
+                          ),
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: const Color(0xFFF87171),
+                            side: const BorderSide(color: Color(0xFF7F1D1D)),
+                            padding: const EdgeInsets.symmetric(vertical: 14),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      _RecurringTasksSection(tick: _taskTick),
+                      const SizedBox(height: 16),
+                      _StatsRow(
+                        pendingCount: state.pendingCount,
+                        failedCount: state.failedCount,
+                        pendingNotesCount: state.pendingNotesCount,
+                        pendingVisitsCount: state.pendingVisitsCount,
+                        totalPendingCount: state.totalPendingCount,
+                        lastSync: state.lastSync,
+                      ),
+                      const SizedBox(height: 16),
+                      _RecentCommandsSection(commands: state.recentCommands),
+                      const SizedBox(height: 16),
+                      if (state.lastSync != null || state.lastError != null)
+                        _LastSyncInfo(
+                          lastSync: state.lastSync,
+                          lastError: state.lastError,
+                        ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+    );
+  }
+
+  Future<void> _confirmComputerShutdown(bool isConnected) async {
+    if (_shutdownPending) return;
+    final confirmed = await confirmComputerShutdown(context);
+    if (!confirmed || !mounted) return;
+
+    if (!isConnected) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('O PC pareado está desconectado ou indisponível.'),
+          backgroundColor: Color(0xFF7F1D1D),
         ),
+      );
+      return;
+    }
+
+    setState(() => _shutdownPending = true);
+    final result = await ApiClient.instance.requestComputerShutdown();
+    if (!mounted) return;
+    setState(() => _shutdownPending = false);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(result.message),
+        backgroundColor: result.accepted
+            ? const Color(0xFF166534)
+            : const Color(0xFF7F1D1D),
+        duration: const Duration(seconds: 5),
+      ),
+    );
+  }
+
+  Future<void> _syncNow(HomeController controller) async {
+    final result = await controller.triggerManualSync();
+    _refreshTasks();
+    if (!mounted || result == null) return;
+
+    final sentItems = <Widget>[
+      const Text(
+        'Itens enviados ao PC:',
+        style: TextStyle(
+          color: Color(0xFF9CA3AF),
+          fontSize: 12,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+      const SizedBox(height: 8),
+      if (result.notesSent > 0)
+        _SyncDetailRow(
+          icon: Icons.note_alt_outlined,
+          label: 'Anotações (migradas pro PC)',
+          count: result.notesSent,
+          color: const Color(0xFF6366F1),
+        ),
+      if (result.visitsSent > 0)
+        _SyncDetailRow(
+          icon: Icons.place,
+          label: 'Visitas a locais',
+          count: result.visitsSent,
+          color: const Color(0xFF22C55E),
+        ),
+      if (result.syncItemsSent > 0)
+        _SyncDetailRow(
+          icon: Icons.sync,
+          label: 'Comandos/Tarefas',
+          count: result.syncItemsSent,
+          color: const Color(0xFFF59E0B),
+        ),
+      if (result.notesSent == 0 &&
+          result.visitsSent == 0 &&
+          result.syncItemsSent == 0)
+        const Padding(
+          padding: EdgeInsets.symmetric(vertical: 8),
+          child: Text(
+            'Nenhum item novo para enviar',
+            style: TextStyle(color: Color(0xFF5E6A7E)),
+          ),
+        ),
+      const SizedBox(height: 16),
+      const Text(
+        'Itens recebidos do PC:',
+        style: TextStyle(
+          color: Color(0xFF9CA3AF),
+          fontSize: 12,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+      const SizedBox(height: 8),
+      if (result.itemsPulled > 0)
+        _SyncDetailRow(
+          icon: Icons.download,
+          label: 'Tarefas/Comandos',
+          count: result.itemsPulled,
+          color: const Color(0xFF6366F1),
+        )
+      else
+        const Padding(
+          padding: EdgeInsets.symmetric(vertical: 8),
+          child: Text(
+            'Nenhuma atualização nova',
+            style: TextStyle(color: Color(0xFF5E6A7E)),
+          ),
+        ),
+      const SizedBox(height: 16),
+      const Divider(color: Color(0xFF374151)),
+      const SizedBox(height: 8),
+      Text(
+        'Total: ${result.notesSent + result.visitsSent + result.syncItemsSent} enviados, ${result.itemsPulled} recebidos',
+        style: const TextStyle(
+          color: Colors.white,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+      const SizedBox(height: 4),
+      const Text(
+        'Anotações salvas no PC • Tarefas mantidas no celular',
+        style: TextStyle(color: Color(0xFF22C55E), fontSize: 11),
+      ),
+    ];
+
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF0D1117),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Text(
+          result.success ? 'Sincronização Concluída' : 'Falha na Sincronização',
+          style: const TextStyle(color: Colors.white, fontSize: 18),
+        ),
+        content: result.success
+            ? SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: sentItems,
+                ),
+              )
+            : Text(
+                result.error ?? 'Erro desconhecido',
+                style: const TextStyle(color: Color(0xFF9CA3AF)),
+              ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text(
+              'OK',
+              style: TextStyle(
+                color: result.success
+                    ? const Color(0xFF6366F1)
+                    : const Color(0xFFEF4444),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -531,122 +694,9 @@ class _AlarmPermissionBannerState extends State<_AlarmPermissionBanner> {
   }
 }
 
-class _ConnectionStatusCard extends StatelessWidget {
-  final HomeState state;
-  final VoidCallback onRefresh;
-  final String? serverUrl;
-
-  const _ConnectionStatusCard({
-    required this.state,
-    required this.onRefresh,
-    this.serverUrl,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final connected = state.isConnected;
-    final syncing = state.isSyncing;
-    String displayUrl = 'IP desconhecido';
-    final url = serverUrl;
-    if (url != null) {
-      try {
-        final uri = Uri.parse(url);
-        displayUrl = '${uri.host}:${uri.port}';
-      } catch (_) {
-        displayUrl = url;
-      }
-    }
-
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: const Color(0xFFFFFFFF).withValues(alpha: 0.04),
-        border: Border.all(
-          color: connected
-              ? const Color(0xFF22C55E).withValues(alpha: 0.3)
-              : const Color(0xFFEF4444).withValues(alpha: 0.3),
-        ),
-        borderRadius: BorderRadius.circular(22),
-      ),
-      child: Column(
-        children: [
-          Row(
-            children: [
-              Container(
-                width: 12,
-                height: 12,
-                decoration: BoxDecoration(
-                  color: syncing
-                      ? const Color(0xFFF59E0B)
-                      : connected
-                      ? const Color(0xFF22C55E)
-                      : const Color(0xFFEF4444),
-                  shape: BoxShape.circle,
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      syncing
-                          ? 'Sincronizando...'
-                          : connected
-                          ? 'Conectado ao SIRIUS'
-                          : 'Desconectado do SIRIUS',
-                      style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w600,
-                        color: connected
-                            ? Colors.white
-                            : const Color(0xFFEF4444),
-                      ),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      syncing
-                          ? (state.syncProgressMessage ?? 'Processando...')
-                          : connected
-                          ? 'Conectado em $displayUrl'
-                          : 'PC não encontrado na rede local',
-                      style: const TextStyle(
-                        fontSize: 12,
-                        color: Color(0xFF5E6A7E),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              if (syncing)
-                const SizedBox(
-                  width: 20,
-                  height: 20,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 2,
-                    valueColor: AlwaysStoppedAnimation(Color(0xFF6366F1)),
-                  ),
-                )
-              else if (!connected)
-                IconButton(
-                  icon: const Icon(
-                    Icons.refresh,
-                    color: Color(0xFFEF4444),
-                    size: 20,
-                  ),
-                  onPressed: onRefresh,
-                  tooltip: 'Verificar Conexão',
-                ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-}
-
 class _QuickActions extends StatelessWidget {
   final bool isSyncing;
+  final bool isConnected;
   final VoidCallback onSync;
   final VoidCallback onUnpair;
   final VoidCallback onPlaces;
@@ -654,6 +704,7 @@ class _QuickActions extends StatelessWidget {
 
   const _QuickActions({
     required this.isSyncing,
+    required this.isConnected,
     required this.onSync,
     required this.onUnpair,
     required this.onPlaces,
@@ -692,25 +743,55 @@ class _QuickActions extends StatelessWidget {
               ),
             ),
             const SizedBox(width: 12),
-            OutlinedButton.icon(
-              onPressed: onUnpair,
-              icon: const Icon(Icons.link_off, size: 18),
-              label: const Text('Desparear'),
-              style: OutlinedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(
-                  vertical: 16,
-                  horizontal: 20,
-                ),
-                side: BorderSide(
-                  color: const Color(0xFFEF4444).withValues(alpha: 0.5),
-                ),
-                foregroundColor: const Color(0xFFEF4444),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(14),
-                ),
+            Semantics(
+              label: isConnected ? 'PC conectado' : 'PC desconectado',
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: 16,
+                    height: 16,
+                    decoration: BoxDecoration(
+                      color: isConnected
+                          ? const Color(0xFF22C55E)
+                          : const Color(0xFFEF4444),
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    isConnected ? 'PC conectado' : 'PC desconectado',
+                    style: TextStyle(
+                      color: isConnected
+                          ? const Color(0xFF22C55E)
+                          : const Color(0xFFEF4444),
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
               ),
             ),
           ],
+        ),
+        const SizedBox(height: 12),
+        SizedBox(
+          width: double.infinity,
+          child: OutlinedButton.icon(
+            onPressed: onUnpair,
+            icon: const Icon(Icons.link_off, size: 18),
+            label: const Text('Desparear'),
+            style: OutlinedButton.styleFrom(
+              padding: const EdgeInsets.symmetric(vertical: 16),
+              side: BorderSide(
+                color: const Color(0xFFEF4444).withValues(alpha: 0.5),
+              ),
+              foregroundColor: const Color(0xFFEF4444),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(14),
+              ),
+            ),
+          ),
         ),
         const SizedBox(height: 12),
         SizedBox(
@@ -2288,6 +2369,174 @@ class _SettingsTile extends StatelessWidget {
 //
 // Moved to features/tasks/presentation/create_task_screen.dart
 
+class _AllTasksScreen extends StatefulWidget {
+  const _AllTasksScreen({required this.onEdit, required this.onChanged});
+  final void Function(ScheduledTask) onEdit;
+  final VoidCallback onChanged;
+
+  @override
+  State<_AllTasksScreen> createState() => _AllTasksScreenState();
+}
+
+class _AllTasksScreenState extends State<_AllTasksScreen> {
+  int filter = 0;
+  late final Stream<List<ScheduledTask>> tasks = AppDatabase()
+      .select(AppDatabase().scheduledTasks)
+      .watch();
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(title: const Text('Todas as tarefas')),
+    floatingActionButton: FloatingActionButton.extended(
+      onPressed: () async {
+        await Navigator.push(
+          context,
+          MaterialPageRoute(builder: (_) => const CreateTaskScreen()),
+        );
+        widget.onChanged();
+      },
+      icon: const Icon(Icons.add),
+      label: const Text('Nova tarefa'),
+    ),
+    body: Column(
+      children: [
+        SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Row(
+            children: List.generate(
+              5,
+              (i) => Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: ChoiceChip(
+                  label: Text(
+                    ['Todas', 'Hoje', 'Próximas', 'Atrasadas', 'Concluídas'][i],
+                  ),
+                  selected: filter == i,
+                  onSelected: (_) => setState(() => filter = i),
+                ),
+              ),
+            ),
+          ),
+        ),
+        Expanded(
+          child: StreamBuilder<List<ScheduledTask>>(
+            stream: tasks,
+            builder: (context, snapshot) {
+              if (snapshot.hasError)
+                return const Center(
+                  child: Text('Não foi possível carregar as tarefas.'),
+                );
+              if (!snapshot.hasData)
+                return const Center(child: CircularProgressIndicator());
+              final now = DateTime.now();
+              final today = DateTime(now.year, now.month, now.day);
+              final tomorrow = DateTime(now.year, now.month, now.day + 1);
+              final items =
+                  snapshot.data!.where((task) {
+                    if (task.source == 'routine') return false;
+                    if (filter == 4) return task.status == 'done';
+                    if (task.status != 'pending' && task.status != 'notified')
+                      return false;
+                    final date = task.isDateRange ? task.endDate : task.dueAt;
+                    if (filter == 0) return true;
+                    if (filter == 1) {
+                      if (task.isDateRange &&
+                          task.startDate != null &&
+                          task.endDate != null) {
+                        return task.startDate!.isBefore(tomorrow) &&
+                            !task.endDate!.isBefore(today);
+                      }
+                      return date != null &&
+                          date.isBefore(tomorrow) &&
+                          !date.isBefore(today);
+                    }
+                    if (filter == 2) {
+                      final next = task.isDateRange ? task.startDate : date;
+                      return next == null || !next.isBefore(tomorrow);
+                    }
+                    return date != null && date.isBefore(today);
+                  }).toList()..sort(
+                    (a, b) => (a.dueAt ?? a.startDate ?? DateTime(9999))
+                        .compareTo(b.dueAt ?? b.startDate ?? DateTime(9999)),
+                  );
+              if (items.isEmpty)
+                return const Center(child: Text('Nenhuma tarefa nesta lista.'));
+              return ListView.builder(
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 90),
+                itemCount: items.length,
+                itemBuilder: (context, index) {
+                  final task = items[index];
+                  final date = task.dueAt ?? task.startDate;
+                  return Card(
+                    child: ListTile(
+                      title: Text(task.title),
+                      subtitle: Text(
+                        date == null
+                            ? 'Sem data'
+                            : '${date.day.toString().padLeft(2, '0')}/${date.month.toString().padLeft(2, '0')} ${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}',
+                      ),
+                      onTap: task.status == 'done'
+                          ? null
+                          : () => widget.onEdit(task),
+                      trailing: task.status == 'done'
+                          ? const Icon(
+                              Icons.check_circle,
+                              color: Colors.greenAccent,
+                            )
+                          : IconButton(
+                              tooltip: 'Concluir tarefa',
+                              icon: const Icon(Icons.check_circle_outline),
+                              onPressed: () async {
+                                final confirmed = await showDialog<bool>(
+                                  context: context,
+                                  builder: (ctx) => AlertDialog(
+                                    title: const Text('Concluir tarefa?'),
+                                    content: Text(task.title),
+                                    actions: [
+                                      TextButton(
+                                        onPressed: () =>
+                                            Navigator.pop(ctx, false),
+                                        child: const Text('Cancelar'),
+                                      ),
+                                      FilledButton(
+                                        onPressed: () =>
+                                            Navigator.pop(ctx, true),
+                                        child: const Text('Concluir'),
+                                      ),
+                                    ],
+                                  ),
+                                );
+                                if (confirmed != true) return;
+                                try {
+                                  await TaskAlarmService.markDone(
+                                    task.remoteId,
+                                  );
+                                  widget.onChanged();
+                                } catch (_) {
+                                  if (context.mounted)
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      const SnackBar(
+                                        content: Text(
+                                          'Não foi possível concluir a tarefa.',
+                                        ),
+                                      ),
+                                    );
+                                }
+                              },
+                            ),
+                    ),
+                  );
+                },
+              );
+            },
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
 class _UpcomingTasksSection extends StatefulWidget {
   final int tick;
   final VoidCallback onChanged;
@@ -2312,7 +2561,7 @@ class _UpcomingTasksSectionState extends State<_UpcomingTasksSection> {
   @override
   void initState() {
     super.initState();
-    _stream = TaskAlarmService.watchPendingTasks();
+    _stream = TaskAlarmService.watchPendingTasks(limit: 100000);
   }
 
   @override
@@ -2321,7 +2570,7 @@ class _UpcomingTasksSectionState extends State<_UpcomingTasksSection> {
     if (oldWidget.tick != widget.tick) {
       // Explicit refresh requested (e.g. right after a manual sync pulled
       // new rows) — recreate the query stream.
-      _stream = TaskAlarmService.watchPendingTasks();
+      _stream = TaskAlarmService.watchPendingTasks(limit: 100000);
     }
   }
 
@@ -2350,10 +2599,62 @@ class _UpcomingTasksSectionState extends State<_UpcomingTasksSection> {
     final t = task.dueAt;
     if (t == null) return 'sem data';
     final diff = t.difference(DateTime.now());
-    if (diff.isNegative) return 'agora';
+    if (diff.isNegative) return 'Atrasada · ${_formatDate(t)}';
     if (diff.inMinutes < 60) return 'em ${diff.inMinutes} min';
     if (diff.inHours < 24) return 'em ${(diff.inMinutes / 60).round()} h';
     return '${_formatDate(t)} ${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
+  }
+
+  Future<void> _confirmComplete(ScheduledTask task) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF0D1117),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text(
+          'Concluir tarefa?',
+          style: TextStyle(color: Colors.white),
+        ),
+        content: Text(
+          'Deseja marcar "${task.title}" como concluída?',
+          style: const TextStyle(color: Color(0xFF9CA3AF)),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text(
+              'Cancelar',
+              style: TextStyle(color: Color(0xFF9CA3AF)),
+            ),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: FilledButton.styleFrom(
+              backgroundColor: const Color(0xFF22C55E),
+            ),
+            child: const Text('Concluir'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    try {
+      if (task.source == 'routine') {
+        await RoutineService.complete(task.remoteId);
+      } else {
+        await TaskAlarmService.markDone(task.remoteId);
+      }
+      if (mounted) widget.onChanged();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Não foi possível concluir a tarefa: $e'),
+          backgroundColor: const Color(0xFFEF4444),
+        ),
+      );
+    }
   }
 
   @override
@@ -2361,63 +2662,300 @@ class _UpcomingTasksSectionState extends State<_UpcomingTasksSection> {
     return StreamBuilder<List<ScheduledTask>>(
       stream: _stream,
       builder: (context, snapshot) {
-        final tasks = snapshot.data ?? [];
+        if (snapshot.hasError) {
+          return const ListTile(
+            title: Text('Não foi possível carregar as tarefas.'),
+          );
+        }
+        if (!snapshot.hasData)
+          return const Center(child: CircularProgressIndicator());
+        final now = DateTime.now();
+        final startToday = DateTime(now.year, now.month, now.day);
+        final endToday = DateTime(now.year, now.month, now.day + 1);
+        final tasks = snapshot.data!.where((task) {
+          final start = task.isDateRange ? task.startDate : task.dueAt;
+          if (task.source == 'routine' &&
+              start != null &&
+              start.isBefore(startToday))
+            return false;
+          return start != null && start.isBefore(endToday);
+        }).toList();
         if (tasks.isEmpty) {
-          return const _SectionTitle('PRÓXIMAS TAREFAS');
+          return const ListTile(
+            title: Text('Nenhuma tarefa pendente'),
+            subtitle: Text('Crie uma tarefa para começar.'),
+          );
         }
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const _SectionTitle('PRÓXIMAS TAREFAS'),
-            ...tasks
-                .take(5)
-                .map(
-                  (task) => Card(
-                    margin: const EdgeInsets.only(bottom: 8),
-                    child: ListTile(
-                      onTap: () => widget.onEdit(task),
-                      leading: Icon(
-                        task.dueAt?.isBefore(DateTime.now()) ?? false
-                            ? Icons.notifications_active_rounded
-                            : Icons.alarm_rounded,
-                        color: task.dueAt?.isBefore(DateTime.now()) ?? false
-                            ? const Color(0xFFEF4444)
-                            : const Color(0xFF6366F1),
-                      ),
-                      title: Text(
-                        task.title,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 14,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                      subtitle: Text(
-                        _dueLabel(task),
-                        style: const TextStyle(
-                          color: Color(0xFF9CA3AF),
-                          fontSize: 12,
-                        ),
-                      ),
-                      trailing: IconButton(
-                        icon: const Icon(
-                          Icons.check_circle_outline_rounded,
-                          color: Color(0xFF22C55E),
-                        ),
-                        tooltip: 'Concluir',
-                        onPressed: () async {
-                          await TaskAlarmService.markDone(task.remoteId);
-                          widget.onChanged();
-                        },
-                      ),
+            const _SectionTitle('TAREFAS E HÁBITOS DE HOJE'),
+            ...tasks.map(
+              (task) => Card(
+                margin: const EdgeInsets.only(bottom: 8),
+                child: ListTile(
+                  onTap: task.source == 'routine'
+                      ? () => Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => const RoutineScreen(),
+                          ),
+                        )
+                      : () => widget.onEdit(task),
+                  leading: Icon(
+                    task.dueAt?.isBefore(DateTime.now()) ?? false
+                        ? Icons.notifications_active_rounded
+                        : Icons.alarm_rounded,
+                    color: task.dueAt?.isBefore(DateTime.now()) ?? false
+                        ? const Color(0xFFEF4444)
+                        : const Color(0xFF6366F1),
+                  ),
+                  title: Text(
+                    task.title,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
                     ),
                   ),
+                  subtitle: Text(
+                    '${task.source == 'routine' ? 'Hábito · ' : ''}${_dueLabel(task)}',
+                    style: const TextStyle(
+                      color: Color(0xFF9CA3AF),
+                      fontSize: 12,
+                    ),
+                  ),
+                  trailing: IconButton(
+                    icon: const Icon(
+                      Icons.check_circle_outline_rounded,
+                      color: Color(0xFF22C55E),
+                    ),
+                    tooltip: 'Concluir',
+                    onPressed: () => _confirmComplete(task),
+                  ),
                 ),
+              ),
+            ),
           ],
         );
       },
+    );
+  }
+}
+
+// ── Recurring tasks ──────────────────────────────────────────────────────────
+//
+// Recurrence definitions are stored on-device; the PC is an optional mirror.
+// Each card can pause/resume locally. Deleting is via the long-press menu.
+
+class _RecurringTasksSection extends StatefulWidget {
+  final int tick;
+
+  const _RecurringTasksSection({required this.tick});
+
+  @override
+  State<_RecurringTasksSection> createState() => _RecurringTasksSectionState();
+}
+
+class _RecurringTasksSectionState extends State<_RecurringTasksSection> {
+  List<Map<String, dynamic>>? _items;
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  @override
+  void didUpdateWidget(covariant _RecurringTasksSection oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.tick != widget.tick) _load();
+  }
+
+  Future<void> _load() async {
+    try {
+      final items = await RecurringTaskService.list();
+      if (mounted) {
+        setState(() {
+          _items = items;
+          _loading = false;
+        });
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _items = const [];
+        _loading = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Não foi possível carregar recorrências: $e'),
+          backgroundColor: const Color(0xFFEF4444),
+        ),
+      );
+    }
+  }
+
+  Future<void> _onToggle(Map<String, dynamic> rec, bool value) async {
+    final id = rec['id']?.toString() ?? '';
+    setState(() => rec['enabled'] = value); // optimistic
+    try {
+      // Disabled recurrence stops generating; its last pending instance stays.
+      final ok = await RecurringTaskService.setEnabled(id, value);
+      if (!ok) throw StateError('Recorrência não encontrada');
+      await _load();
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => rec['enabled'] = !value);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Falha ao atualizar recorrência: $e'),
+          backgroundColor: Color(0xFFEF4444),
+        ),
+      );
+    }
+  }
+
+  Future<void> _confirmDelete(Map<String, dynamic> rec) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF0D1117),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text(
+          'Excluir recorrência?',
+          style: TextStyle(color: Colors.white, fontSize: 18),
+        ),
+        content: Text(
+          '"${rec['title'] ?? ''}" não será gerada novamente e a ocorrência pendente será removida do celular.',
+          style: const TextStyle(color: Color(0xFF9CA3AF), fontSize: 14),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text(
+              'Cancelar',
+              style: TextStyle(color: Color(0xFF9CA3AF)),
+            ),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text(
+              'Excluir',
+              style: TextStyle(color: Color(0xFFEF4444)),
+            ),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    bool ok;
+    try {
+      ok = await RecurringTaskService.delete(rec['id']?.toString() ?? '');
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Falha ao excluir recorrência: $e'),
+          backgroundColor: const Color(0xFFEF4444),
+        ),
+      );
+      return;
+    }
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          ok
+              ? 'Recorrência excluída. O PC será atualizado na próxima sincronização.'
+              : 'Falha ao excluir recorrência',
+        ),
+        backgroundColor: ok ? const Color(0xFF22C55E) : const Color(0xFFEF4444),
+      ),
+    );
+    _load();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final items = _items ?? const [];
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const _SectionTitle('TAREFAS RECORRENTES'),
+        if (_loading)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 12),
+            child: Center(
+              child: SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: Color(0xFF22C55E),
+                ),
+              ),
+            ),
+          )
+        else if (items.isEmpty)
+          Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: Text(
+              'Nenhuma recorrência. Toque em "+" e ative "Repetir automaticamente".',
+              style: TextStyle(
+                color: const Color(0xFFFFFFFF).withValues(alpha: 0.3),
+                fontSize: 12,
+              ),
+            ),
+          )
+        else
+          ...items.map((rec) {
+            final enabled = rec['enabled'] == true;
+            final next = enabled ? RecurringTaskService.nextLabel(rec) : null;
+            return Card(
+              margin: const EdgeInsets.only(bottom: 8),
+              child: ListTile(
+                onLongPress: () => _confirmDelete(rec),
+                leading: Icon(
+                  Icons.repeat_rounded,
+                  color: enabled
+                      ? const Color(0xFF22C55E)
+                      : const Color(0xFF5E6A7E),
+                ),
+                title: Text(
+                  rec['title']?.toString() ?? '',
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: enabled ? Colors.white : const Color(0xFF5E6A7E),
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                subtitle: Text(
+                  RecurringTaskService.describe(rec) +
+                      (next != null
+                          ? ' · próxima: $next'
+                          : (enabled ? '' : ' · pausada')),
+                  style: TextStyle(
+                    color: enabled
+                        ? const Color(0xFF9CA3AF)
+                        : const Color(0xFF5E6A7E),
+                    fontSize: 12,
+                  ),
+                ),
+                trailing: Switch(
+                  value: enabled,
+                  activeThumbColor: const Color(0xFF22C55E),
+                  onChanged: (v) => _onToggle(rec, v),
+                ),
+              ),
+            );
+          }),
+      ],
     );
   }
 }

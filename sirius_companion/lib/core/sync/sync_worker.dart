@@ -14,6 +14,8 @@ import '../../core/storage/models/place.dart' as place_model;
 import '../../core/device_identity.dart';
 import '../../core/storage/database/database.dart';
 import '../../features/tasks/task_alarm_service.dart';
+import '../../features/tasks/recurring_task_service.dart';
+import '../../features/tasks/routine_service.dart';
 import '../../features/notes/application/note_sync_service.dart';
 import 'background_health_monitor.dart';
 
@@ -28,6 +30,8 @@ const String maintenanceTaskName = 'sirius_maintenance';
 const String healthCheckTaskName = 'sirius_health_check';
 const String taskPullTaskName = 'sirius_task_pull';
 const String notifReassertTaskName = 'sirius_notif_reassert';
+const String recurringTaskGenerationTaskName =
+    'sirius_recurring_task_generation';
 const String _lastSyncStorageKey = 'sirius_last_sync_at';
 
 /// Initialize WorkManager
@@ -67,6 +71,16 @@ Future<void> initWorkManager() async {
       backoffPolicy: BackoffPolicy.exponential,
       initialDelay: const Duration(minutes: 1),
     );
+
+    // Recurrence generation is device-local and must continue while the PC is
+    // offline. It has no network constraint and only materializes today's
+    // occurrence, so it remains lightweight.
+    await wm.registerPeriodicTask(
+      recurringTaskGenerationTaskName,
+      recurringTaskGenerationTaskName,
+      frequency: const Duration(minutes: 15),
+      initialDelay: const Duration(minutes: 1),
+    );
   } catch (e) {
     print('[WorkManager] Init failed: $e');
   }
@@ -82,6 +96,10 @@ void callbackDispatcher() {
       await SyncWorker.pullTasksOnly();
       await SyncWorker.performSync();
       await TaskAlarmService.ensureTodayNotificationsActive();
+    } else if (taskName == recurringTaskGenerationTaskName) {
+      await TaskAlarmService.prepareBackground();
+      await RecurringTaskService.generateDueOccurrences();
+      await RoutineService.generateUpcomingOccurrences();
     } else if (taskName == syncTaskName) {
       await SyncWorker.performSync();
     } else if (taskName == healthCheckTaskName) {
@@ -144,6 +162,9 @@ class SyncWorker {
       final pullResult = await _apiClient.pullUpdates();
       if (!pullResult.success) return;
 
+      if (pullResult.recurring.isNotEmpty) {
+        await RecurringTaskService.syncFromServer(pullResult.recurring);
+      }
       if (pullResult.tasks.isNotEmpty) {
         await TaskAlarmService.syncFromServer(pullResult.tasks);
         print(
@@ -186,6 +207,7 @@ class SyncWorker {
   /// Returns a [SyncExecutionResult] with detailed counts of what was sent/received.
   static Future<SyncExecutionResult> performSync({
     SyncProgressCallback? onProgress,
+    bool announceToPc = false,
   }) async {
     if (_isSyncing)
       return SyncExecutionResult.error('Sincronização já em andamento');
@@ -196,6 +218,11 @@ class SyncWorker {
     final placeRepo = PlaceRepository(db);
     final noteRepo = NoteRepository(db);
     final placeVisitRepo = PlaceVisitRepository(db);
+    final syncErrors = <String>[];
+    var syncItemsSent = 0;
+    var notesSent = 0;
+    var visitsSent = 0;
+    var itemsPulled = 0;
 
     try {
       onProgress?.call('Conectando ao PC...', 0.1);
@@ -215,72 +242,128 @@ class SyncWorker {
 
       // 1. Push pending items (commands, tasks, etc.)
       onProgress?.call('Enviando comandos e tarefas ao PC...', 0.2);
-      int syncItemsSent = await _pushPendingItems(syncRepo);
+      try {
+        final pushResult = await _pushPendingItems(
+          syncRepo,
+          announceToPc: announceToPc,
+        );
+        syncItemsSent = pushResult.sent;
+        if (pushResult.error != null) {
+          syncErrors.add('Comandos/tarefas: ${pushResult.error}');
+        }
+      } catch (e) {
+        syncErrors.add('Comandos/tarefas: $e');
+      }
 
       // 2. Push pending notes
       onProgress?.call('Enviando anotações ao PC...', 0.4);
-      int notesSent = 0;
-      if ((await noteRepo.getPending()).isNotEmpty) {
-        final noteSync = NoteSyncService(noteRepo);
-        notesSent = await noteSync.syncPendingNotes();
-        noteSync.dispose();
+      try {
+        if ((await noteRepo.getPending()).isNotEmpty) {
+          final noteSync = NoteSyncService(noteRepo);
+          try {
+            notesSent = await noteSync.syncPendingNotes();
+            final noteError = noteSync.syncError;
+            if (noteError != null) {
+              syncErrors.add('Anotações: $noteError');
+            }
+          } finally {
+            noteSync.dispose();
+          }
+        }
+        await noteRepo.deleteSyncedOlderThan(const Duration(days: 30));
+      } catch (e) {
+        syncErrors.add('Anotações: $e');
       }
-      await noteRepo.deleteSyncedOlderThan(const Duration(days: 30));
 
       // 3. Push pending place visits
       onProgress?.call('Enviando visitas a locais ao PC...', 0.6);
-      int visitsSent = 0;
-      final pendingVisits = await placeVisitRepo.getPendingSync();
-      if (pendingVisits.isNotEmpty) {
-        final visitItems = pendingVisits
-            .map(
-              (visit) => SyncBatchItem(
-                clientId: const Uuid().v4(),
-                type: 'place_visit',
-                payload: {
-                  'uuid': visit.uuid,
-                  'place_id': visit.placeId,
-                  'place_name': visit.placeName,
-                  'entered_at': visit.enteredAt.toIso8601String(),
-                  'exited_at': visit.exitedAt?.toIso8601String(),
-                  'duration_seconds': visit.durationSeconds,
-                },
-              ),
-            )
-            .toList();
+      try {
+        final pendingVisits = await placeVisitRepo.getPendingSync();
+        if (pendingVisits.isNotEmpty) {
+          final visitItems = pendingVisits.map((visit) {
+            return SyncBatchItem(
+              clientId: const Uuid().v4(),
+              type: 'place_visit',
+              payload: {
+                'uuid': visit.uuid,
+                'place_id': visit.placeId,
+                'place_name': visit.placeName,
+                'entered_at': visit.enteredAt.toIso8601String(),
+                'exited_at': visit.exitedAt?.toIso8601String(),
+                'duration_seconds': visit.durationSeconds,
+              },
+            );
+          }).toList();
 
-        final visitResults = await _apiClient.syncBatch(visitItems);
-        if (visitResults.success) {
-          final syncedUuids = <String>[];
-          for (final result in visitResults.results) {
-            if (result.status == 'processed') {
-              final idx = visitResults.results.indexOf(result);
-              if (idx < pendingVisits.length) {
-                syncedUuids.add(pendingVisits[idx].uuid);
-              }
+          final visitResults = await _apiClient.syncBatch(
+            visitItems,
+            announceToPc: announceToPc,
+          );
+          if (!visitResults.success) {
+            syncErrors.add(
+              'Visitas: ${visitResults.error ?? 'Falha ao sincronizar visitas'}',
+            );
+          } else {
+            final visitUuidByClientId = {
+              for (var i = 0; i < visitItems.length; i++)
+                visitItems[i].clientId: pendingVisits[i].uuid,
+            };
+            final processedIds = visitResults.results
+                .where((result) => result.status == 'processed')
+                .map((result) => result.clientId)
+                .toSet();
+            final syncedUuids = processedIds
+                .map((clientId) => visitUuidByClientId[clientId])
+                .whereType<String>()
+                .toList();
+            for (final uuid in syncedUuids) {
+              await placeVisitRepo.deleteByUuid(uuid);
+            }
+            visitsSent = syncedUuids.length;
+
+            if (syncedUuids.length != pendingVisits.length) {
+              final failed = visitResults.results
+                  .where((result) => result.status != 'processed')
+                  .toList();
+              syncErrors.add(
+                'Visitas: ${failed.isNotEmpty ? failed.first.error ?? 'Nem todas as visitas foram confirmadas pelo PC' : 'Nem todas as visitas foram confirmadas pelo PC'}',
+              );
             }
           }
-          // TCP/HTTP response confirmed processed on PC: delete from phone
-          for (final uuid in syncedUuids) {
-            await placeVisitRepo.deleteByUuid(uuid);
-          }
-          visitsSent = syncedUuids.length;
         }
+      } catch (e) {
+        syncErrors.add('Visitas: $e');
       }
 
       // 4. Pull updates from server
       onProgress?.call('Buscando atualizações e novas tarefas do PC...', 0.8);
-      final pullResult = await _pullFromServer(syncRepo, placeRepo);
-      final int itemsPulled = pullResult;
+      try {
+        itemsPulled = await _pullFromServer(syncRepo, placeRepo);
+      } catch (e) {
+        syncErrors.add('Atualizações do PC: $e');
+      }
 
       // 5. Clean old synced items
       await syncRepo.clearSynced();
 
       // 6. Persist last sync timestamp
-      await _saveLastSync();
+      if (syncErrors.isEmpty) await _saveLastSync();
+
+      final totalSent = syncItemsSent + notesSent + visitsSent;
+      if (syncErrors.isNotEmpty) {
+        onProgress?.call('Sincronização concluída com falhas', 1.0);
+        return SyncExecutionResult.error(
+          '${syncErrors.join('\n')}\nEnviados: $totalSent '
+          '(anotações=$notesSent, visitas=$visitsSent, tarefas/comandos=$syncItemsSent); '
+          'recebidos: $itemsPulled.',
+          notesSent: notesSent,
+          visitsSent: visitsSent,
+          syncItemsSent: syncItemsSent,
+          itemsPulled: itemsPulled,
+        );
+      }
 
       onProgress?.call('Sincronização concluída com sucesso!', 1.0);
-      final totalSent = syncItemsSent + notesSent + visitsSent;
       print(
         '[SyncWorker] Sync completed: sent $totalSent (notes=$notesSent, visits=$visitsSent, sync=$syncItemsSent), received $itemsPulled',
       );
@@ -303,9 +386,12 @@ class SyncWorker {
     }
   }
 
-  static Future<int> _pushPendingItems(SyncRepository syncRepo) async {
+  static Future<_PendingPushResult> _pushPendingItems(
+    SyncRepository syncRepo, {
+    required bool announceToPc,
+  }) async {
     final pendingItems = await syncRepo.getPending(limit: 100);
-    if (pendingItems.isEmpty) return 0;
+    if (pendingItems.isEmpty) return const _PendingPushResult(sent: 0);
 
     print('[SyncWorker] Pushing ${pendingItems.length} pending items');
 
@@ -320,30 +406,12 @@ class SyncWorker {
         )
         .toList();
 
-    final results = await _apiClient.syncBatch(apiItems);
+    final results = await _apiClient.syncBatch(
+      apiItems,
+      announceToPc: announceToPc,
+    );
 
-    if (results.success) {
-      // Mark successfully synced items
-      final syncedClientIds = results.results
-          .where((r) => r.status == 'processed')
-          .map((r) => r.clientId)
-          .toList();
-
-      if (syncedClientIds.isNotEmpty) {
-        await syncRepo.markSynced(syncedClientIds);
-        print('[SyncWorker] Marked ${syncedClientIds.length} items as synced');
-        return syncedClientIds.length;
-      }
-
-      // Handle failed items - increment retry count
-      for (final result in results.results.where((r) => r.status == 'failed')) {
-        await syncRepo.incrementRetry(
-          result.clientId,
-          result.error ?? 'Unknown error',
-        );
-      }
-      return 0;
-    } else {
+    if (!results.success) {
       // Increment retry for all items
       for (final item in pendingItems) {
         await syncRepo.incrementRetry(
@@ -351,8 +419,55 @@ class SyncWorker {
           results.error ?? 'Sync failed',
         );
       }
-      return 0;
+      return _PendingPushResult(
+        sent: 0,
+        error: results.error ?? 'Falha ao enviar itens ao PC',
+      );
     }
+
+    final submittedClientIds = pendingItems
+        .map((item) => item.clientId)
+        .toList();
+    final syncedClientIds = results.confirmedClientIds(submittedClientIds);
+    if (syncedClientIds.isNotEmpty) {
+      await syncRepo.markSynced(syncedClientIds);
+      print('[SyncWorker] Marked ${syncedClientIds.length} items as synced');
+    }
+
+    final syncedClientIdSet = syncedClientIds.toSet();
+    final resultByClientId = {
+      for (final result in results.results) result.clientId: result,
+    };
+    final failedItems = pendingItems
+        .where((item) => !syncedClientIdSet.contains(item.clientId))
+        .toList();
+    for (final item in failedItems) {
+      await syncRepo.incrementRetry(
+        item.clientId,
+        resultByClientId[item.clientId]?.error ?? 'Item não confirmado pelo PC',
+      );
+    }
+    final firstFailed = failedItems.isEmpty ? null : failedItems.first;
+    final firstFailedResult = firstFailed == null
+        ? null
+        : resultByClientId[firstFailed.clientId];
+    final pendingTypeCounts = <String, int>{};
+    for (final item in pendingItems) {
+      pendingTypeCounts[item.type] = (pendingTypeCounts[item.type] ?? 0) + 1;
+    }
+    return _PendingPushResult(
+      sent: syncedClientIds.length,
+      error: firstFailed == null
+          ? null
+          : firstFailedResult?.error ??
+                (firstFailedResult != null
+                    ? 'O PC informou falha ao processar "${firstFailed.type}".'
+                    : 'PC confirmou ${results.processed} de ${pendingItems.length} '
+                          'item(ns), mas não retornou confirmação para todos. '
+                          'Confirmações detalhadas: ${results.results.length}. '
+                          'Tipos no lote: '
+                          '${pendingTypeCounts.entries.map((entry) => '${entry.key}=${entry.value}').join(', ')}.'),
+    );
   }
 
   static Future<int> _pullFromServer(
@@ -363,22 +478,43 @@ class SyncWorker {
 
     if (!pullResult.success) {
       print('[SyncWorker] Pull failed: ${pullResult.error}');
-      return 0;
+      throw StateError(
+        pullResult.error ?? 'Falha ao buscar atualizações do PC',
+      );
     }
 
     int count = 0;
+    final errors = <String>[];
 
     // Process new commands from PC
     for (final cmdJson in pullResult.commands) {
-      await _processIncomingCommand(cmdJson);
-      count++;
+      try {
+        await _processIncomingCommand(cmdJson);
+        count++;
+      } catch (e) {
+        errors.add('comando: $e');
+      }
     }
 
     // Process new/updated places
     for (final placeJson in pullResult.places) {
-      final place = place_model.Place.fromJson(placeJson);
-      await placeRepo.save(place);
-      count++;
+      try {
+        final place = place_model.Place.fromJson(placeJson);
+        await placeRepo.save(place);
+        count++;
+      } catch (e) {
+        errors.add('local: $e');
+      }
+    }
+
+    if (pullResult.recurring.isNotEmpty) {
+      try {
+        await RecurringTaskService.syncFromServer(pullResult.recurring);
+        count += pullResult.recurring.length;
+      } catch (e) {
+        print('[SyncWorker] Recurring task sync failed: $e');
+        errors.add('tarefas recorrentes: $e');
+      }
     }
 
     // Process scheduled tasks (schedule local alarms / mirror PC changes)
@@ -391,9 +527,12 @@ class SyncWorker {
         );
       } catch (e) {
         print('[SyncWorker] Task sync failed: $e');
+        errors.add('tarefas: $e');
       }
     }
-
+    if (errors.isNotEmpty) {
+      throw StateError(errors.join('; '));
+    }
     return count;
   }
 
@@ -427,6 +566,13 @@ class SyncWorker {
       print('[SyncWorker] Failed to show PC command notification: $e');
     }
   }
+}
+
+class _PendingPushResult {
+  final int sent;
+  final String? error;
+
+  const _PendingPushResult({required this.sent, this.error});
 }
 
 /// Sync status for UI
@@ -507,8 +653,21 @@ class SyncExecutionResult {
     );
   }
 
-  factory SyncExecutionResult.error(String message) {
-    return SyncExecutionResult._(success: false, error: message);
+  factory SyncExecutionResult.error(
+    String message, {
+    int notesSent = 0,
+    int visitsSent = 0,
+    int syncItemsSent = 0,
+    int itemsPulled = 0,
+  }) {
+    return SyncExecutionResult._(
+      success: false,
+      notesSent: notesSent,
+      visitsSent: visitsSent,
+      syncItemsSent: syncItemsSent,
+      itemsPulled: itemsPulled,
+      error: message,
+    );
   }
 
   String get summary {

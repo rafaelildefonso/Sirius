@@ -29,6 +29,7 @@ class Places extends Table {
 @DataClassName('ScheduledTask')
 class ScheduledTasks extends Table {
   TextColumn get remoteId => text().unique()();
+  TextColumn get recurrenceId => text().nullable()();
   TextColumn get title => text()();
   TextColumn get notes => text().nullable()();
   DateTimeColumn get dueAt => dateTime().nullable()();
@@ -41,6 +42,32 @@ class ScheduledTasks extends Table {
   DateTimeColumn get startDate => dateTime().nullable()();
   DateTimeColumn get endDate => dateTime().nullable()();
   BoolColumn get isDateRange => boolean().withDefault(const Constant(false))();
+  TextColumn get routineAlertMode => text().nullable()();
+}
+
+@DataClassName('RoutineDefinition')
+class RoutineDefinitions extends Table {
+  TextColumn get id => text()();
+  TextColumn get payloadJson => text()();
+  BoolColumn get enabled => boolean().withDefault(const Constant(true))();
+  DateTimeColumn get createdAt => dateTime()();
+  DateTimeColumn get updatedAt => dateTime()();
+
+  @override
+  Set<Column<Object>> get primaryKey => {id};
+}
+
+@DataClassName('RecurringTaskDefinition')
+class RecurringTaskDefinitions extends Table {
+  TextColumn get id => text()();
+  TextColumn get payloadJson => text()();
+  BoolColumn get enabled => boolean().withDefault(const Constant(true))();
+  DateTimeColumn get createdAt => dateTime()();
+  DateTimeColumn get updatedAt => dateTime()();
+  DateTimeColumn get lastGeneratedDate => dateTime().nullable()();
+
+  @override
+  Set<Column<Object>> get primaryKey => {id};
 }
 
 @DataClassName('Note')

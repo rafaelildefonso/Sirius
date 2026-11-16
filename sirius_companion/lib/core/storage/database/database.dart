@@ -7,9 +7,21 @@ import 'tables.dart';
 
 part 'database.g.dart';
 
-@DriftDatabase(tables: [SyncItems, Places, ScheduledTasks, Notes, PlaceVisits])
+@DriftDatabase(
+  tables: [
+    SyncItems,
+    Places,
+    ScheduledTasks,
+    RecurringTaskDefinitions,
+    RoutineDefinitions,
+    Notes,
+    PlaceVisits,
+  ],
+)
 class AppDatabase extends _$AppDatabase {
   AppDatabase._() : super(_openConnection());
+
+  AppDatabase.forTesting(QueryExecutor executor) : super(executor);
 
   /// Single shared instance. The app opens connections from multiple places
   /// (UI, services) and WorkManager spawns background isolates that also use
@@ -20,12 +32,21 @@ class AppDatabase extends _$AppDatabase {
   factory AppDatabase() => instance;
 
   @override
-  int get schemaVersion => 6;
+  int get schemaVersion => 10;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
     onCreate: (Migrator m) async {
       await m.createAll();
+      await m.database.executor.runCustom(
+        'ALTER TABLE scheduled_tasks ADD COLUMN sirius_call_enabled INTEGER NOT NULL DEFAULT 0',
+      );
+      await m.database.executor.runCustom(
+        'ALTER TABLE scheduled_tasks ADD COLUMN sirius_call_refusals INTEGER NOT NULL DEFAULT 0',
+      );
+      await m.database.executor.runCustom(
+        'ALTER TABLE scheduled_tasks ADD COLUMN sirius_call_retry_at TEXT',
+      );
     },
     onUpgrade: (Migrator m, int from, int to) async {
       if (from < 2) {
@@ -91,6 +112,27 @@ class AppDatabase extends _$AppDatabase {
         await m.addColumn(notes, notes.classificationError);
         await m.addColumn(notes, notes.syncedAt);
       }
+      if (from < 7) {
+        await m.addColumn(scheduledTasks, scheduledTasks.recurrenceId);
+        await m.createTable(recurringTaskDefinitions);
+      }
+      if (from < 8) {
+        await m.database.executor.runCustom(
+          'ALTER TABLE scheduled_tasks ADD COLUMN sirius_call_enabled INTEGER NOT NULL DEFAULT 0',
+        );
+        await m.database.executor.runCustom(
+          'ALTER TABLE scheduled_tasks ADD COLUMN sirius_call_refusals INTEGER NOT NULL DEFAULT 0',
+        );
+      }
+      if (from < 9) {
+        await m.database.executor.runCustom(
+          'ALTER TABLE scheduled_tasks ADD COLUMN sirius_call_retry_at TEXT',
+        );
+      }
+      if (from < 10) {
+        await m.createTable(routineDefinitions);
+        await m.addColumn(scheduledTasks, scheduledTasks.routineAlertMode);
+      }
     },
   );
 
@@ -99,6 +141,8 @@ class AppDatabase extends _$AppDatabase {
       await delete(syncItems).go();
       await delete(places).go();
       await delete(scheduledTasks).go();
+      await delete(recurringTaskDefinitions).go();
+      await delete(routineDefinitions).go();
       await delete(notes).go();
       await delete(placeVisits).go();
     });

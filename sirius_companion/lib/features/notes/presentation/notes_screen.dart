@@ -14,6 +14,8 @@ class NotesScreen extends ConsumerStatefulWidget {
 
 class _NotesScreenState extends ConsumerState<NotesScreen> {
   late final NoteRepository _noteRepo;
+  String _search = '';
+  bool _pendingOnly = false;
 
   @override
   void initState() {
@@ -29,49 +31,99 @@ class _NotesScreenState extends ConsumerState<NotesScreen> {
         title: const Text('Anotações'),
         backgroundColor: const Color(0xFF07090F),
       ),
-      body: StreamBuilder<List<Note>>(
-        stream: _noteRepo.watchAll(),
-        builder: (context, snapshot) {
-          final notes = snapshot.data ?? [];
-          if (notes.isEmpty) {
-            return const Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(
-                    Icons.note_add_outlined,
-                    size: 48,
-                    color: Color(0xFF5E6A7E),
-                  ),
-                  SizedBox(height: 12),
-                  Text(
-                    'Nenhuma anotação',
-                    style: TextStyle(color: Color(0xFF5E6A7E), fontSize: 16),
-                  ),
-                  SizedBox(height: 4),
-                  Text(
-                    'Toque + para criar',
-                    style: TextStyle(color: Color(0xFF5E6A7E), fontSize: 13),
-                  ),
-                ],
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+            child: TextField(
+              onChanged: (value) =>
+                  setState(() => _search = value.trim().toLowerCase()),
+              decoration: const InputDecoration(
+                prefixIcon: Icon(Icons.search),
+                hintText: 'Buscar anotações',
               ),
-            );
-          }
-          return ListView.builder(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-            itemCount: notes.length,
-            itemBuilder: (context, index) => _NoteTile(
-              note: notes[index],
-              onTap: () => _editNote(notes[index]),
-              onDelete: () => _deleteNote(notes[index]),
-              onRetry:
-                  notes[index].classificationError != null &&
-                      notes[index].classificationStatus != 'completed'
-                  ? () => _retryClassification(notes[index])
-                  : null,
             ),
-          );
-        },
+          ),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: FilterChip(
+                label: const Text('Aguardando sincronização'),
+                selected: _pendingOnly,
+                onSelected: (value) => setState(() => _pendingOnly = value),
+              ),
+            ),
+          ),
+          Expanded(
+            child: StreamBuilder<List<Note>>(
+              stream: _noteRepo.watchAll(),
+              builder: (context, snapshot) {
+                if (snapshot.hasError)
+                  return const Center(
+                    child: Text('Não foi possível carregar as anotações.'),
+                  );
+                if (!snapshot.hasData)
+                  return const Center(child: CircularProgressIndicator());
+                final notes = snapshot.data!.where((note) {
+                  final matches =
+                      _search.isEmpty ||
+                      note.title.toLowerCase().contains(_search) ||
+                      note.content.toLowerCase().contains(_search);
+                  return matches &&
+                      (!_pendingOnly || note.syncStatus != 'synced');
+                }).toList();
+                if (notes.isEmpty) {
+                  return const Center(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          Icons.note_add_outlined,
+                          size: 48,
+                          color: Color(0xFF5E6A7E),
+                        ),
+                        SizedBox(height: 12),
+                        Text(
+                          'Nenhuma anotação encontrada',
+                          style: TextStyle(
+                            color: Color(0xFF5E6A7E),
+                            fontSize: 16,
+                          ),
+                        ),
+                        SizedBox(height: 4),
+                        Text(
+                          'Experimente outra busca ou toque + para criar.',
+                          style: TextStyle(
+                            color: Color(0xFF5E6A7E),
+                            fontSize: 13,
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                }
+                return ListView.builder(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 8,
+                  ),
+                  itemCount: notes.length,
+                  itemBuilder: (context, index) => _NoteTile(
+                    note: notes[index],
+                    onTap: () => _editNote(notes[index]),
+                    onDelete: () => _deleteNote(notes[index]),
+                    onRetry:
+                        notes[index].classificationError != null &&
+                            notes[index].classificationStatus != 'completed'
+                        ? () => _retryClassification(notes[index])
+                        : null,
+                  ),
+                );
+              },
+            ),
+          ),
+        ],
       ),
       floatingActionButton: FloatingActionButton(
         onPressed: _createNote,

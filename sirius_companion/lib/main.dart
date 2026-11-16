@@ -16,6 +16,8 @@ import 'features/home/application/home_controller.dart';
 import 'core/device_identity.dart';
 import 'features/locations/application/geofence_manager.dart';
 import 'features/tasks/task_alarm_service.dart';
+import 'features/tasks/recurring_task_service.dart';
+import 'features/tasks/routine_service.dart';
 import 'features/tasks/presentation/alarm_screen.dart';
 
 final _notificationPlugin = FlutterLocalNotificationsPlugin();
@@ -66,20 +68,27 @@ class _SiriusCompanionAppState extends ConsumerState<SiriusCompanionApp> {
   }
 
   Future<void> _initApp() async {
+    final paired = await DeviceIdentity.isPaired();
+    ref.read(isPairedProvider.notifier).state = paired;
+
     // 1. Notifications — lightweight, needed before any UI.
-    const androidSettings = AndroidInitializationSettings('@drawable/ic_stat_face');
+    const androidSettings = AndroidInitializationSettings(
+      '@drawable/ic_stat_face',
+    );
     const initSettings = InitializationSettings(android: androidSettings);
     await _notificationPlugin.initialize(
       settings: initSettings,
       onDidReceiveNotificationResponse: _handleNotificationResponse,
-      onDidReceiveBackgroundNotificationResponse: onNotificationBackgroundResponse,
+      onDidReceiveBackgroundNotificationResponse:
+          onNotificationBackgroundResponse,
     );
 
     _listenForRingingAlarms();
 
     // 2. Check if launched from notification.
     try {
-      final launch = await _notificationPlugin.getNotificationAppLaunchDetails();
+      final launch = await _notificationPlugin
+          .getNotificationAppLaunchDetails();
       if (launch?.didNotificationLaunchApp ?? false) {
         final response = launch?.notificationResponse;
         final payload = response?.payload;
@@ -97,10 +106,8 @@ class _SiriusCompanionAppState extends ConsumerState<SiriusCompanionApp> {
       }
     } catch (_) {}
 
-    // 3. DB + pairing (quick, but still yield the frame).
+    // 3. Initialize the database after the first frame.
     await _db.customSelect('SELECT 1').get();
-    final paired = await DeviceIdentity.isPaired();
-    ref.read(isPairedProvider.notifier).state = paired;
 
     // 4. Heavy / non-essential work — fire and forget, never block UI.
     _initBackground();
@@ -119,6 +126,8 @@ class _SiriusCompanionAppState extends ConsumerState<SiriusCompanionApp> {
     try {
       await TaskAlarmService.initialize(_notificationPlugin);
       await TaskAlarmService.rescheduleMissingAlarms();
+      await RecurringTaskService.generateDueOccurrences();
+      await RoutineService.generateUpcomingOccurrences();
       // Notification actions and WorkManager tasks write the DB from another
       // isolate; without this the task list on the home screen goes stale.
       CrossIsolateRefresh.start();
@@ -138,20 +147,33 @@ class _SiriusCompanionAppState extends ConsumerState<SiriusCompanionApp> {
   }
 
   void _listenForRingingAlarms() {
-    _ringingSub = Alarm.ringing.listen((ringing) {
+    _ringingSub = Alarm.ringing.listen((ringing) async {
       final alarms = [...ringing.alarms]
         ..sort((a, b) => a.dateTime.compareTo(b.dateTime));
       // The internal daily 00:00 alarm is a silent verification pass, not a
       // user-facing task ring — no attention vibration for it.
-      final taskAlarms =
-          alarms.where((a) => a.id != _dailyDateRangeAlarmId).toList();
+      final taskAlarms = alarms
+          .where((a) => a.id != _dailyDateRangeAlarmId)
+          .toList();
       final hasRinging = taskAlarms.isNotEmpty;
       if (hasRinging && !_wasRinging) {
-        TaskAlarmService.fireAttentionPattern();
+        final calling = taskAlarms
+            .where((a) => TaskAlarmService.isSimulatedCallPayload(a.payload))
+            .toList();
+        final ordinary = taskAlarms
+            .where((a) => !TaskAlarmService.isSimulatedCallPayload(a.payload))
+            .toList();
+        if (ordinary.isNotEmpty ||
+            (calling.isNotEmpty &&
+                !await TaskAlarmService.isDoNotDisturbActive())) {
+          TaskAlarmService.fireAttentionPattern();
+        }
       }
       _wasRinging = hasRinging;
       if (alarms.any((a) => a.id == _dailyDateRangeAlarmId)) {
         TaskAlarmService.onDailyDateRangeAlarm();
+        RecurringTaskService.generateDueOccurrences();
+        RoutineService.generateUpcomingOccurrences();
       }
       for (final alarm in taskAlarms) {
         if (_displayedRingId == alarm.id) continue;
@@ -178,6 +200,8 @@ class _SiriusCompanionAppState extends ConsumerState<SiriusCompanionApp> {
           alarmId: alarm.id,
           taskId: parts?[0] ?? '',
           title: parts?[1] ?? alarm.notificationSettings.body,
+          simulatedCall:
+              parts != null && parts.length > 2 && parts[2] == 'call',
         ),
       ),
     );
@@ -193,6 +217,7 @@ class _SiriusCompanionAppState extends ConsumerState<SiriusCompanionApp> {
           alarmId: TaskAlarmService.alarmId(parts[0]),
           taskId: parts[0],
           title: parts[1],
+          simulatedCall: parts.length > 2 && parts[2] == 'call',
         ),
       ),
     );
@@ -218,6 +243,7 @@ class _SiriusCompanionAppState extends ConsumerState<SiriusCompanionApp> {
               alarmId: TaskAlarmService.alarmId(openParts[0]),
               taskId: openParts[0],
               title: openParts[1],
+              simulatedCall: openParts.length > 2 && openParts[2] == 'call',
             ),
           ),
         );
@@ -249,6 +275,11 @@ class _SiriusCompanionAppState extends ConsumerState<SiriusCompanionApp> {
           error: Color(0xFFEF4444),
         ),
         scaffoldBackgroundColor: const Color(0xFF07090F),
+        navigationBarTheme: NavigationBarThemeData(
+          backgroundColor: const Color(0xFF101321),
+          indicatorColor: const Color(0xFF393B7A),
+          labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
+        ),
         appBarTheme: const AppBarTheme(
           backgroundColor: Color(0xFF07090F),
           elevation: 0,
@@ -262,18 +293,24 @@ class _SiriusCompanionAppState extends ConsumerState<SiriusCompanionApp> {
         cardTheme: CardThemeData(
           color: const Color(0xFFFFFFFF).withOpacity(0.04),
           elevation: 0,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(22),
+          ),
         ),
         inputDecorationTheme: InputDecorationTheme(
           filled: true,
           fillColor: const Color(0xFFFFFFFF).withOpacity(0.05),
           border: OutlineInputBorder(
             borderRadius: BorderRadius.circular(12),
-            borderSide: BorderSide(color: const Color(0xFFFFFFFF).withOpacity(0.1)),
+            borderSide: BorderSide(
+              color: const Color(0xFFFFFFFF).withOpacity(0.1),
+            ),
           ),
           enabledBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(12),
-            borderSide: BorderSide(color: const Color(0xFFFFFFFF).withOpacity(0.1)),
+            borderSide: BorderSide(
+              color: const Color(0xFFFFFFFF).withOpacity(0.1),
+            ),
           ),
           focusedBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(12),
@@ -284,7 +321,9 @@ class _SiriusCompanionAppState extends ConsumerState<SiriusCompanionApp> {
           style: ElevatedButton.styleFrom(
             backgroundColor: const Color(0xFF6366F1),
             foregroundColor: Colors.white,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(14),
+            ),
             padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 24),
           ),
         ),
@@ -292,7 +331,9 @@ class _SiriusCompanionAppState extends ConsumerState<SiriusCompanionApp> {
           style: OutlinedButton.styleFrom(
             foregroundColor: Colors.white,
             side: BorderSide(color: const Color(0xFFFFFFFF).withOpacity(0.2)),
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(14),
+            ),
             padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 24),
           ),
         ),
@@ -311,6 +352,22 @@ class _AuthGate extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final isPaired = ref.watch(isPairedProvider);
 
+    if (isPaired == null) {
+      return const Scaffold(
+        backgroundColor: Color(0xFF07090F),
+        body: Center(
+          child: Text(
+            'SIRIUS',
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: 24,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 8,
+            ),
+          ),
+        ),
+      );
+    }
     if (isPaired) {
       return const HomeScreen();
     }

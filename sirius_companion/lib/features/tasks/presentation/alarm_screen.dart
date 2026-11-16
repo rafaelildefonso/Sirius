@@ -4,6 +4,7 @@ import 'package:alarm/alarm.dart';
 import 'package:flutter/material.dart';
 
 import '../task_alarm_service.dart';
+import '../simulated_call_policy.dart';
 
 const _weekdays = [
   'segunda-feira',
@@ -38,12 +39,20 @@ class AlarmScreen extends StatefulWidget {
   final int alarmId;
   final String taskId;
   final String title;
+  final bool simulatedCall;
+  final Future<void> Function()? onAcceptCall;
+  final Future<void> Function(bool dnd)? onRejectCall;
+  final Future<void> Function()? onMissedCall;
 
   const AlarmScreen({
     super.key,
     required this.alarmId,
     required this.taskId,
     required this.title,
+    this.simulatedCall = false,
+    this.onAcceptCall,
+    this.onRejectCall,
+    this.onMissedCall,
   });
 
   @override
@@ -52,6 +61,7 @@ class AlarmScreen extends StatefulWidget {
 
 class _AlarmScreenState extends State<AlarmScreen> {
   Timer? _clockTimer;
+  Timer? _callTimeout;
   // Element type (AlarmSet) is intentionally left unannotated — the class
   // isn't exported by the package's public API.
   StreamSubscription? _ringingSub;
@@ -64,12 +74,29 @@ class _AlarmScreenState extends State<AlarmScreen> {
     _clockTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (mounted) setState(() => _now = DateTime.now());
     });
+    if (widget.simulatedCall) {
+      // Missed calls are closed locally after 30 seconds and never retried.
+      _callTimeout = Timer(SimulatedCallPolicy.ringScreenDuration, () async {
+        if (_closing) return;
+        _closing = true;
+        try {
+          if (widget.onMissedCall != null) {
+            await widget.onMissedCall!();
+          } else {
+            await TaskAlarmService.markSimulatedCallMissed(widget.taskId);
+          }
+        } catch (error) {
+          debugPrint('[AlarmScreen] Failed to close missed call: $error');
+        } finally {
+          _popToRoot();
+        }
+      });
+    }
     // The alarm may be stopped outside this screen (notification button,
     // another alarm entry point). Close along with it.
     _ringingSub = Alarm.ringing.listen((ringing) {
-      final stillRinging =
-          ringing.alarms.any((a) => a.id == widget.alarmId);
-      if (!stillRinging && !_closing) {
+      final stillRinging = ringing.alarms.any((a) => a.id == widget.alarmId);
+      if (!stillRinging && !_closing && !widget.simulatedCall) {
         if (mounted) setState(() => _closing = true);
         _popToRoot();
       }
@@ -79,6 +106,7 @@ class _AlarmScreenState extends State<AlarmScreen> {
   @override
   void dispose() {
     _clockTimer?.cancel();
+    _callTimeout?.cancel();
     _ringingSub?.cancel();
     super.dispose();
   }
@@ -107,6 +135,47 @@ class _AlarmScreenState extends State<AlarmScreen> {
     } catch (_) {}
     await TaskAlarmService.snooze(widget.taskId, minutes: 5);
     _popToRoot();
+  }
+
+  Future<void> _acceptCall() async {
+    if (_closing) return;
+    setState(() => _closing = true);
+    _callTimeout?.cancel();
+    try {
+      await Alarm.stop(widget.alarmId);
+    } catch (_) {}
+    try {
+      if (widget.onAcceptCall != null) {
+        await widget.onAcceptCall!();
+      } else {
+        await TaskAlarmService.acceptSimulatedCall(widget.taskId);
+      }
+    } catch (error) {
+      debugPrint('[AlarmScreen] Failed to accept simulated call: $error');
+    } finally {
+      _popToRoot();
+    }
+  }
+
+  Future<void> _rejectCall() async {
+    if (_closing) return;
+    setState(() => _closing = true);
+    _callTimeout?.cancel();
+    try {
+      final dnd = await TaskAlarmService.isDoNotDisturbActive();
+      try {
+        await Alarm.stop(widget.alarmId);
+      } catch (_) {}
+      if (widget.onRejectCall != null) {
+        await widget.onRejectCall!(dnd);
+      } else {
+        await TaskAlarmService.refuseSimulatedCall(widget.taskId, dnd: dnd);
+      }
+    } catch (error) {
+      debugPrint('[AlarmScreen] Failed to reject simulated call: $error');
+    } finally {
+      _popToRoot();
+    }
   }
 
   String get _clockLabel =>
@@ -201,15 +270,19 @@ class _AlarmScreenState extends State<AlarmScreen> {
                       ),
                     ],
                   ),
-                  child: const Icon(
-                    Icons.alarm_rounded,
+                  child: Icon(
+                    widget.simulatedCall
+                        ? Icons.call_rounded
+                        : Icons.alarm_rounded,
                     size: 64,
                     color: Color(0xFFEF4444),
                   ),
                 ),
                 const SizedBox(height: 24),
-                const Text(
-                  'ALARME DE TAREFA',
+                Text(
+                  widget.simulatedCall
+                      ? 'LIGAÇÃO DO SIRIUS'
+                      : 'ALARME DE TAREFA',
                   style: TextStyle(
                     color: Color(0xFFEF4444),
                     fontSize: 15,
@@ -218,6 +291,15 @@ class _AlarmScreenState extends State<AlarmScreen> {
                   ),
                 ),
                 const SizedBox(height: 12),
+                if (widget.simulatedCall)
+                  const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 28),
+                    child: Text(
+                      'Ao aceitar, o Sirius lê seu lembrete. A tarefa continua pendente até você concluí-la.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: Colors.white70, fontSize: 14),
+                    ),
+                  ),
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 32),
                   child: Text(
@@ -235,55 +317,82 @@ class _AlarmScreenState extends State<AlarmScreen> {
                 ),
                 const Spacer(flex: 2),
                 // ── Actions ───────────────────────────────────────────────
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(28, 0, 28, 8),
-                  child: SizedBox(
-                    width: double.infinity,
-                    child: FilledButton.icon(
-                      onPressed: _dismiss,
-                      icon: const Icon(Icons.check_circle_outline, size: 26),
-                      label: const Text(
-                        'Dispensar',
-                        style: TextStyle(
-                            fontSize: 20, fontWeight: FontWeight.w700),
-                      ),
-                      style: FilledButton.styleFrom(
-                        backgroundColor: const Color(0xFF22C55E),
-                        foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(vertical: 18),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(16),
+                if (widget.simulatedCall)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(28, 0, 28, 28),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                      children: [
+                        _CallActionButton(
+                          label: 'Recusar',
+                          icon: Icons.call_end_rounded,
+                          color: const Color(0xFFEF4444),
+                          onPressed: _rejectCall,
+                        ),
+                        _CallActionButton(
+                          label: 'Aceitar',
+                          icon: Icons.call_rounded,
+                          color: const Color(0xFF22C55E),
+                          onPressed: _acceptCall,
+                        ),
+                      ],
+                    ),
+                  )
+                else ...[
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(28, 0, 28, 8),
+                    child: SizedBox(
+                      width: double.infinity,
+                      child: FilledButton.icon(
+                        onPressed: _dismiss,
+                        icon: const Icon(Icons.check_circle_outline, size: 26),
+                        label: const Text(
+                          'Dispensar',
+                          style: TextStyle(
+                            fontSize: 20,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        style: FilledButton.styleFrom(
+                          backgroundColor: const Color(0xFF22C55E),
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(vertical: 18),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(16),
+                          ),
                         ),
                       ),
                     ),
                   ),
-                ),
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(28, 0, 28, 28),
-                  child: SizedBox(
-                    width: double.infinity,
-                    child: OutlinedButton.icon(
-                      onPressed: _snooze,
-                      icon: const Icon(Icons.snooze_rounded, size: 26),
-                      label: const Text(
-                        'Adiar 5 min',
-                        style: TextStyle(
-                            fontSize: 18, fontWeight: FontWeight.w600),
-                      ),
-                      style: OutlinedButton.styleFrom(
-                        foregroundColor: Colors.white,
-                        side: BorderSide(
-                          color: Colors.white.withValues(alpha: 0.25),
-                          width: 1.5,
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(28, 0, 28, 28),
+                    child: SizedBox(
+                      width: double.infinity,
+                      child: OutlinedButton.icon(
+                        onPressed: _snooze,
+                        icon: const Icon(Icons.snooze_rounded, size: 26),
+                        label: const Text(
+                          'Adiar 5 min',
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.w600,
+                          ),
                         ),
-                        padding: const EdgeInsets.symmetric(vertical: 16),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(16),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: Colors.white,
+                          side: BorderSide(
+                            color: Colors.white.withValues(alpha: 0.25),
+                            width: 1.5,
+                          ),
+                          padding: const EdgeInsets.symmetric(vertical: 16),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(16),
+                          ),
                         ),
                       ),
                     ),
                   ),
-                ),
+                ],
               ],
             ),
           ),
@@ -291,4 +400,52 @@ class _AlarmScreenState extends State<AlarmScreen> {
       ),
     );
   }
+}
+
+class _CallActionButton extends StatelessWidget {
+  const _CallActionButton({
+    required this.label,
+    required this.icon,
+    required this.color,
+    required this.onPressed,
+  });
+
+  final String label;
+  final IconData icon;
+  final Color color;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) => Semantics(
+    button: true,
+    label: label,
+    child: Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Material(
+          color: color,
+          shape: const CircleBorder(),
+          elevation: 8,
+          child: InkWell(
+            customBorder: const CircleBorder(),
+            onTap: onPressed,
+            child: SizedBox(
+              width: 76,
+              height: 76,
+              child: Icon(icon, size: 32, color: Colors.white),
+            ),
+          ),
+        ),
+        const SizedBox(height: 10),
+        Text(
+          label,
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 15,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+      ],
+    ),
+  );
 }

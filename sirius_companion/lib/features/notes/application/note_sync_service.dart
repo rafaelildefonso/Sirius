@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/network/tcp_transfer_client.dart';
 import '../../../core/storage/database/database.dart';
@@ -37,6 +38,9 @@ class NoteSyncService extends StateNotifier<NoteSyncProgress> {
   NoteSyncService(this._noteRepo)
     : _tcpClient = TcpTransferClient(),
       super(NoteSyncProgress(state: NoteSyncState.idle));
+
+  String? get syncError =>
+      state.state == NoteSyncState.error ? state.error : null;
 
   /// Sync all pending notes (including binary image attachments) to the PC.
   Future<int> syncPendingNotes({String? host, int port = 8001}) async {
@@ -81,9 +85,7 @@ class NoteSyncService extends StateNotifier<NoteSyncProgress> {
             title: note.title,
             content: note.content,
             aiSummary: note.aiSummary,
-            aiTags: note.aiTags != null
-                ? List<String>.from(jsonDecode(note.aiTags!))
-                : null,
+            aiTags: _decodeTags(note.aiTags),
             attachments: attachments,
             contentLength: noteBytes,
           ),
@@ -112,9 +114,27 @@ class NoteSyncService extends StateNotifier<NoteSyncProgress> {
       // Send items one by one.
       int bytesSent = 0;
       var sent = 0;
+      final failures = <String>[];
       for (int i = 0; i < items.length; i++) {
-        final item = items[i];
-        await _noteRepo.setSyncStatus(item.uuid, 'syncing');
+        final initialItem = items[i];
+        await _noteRepo.setSyncStatus(initialItem.uuid, 'syncing');
+        // Classification can finish while the batch is being prepared. Read
+        // the latest metadata immediately before sending so that it is part of
+        // this transfer whenever possible.
+        final latestNote = await _noteRepo.getByUuid(initialItem.uuid);
+        final item = latestNote == null
+            ? initialItem
+            : TcpTransferItem(
+                uuid: initialItem.uuid,
+                type: initialItem.type,
+                category: initialItem.category,
+                title: initialItem.title,
+                content: initialItem.content,
+                aiSummary: latestNote.aiSummary,
+                aiTags: _decodeTags(latestNote.aiTags),
+                attachments: initialItem.attachments,
+                contentLength: initialItem.contentLength,
+              );
 
         state = NoteSyncProgress(
           state: NoteSyncState.syncing,
@@ -161,9 +181,10 @@ class NoteSyncService extends StateNotifier<NoteSyncProgress> {
             );
           }
         } else {
-          await _noteRepo.markSyncError(
-            item.uuid,
-            result.error ?? 'ACK failed',
+          final error = result.error ?? 'ACK failed';
+          await _noteRepo.markSyncError(item.uuid, error);
+          failures.add(
+            '${item.title.isEmpty ? item.uuid : item.title}: $error',
           );
         }
 
@@ -172,10 +193,13 @@ class NoteSyncService extends StateNotifier<NoteSyncProgress> {
 
       await _tcpClient.disconnect();
       state = NoteSyncProgress(
-        state: NoteSyncState.completed,
+        state: failures.isEmpty ? NoteSyncState.completed : NoteSyncState.error,
         totalItems: items.length,
         bytesSent: totalBytes,
         totalBytes: totalBytes,
+        error: failures.isEmpty
+            ? null
+            : 'Falha ao enviar ${failures.length} de ${items.length} anotações: ${failures.first}',
       );
       return sent;
     } catch (e) {
@@ -209,6 +233,14 @@ class NoteSyncService extends StateNotifier<NoteSyncProgress> {
           summary: classification.summary,
           tags: jsonEncode(classification.tags),
         );
+        // If the note already reached the PC, send the classification as an
+        // idempotent update under the same UUID. The desktop updates metadata
+        // in the original document without appending a second note body.
+        final latest = await noteRepo.getById(note.id);
+        if (latest != null &&
+            (latest.syncStatus == 'synced' || latest.syncStatus == 'syncing')) {
+          await _resyncClassification(latest);
+        }
       } else {
         await _noteRepo.updateClassification(
           id: note.id,
@@ -223,6 +255,22 @@ class NoteSyncService extends StateNotifier<NoteSyncProgress> {
         status: 'fallback_pending',
         error: e.toString(),
       );
+    }
+  }
+
+  Future<void> _resyncClassification(Note note) async {
+    await _noteRepo.setSyncStatus(note.uuid, 'pending');
+    final updater = NoteSyncService(_noteRepo);
+    try {
+      await updater.syncPendingNotes();
+      final error = updater.syncError;
+      if (error != null) {
+        debugPrint(
+          '[NoteSyncService] Classification update queued for retry: $error',
+        );
+      }
+    } finally {
+      updater.dispose();
     }
   }
 
@@ -246,6 +294,16 @@ class NoteSyncService extends StateNotifier<NoteSyncProgress> {
       } catch (_) {}
     }
     return attachments;
+  }
+
+  List<String>? _decodeTags(String? encoded) {
+    if (encoded == null || encoded.isEmpty) return null;
+    try {
+      final value = jsonDecode(encoded);
+      return value is List ? value.whereType<String>().toList() : null;
+    } catch (_) {
+      return null;
+    }
   }
 
   @override

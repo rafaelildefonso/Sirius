@@ -14,12 +14,10 @@ import io.flutter.plugin.common.MethodChannel.MethodCallHandler
 import io.flutter.plugin.common.MethodChannel.Result
 import android.webkit.CookieManager
 import java.io.File
-import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URL
-import java.security.MessageDigest
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -147,10 +145,49 @@ class GemmaModule : FlutterPlugin, ActivityAware, MethodCallHandler {
 
     private fun getHfCookies(): String {
         return try {
-            CookieManager.getInstance().getCookie("https://huggingface.co") ?: ""
+            val manager = CookieManager.getInstance()
+            manager.flush()
+            manager.getCookie("https://huggingface.co") ?: ""
         } catch (e: Exception) {
             ""
         }
+    }
+
+    private fun isHuggingFaceHost(host: String?): Boolean {
+        val normalized = host?.lowercase() ?: return false
+        return normalized == "huggingface.co" || normalized.endsWith(".huggingface.co")
+    }
+
+    private fun normalizeCookieHeader(value: String): String {
+        val trimmed = value.trim()
+        if (trimmed.length >= 2 && trimmed.first() == '"' && trimmed.last() == '"') {
+            return trimmed.substring(1, trimmed.length - 1)
+                .replace("\\\"", "\"")
+        }
+        return trimmed
+    }
+
+    private fun mergeCookieHeaders(vararg headers: String): String {
+        val cookies = linkedMapOf<String, String>()
+        headers
+            .map(::normalizeCookieHeader)
+            .filter(String::isNotEmpty)
+            .flatMap { it.split(';') }
+            .forEach { entry ->
+                val separator = entry.indexOf('=')
+                if (separator > 0) {
+                    cookies[entry.substring(0, separator).trim()] =
+                        entry.substring(separator + 1).trim()
+                }
+            }
+        return cookies.entries.joinToString("; ") { (name, value) -> "$name=$value" }
+    }
+
+    private fun hasSessionCookie(cookieHeader: String): Boolean {
+        return cookieHeader
+            .split(';')
+            .map { it.substringBefore('=').trim().lowercase() }
+            .any { it.contains("session") || it == "hf_auth" }
     }
 
     private fun downloadModel(cookies: String, token: String, downloadUrl: String, callback: (Boolean, String?) -> Unit) {
@@ -165,31 +202,74 @@ class GemmaModule : FlutterPlugin, ActivityAware, MethodCallHandler {
                 try {
                     val modelFile = File(context!!.filesDir, MODEL_FILENAME)
 
-                    val url = URL(downloadUrl)
-                    val connection = url.openConnection() as HttpURLConnection
-                    if (token.isNotEmpty()) {
-                        connection.setRequestProperty("Authorization", "Bearer $token")
-                    }
-                    // Get cookies from Android CookieManager (has HttpOnly hf-session) or fall back
-                    val hfCookies = getHfCookies()
-                    val allCookies = if (hfCookies.isNotEmpty()) hfCookies else cookies
-                    if (allCookies.isNotEmpty()) {
-                        connection.setRequestProperty("Cookie", allCookies)
-                    }
-                    connection.setRequestProperty("User-Agent", "SIRIUS-Companion/1.0")
-                    connection.connectTimeout = 30000
-                    connection.readTimeout = 60000
-                    connection.connect()
+                    val allCookies = mergeCookieHeaders(getHfCookies(), cookies)
 
-                    val responseCode = connection.responseCode
+                    var currentUrl = URL(downloadUrl)
+                    var connection: HttpURLConnection? = null
+                    var responseCode = -1
+                    var redirectCount = 0
+                    val maxRedirects = 5
+                    while (true) {
+                        val nextConnection = currentUrl.openConnection() as HttpURLConnection
+                        connection = nextConnection
+                        val isHfHost = isHuggingFaceHost(currentUrl.host)
+
+                        // The resolve endpoint needs the HF credentials, but
+                        // its redirect target is a signed CDN URL. Never leak
+                        // the user's session cookie/token to that other host.
+                        if (isHfHost && token.isNotEmpty() && !hasSessionCookie(allCookies)) {
+                            nextConnection.setRequestProperty("Authorization", "Bearer $token")
+                        }
+                        if (isHfHost && allCookies.isNotEmpty()) {
+                            nextConnection.setRequestProperty("Cookie", allCookies)
+                        }
+                        nextConnection.setRequestProperty("User-Agent", "SIRIUS-Companion/1.0")
+                        if (isHfHost) {
+                            nextConnection.setRequestProperty("Referer", downloadUrl)
+                        }
+                        nextConnection.instanceFollowRedirects = false
+                        nextConnection.connectTimeout = 30000
+                        nextConnection.readTimeout = 60000
+                        nextConnection.connect()
+                        responseCode = nextConnection.responseCode
+                        if (responseCode == HttpURLConnection.HTTP_OK) {
+                            break
+                        } else if (responseCode == HttpURLConnection.HTTP_MOVED_PERM ||
+                                   responseCode == HttpURLConnection.HTTP_MOVED_TEMP ||
+                                   responseCode == HttpURLConnection.HTTP_SEE_OTHER ||
+                                   responseCode == 307 ||
+                                   responseCode == 308) {
+                            val location = nextConnection.getHeaderField("Location")
+                            nextConnection.disconnect()
+                            if (location == null || redirectCount >= maxRedirects) {
+                                lastError = "Redirect error after $redirectCount attempts"
+                                break
+                            }
+                            currentUrl = currentUrl.toURI().resolve(location).toURL()
+                            redirectCount++
+                            continue
+                        } else {
+                            lastError = if (responseCode == HttpURLConnection.HTTP_UNAUTHORIZED) {
+                                "Server returned HTTP 401 (Unauthorized). Verify the Hugging Face login and that the Gemma license was accepted."
+                            } else {
+                                "Server returned HTTP $responseCode (${nextConnection.responseMessage})"
+                            }
+                            nextConnection.disconnect()
+                            break
+                        }
+                    }
                     if (responseCode != HttpURLConnection.HTTP_OK) {
-                        lastError = "Server returned HTTP $responseCode (${connection.responseMessage})"
-                        connection.disconnect()
+                        connection?.disconnect()
                         continue
                     }
 
-                    val fileLength = connection.contentLengthLong
-                    val input: InputStream = connection.inputStream
+                    val activeConnection = connection
+                    if (activeConnection == null) {
+                        continue
+                    }
+
+                    val fileLength = activeConnection.contentLengthLong
+                    val input: InputStream = activeConnection.inputStream
                     val output = FileOutputStream(modelFile)
 
                     val buffer = ByteArray(8192)
@@ -210,7 +290,7 @@ class GemmaModule : FlutterPlugin, ActivityAware, MethodCallHandler {
                     output.flush()
                     output.close()
                     input.close()
-                    connection.disconnect()
+                    activeConnection.disconnect()
 
                     val downloadedSize = modelFile.length()
                     if (modelFile.exists() && downloadedSize > 0) {

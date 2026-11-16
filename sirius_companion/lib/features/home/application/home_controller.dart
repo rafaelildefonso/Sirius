@@ -9,13 +9,15 @@ import '../../../../core/device_identity.dart';
 import '../../../../core/network/api_client.dart';
 import '../../../../core/storage/models/sync_item.dart' as sync_model;
 
-final homeControllerProvider = StateNotifierProvider<HomeController, HomeState>((ref) {
-  return HomeController();
-});
+final homeControllerProvider = StateNotifierProvider<HomeController, HomeState>(
+  (ref) {
+    return HomeController();
+  },
+);
 
 /// Reactive provider that tracks whether the device is currently paired.
 /// Used by the auth gate to navigate to pairing screen on unpair.
-final isPairedProvider = StateProvider<bool>((ref) => false);
+final isPairedProvider = StateProvider<bool?>((ref) => null);
 
 class HomeState {
   final bool isSyncing;
@@ -59,7 +61,9 @@ class HomeState {
     int? totalPendingCount,
     DateTime? lastSync,
     String? lastError,
+    bool clearLastError = false,
     String? syncProgressMessage,
+    bool clearSyncProgressMessage = false,
     SyncExecutionResult? lastSyncResult,
     List<sync_model.SyncItem>? recentCommands,
   }) {
@@ -73,8 +77,10 @@ class HomeState {
       pendingVisitsCount: pendingVisitsCount ?? this.pendingVisitsCount,
       totalPendingCount: totalPendingCount ?? this.totalPendingCount,
       lastSync: lastSync ?? this.lastSync,
-      lastError: lastError ?? this.lastError,
-      syncProgressMessage: syncProgressMessage ?? this.syncProgressMessage,
+      lastError: clearLastError ? null : lastError ?? this.lastError,
+      syncProgressMessage: clearSyncProgressMessage
+          ? null
+          : syncProgressMessage ?? this.syncProgressMessage,
       lastSyncResult: lastSyncResult ?? this.lastSyncResult,
       recentCommands: recentCommands ?? this.recentCommands,
     );
@@ -108,7 +114,7 @@ class HomeController extends StateNotifier<HomeState> {
       final pendingNotes = await noteRepo.getPendingCount();
       final pendingVisits = await placeVisitRepo.getPendingSyncCount();
       final totalPending = status.pendingCount + pendingNotes + pendingVisits;
-      
+
       state = state.copyWith(
         pendingCount: status.pendingCount,
         failedCount: status.failedCount,
@@ -134,17 +140,7 @@ class HomeController extends StateNotifier<HomeState> {
         return;
       }
       final reachable = await ApiClient.instance.checkServerReachable();
-      if (!reachable) {
-        // Try LAN discovery
-        final discoveredUrl = await ApiClient.instance.discoverServerOnLan();
-        if (discoveredUrl != null) {
-          state = state.copyWith(isConnected: true);
-        } else {
-          state = state.copyWith(isConnected: false);
-        }
-      } else {
-        state = state.copyWith(isConnected: true);
-      }
+      state = state.copyWith(isConnected: reachable);
     } catch (_) {
       state = state.copyWith(isConnected: false);
     }
@@ -164,6 +160,7 @@ class HomeController extends StateNotifier<HomeState> {
     state = state.copyWith(
       isSyncing: true,
       lastError: null,
+      clearLastError: true,
       syncProgressMessage: 'Conectando ao PC...',
     );
 
@@ -171,17 +168,23 @@ class HomeController extends StateNotifier<HomeState> {
       // Check connectivity first
       await checkConnectivity();
       if (!state.isConnected) {
-        state = state.copyWith(syncProgressMessage: 'Procurando PC na rede local...');
-        final discoveredUrl = await ApiClient.instance.discoverServerOnLan();
+        state = state.copyWith(
+          syncProgressMessage: 'Procurando PC na rede local...',
+        );
+        final discoveredUrl = await ApiClient.instance.discoverServerOnLan(
+          checkSavedUrl: false,
+        );
         if (discoveredUrl == null) {
           final result = SyncExecutionResult.error(
-            'Não foi possível conectar ao PC. Verifique se o SIRIUS está aberto na mesma rede.',
+            'Não encontrei o PC na rede local. Confira se o SIRIUS está aberto, '
+            'se o celular e o PC estão no mesmo Wi-Fi e se a porta 8000 está '
+            'liberada no Firewall do Windows.',
           );
           state = state.copyWith(
             isSyncing: false,
             lastError: result.error,
             lastSyncResult: result,
-            syncProgressMessage: null,
+            clearSyncProgressMessage: true,
           );
           return result;
         }
@@ -195,14 +198,17 @@ class HomeController extends StateNotifier<HomeState> {
             isSyncing: false,
             lastError: result.error,
             lastSyncResult: result,
-            syncProgressMessage: null,
+            clearSyncProgressMessage: true,
           );
           return result;
         }
       }
 
-      state = state.copyWith(syncProgressMessage: 'Enviando anotações e tarefas ao PC...');
+      state = state.copyWith(
+        syncProgressMessage: 'Enviando anotações e tarefas ao PC...',
+      );
       final result = await SyncWorker.performSync(
+        announceToPc: true,
         onProgress: (message, progress) {
           if (_mounted) {
             state = state.copyWith(syncProgressMessage: message);
@@ -215,15 +221,13 @@ class HomeController extends StateNotifier<HomeState> {
           syncProgressMessage: 'Sincronização concluída com sucesso!',
         );
       } else {
-        state = state.copyWith(
-          syncProgressMessage: 'Falha na sincronização',
-        );
+        state = state.copyWith(syncProgressMessage: 'Falha na sincronização');
       }
 
       // Clear progress message after a delay
       Future.delayed(const Duration(seconds: 3), () {
         if (_mounted && state.syncProgressMessage != null && !state.isSyncing) {
-          state = state.copyWith(syncProgressMessage: null);
+          state = state.copyWith(clearSyncProgressMessage: true);
         }
       });
 
@@ -231,6 +235,7 @@ class HomeController extends StateNotifier<HomeState> {
         isSyncing: false,
         lastSyncResult: result,
         lastError: result.success ? null : result.error,
+        clearLastError: result.success,
       );
 
       await loadStatus();
@@ -241,7 +246,7 @@ class HomeController extends StateNotifier<HomeState> {
         isSyncing: false,
         lastError: e.toString(),
         lastSyncResult: result,
-        syncProgressMessage: null,
+        clearSyncProgressMessage: true,
       );
       return result;
     }

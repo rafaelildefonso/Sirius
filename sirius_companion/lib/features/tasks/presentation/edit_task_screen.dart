@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../../../core/storage/database/database.dart';
 import '../task_alarm_service.dart';
+import '../simulated_call_policy.dart';
 
 /// Full-screen task editor. The task mode (date-range vs time-specific) is
 /// locked to the existing task — only title, notes and that mode's dates can
@@ -27,6 +28,10 @@ class _EditTaskScreenState extends State<EditTaskScreen> {
 
   late final bool _isDateRangeMode;
   bool _saving = false;
+  bool _siriusCallEnabled = false;
+  String _callCapabilityHint =
+      'A chamada abre no app; se a tela cheia estiver indisponível, chega uma notificação para tocar.';
+  bool _dndAccessGranted = false;
 
   @override
   void initState() {
@@ -38,6 +43,18 @@ class _EditTaskScreenState extends State<EditTaskScreen> {
     _startDate = task.startDate;
     _endDate = task.endDate;
     _dueAt = task.dueAt;
+    TaskAlarmService.getSimulatedCallEnabled(task.remoteId).then((enabled) {
+      if (mounted) setState(() => _siriusCallEnabled = enabled);
+    });
+    TaskAlarmService.getAlertCapabilities().then((capabilities) {
+      if (!mounted) return;
+      setState(() {
+        _dndAccessGranted = capabilities['dndAccess'] == true;
+        _callCapabilityHint = SimulatedCallPolicy.alertCapabilityHint(
+          capabilities,
+        );
+      });
+    });
   }
 
   @override
@@ -58,10 +75,7 @@ class _EditTaskScreenState extends State<EditTaskScreen> {
     if (date == null) return;
     setState(() {
       _startDate = DateTime(date.year, date.month, date.day);
-      // Ensure end date is not before start date
-      if (_endDate != null && _endDate!.isBefore(_startDate!)) {
-        _endDate = _startDate;
-      }
+      _endDate = _startDate;
     });
   }
 
@@ -92,8 +106,13 @@ class _EditTaskScreenState extends State<EditTaskScreen> {
     );
     if (date == null) return;
     setState(() {
-      _dueAt = DateTime(date.year, date.month, date.day,
-          _dueAt?.hour ?? 9, _dueAt?.minute ?? 0);
+      _dueAt = DateTime(
+        date.year,
+        date.month,
+        date.day,
+        _dueAt?.hour ?? 9,
+        _dueAt?.minute ?? 0,
+      );
     });
   }
 
@@ -104,8 +123,13 @@ class _EditTaskScreenState extends State<EditTaskScreen> {
       initialTime: TimeOfDay.fromDateTime(base),
     );
     if (time == null) return;
-    final picked =
-        DateTime(base.year, base.month, base.day, time.hour, time.minute);
+    final picked = DateTime(
+      base.year,
+      base.month,
+      base.day,
+      time.hour,
+      time.minute,
+    );
     setState(() {
       _dueAt = picked.isBefore(DateTime.now())
           ? picked.add(const Duration(days: 1))
@@ -165,6 +189,7 @@ class _EditTaskScreenState extends State<EditTaskScreen> {
         dueAt: _dueAt,
         startDate: _startDate,
         endDate: _endDate,
+        siriusCallEnabled: _siriusCallEnabled,
       );
       if (!mounted) return;
       if (!ok) {
@@ -209,7 +234,11 @@ class _EditTaskScreenState extends State<EditTaskScreen> {
     return Scaffold(
       backgroundColor: const Color(0xFF07090F),
       appBar: AppBar(
-        title: Text(_isDateRangeMode ? 'Editar Tarefa (Período)' : 'Editar Tarefa (Horário)'),
+        title: Text(
+          _isDateRangeMode
+              ? 'Editar Tarefa (Período)'
+              : 'Editar Tarefa (Horário)',
+        ),
         backgroundColor: const Color(0xFF07090F),
         leading: IconButton(
           icon: const Icon(Icons.close_rounded),
@@ -230,13 +259,52 @@ class _EditTaskScreenState extends State<EditTaskScreen> {
               decoration: InputDecoration(
                 counterText: '',
                 hintText: 'Ex.: Estudar Flutter',
-                hintStyle: TextStyle(color: const Color(0xFFFFFFFF).withOpacity(0.3)),
-                prefixIcon: const Icon(Icons.edit_note_rounded, color: Color(0xFF6366F1)),
+                hintStyle: TextStyle(
+                  color: const Color(0xFFFFFFFF).withOpacity(0.3),
+                ),
+                prefixIcon: const Icon(
+                  Icons.edit_note_rounded,
+                  color: Color(0xFF6366F1),
+                ),
                 labelText: 'Título *',
                 labelStyle: const TextStyle(color: Color(0xFF9CA3AF)),
               ),
             ),
             const SizedBox(height: 24),
+
+            if (!_isDateRangeMode) ...[
+              SwitchListTile(
+                value: _siriusCallEnabled,
+                onChanged: (value) =>
+                    setState(() => _siriusCallEnabled = value),
+                activeThumbColor: const Color(0xFF22C55E),
+                title: const Text(
+                  'Ligação simulada do Sirius',
+                  style: TextStyle(color: Colors.white),
+                ),
+                subtitle: Text(
+                  _callCapabilityHint,
+                  style: TextStyle(
+                    color: Colors.white.withValues(alpha: 0.55),
+                    fontSize: 12,
+                  ),
+                ),
+                secondary: const Icon(
+                  Icons.call_rounded,
+                  color: Color(0xFF22C55E),
+                ),
+              ),
+              if (!_dndAccessGranted)
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: TextButton.icon(
+                    onPressed: TaskAlarmService.openDoNotDisturbAccessSettings,
+                    icon: const Icon(Icons.do_not_disturb_on_rounded),
+                    label: const Text('Configurar acesso ao Não Perturbe'),
+                  ),
+                ),
+              const SizedBox(height: 12),
+            ],
 
             // Mode indicator (fixed for existing tasks)
             Container(
@@ -256,7 +324,9 @@ class _EditTaskScreenState extends State<EditTaskScreen> {
                 children: [
                   Icon(
                     _isDateRangeMode ? Icons.date_range : Icons.schedule,
-                    color: _isDateRangeMode ? const Color(0xFFF59E0B) : const Color(0xFF6366F1),
+                    color: _isDateRangeMode
+                        ? const Color(0xFFF59E0B)
+                        : const Color(0xFF6366F1),
                   ),
                   const SizedBox(width: 10),
                   Expanded(
@@ -265,7 +335,9 @@ class _EditTaskScreenState extends State<EditTaskScreen> {
                           ? 'Modo Período: notificação diária às 00:00 dentro do período'
                           : 'Modo Horário: alarme único no horário exato definido',
                       style: TextStyle(
-                        color: _isDateRangeMode ? const Color(0xFFF59E0B) : const Color(0xFF6366F1),
+                        color: _isDateRangeMode
+                            ? const Color(0xFFF59E0B)
+                            : const Color(0xFF6366F1),
                         fontSize: 13,
                         fontWeight: FontWeight.w500,
                       ),
@@ -386,14 +458,21 @@ class _EditTaskScreenState extends State<EditTaskScreen> {
                     ? const SizedBox(
                         width: 20,
                         height: 20,
-                        child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Colors.white,
+                        ),
                       )
                     : const Icon(Icons.save_outlined),
                 label: const Text('Salvar Alterações'),
                 style: FilledButton.styleFrom(
                   padding: const EdgeInsets.symmetric(vertical: 16),
-                  backgroundColor: _isDateRangeMode ? const Color(0xFFF59E0B) : const Color(0xFF6366F1),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                  backgroundColor: _isDateRangeMode
+                      ? const Color(0xFFF59E0B)
+                      : const Color(0xFF6366F1),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14),
+                  ),
                 ),
               ),
             ),
@@ -429,7 +508,9 @@ class _DatePickerChip extends StatelessWidget {
       child: Container(
         padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
         decoration: BoxDecoration(
-          color: const Color(0xFFFFFFFF).withValues(alpha: enabled ? 0.06 : 0.03),
+          color: const Color(
+            0xFFFFFFFF,
+          ).withValues(alpha: enabled ? 0.06 : 0.03),
           borderRadius: BorderRadius.circular(12),
           border: Border.all(
             color: value != null
@@ -454,7 +535,9 @@ class _DatePickerChip extends StatelessWidget {
             Row(
               children: [
                 Icon(
-                  value != null ? Icons.calendar_today_rounded : Icons.add_rounded,
+                  value != null
+                      ? Icons.calendar_today_rounded
+                      : Icons.add_rounded,
                   size: 16,
                   color: value != null ? color : const Color(0xFF5E6A7E),
                 ),
@@ -463,8 +546,12 @@ class _DatePickerChip extends StatelessWidget {
                   value != null ? formatter(value!) : 'Selecionar',
                   style: TextStyle(
                     fontSize: 14,
-                    color: value != null ? Colors.white : const Color(0xFF9CA3AF),
-                    fontWeight: value != null ? FontWeight.w600 : FontWeight.w400,
+                    color: value != null
+                        ? Colors.white
+                        : const Color(0xFF9CA3AF),
+                    fontWeight: value != null
+                        ? FontWeight.w600
+                        : FontWeight.w400,
                   ),
                 ),
               ],

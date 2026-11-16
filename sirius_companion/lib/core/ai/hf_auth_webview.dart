@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import '../config/constants.dart';
@@ -144,9 +145,12 @@ class _HfAuthWebViewState extends State<HfAuthWebView> {
   Future<void> _extractCookies() async {
     try {
       final cookiesResult = await _controller.runJavaScriptReturningResult('document.cookie');
-      final cookieStr = cookiesResult.toString();
+      // Android WebView returns string results JSON-encoded (including the
+      // surrounding quotes). Passing those quotes as part of the Cookie
+      // header makes Hugging Face reject the session with HTTP 401.
+      final cookieStr = _decodeJavaScriptString(cookiesResult);
       _lastCookies = cookieStr;
-      debugPrint('[HF WebView] ALL Cookies (len=${cookieStr.length}): $cookieStr');
+      debugPrint('[HF WebView] Cookies captured (len=${cookieStr.length})');
 
       // Also extract HF token from localStorage
       final token = await _extractHfToken();
@@ -163,8 +167,12 @@ class _HfAuthWebViewState extends State<HfAuthWebView> {
 
       debugPrint('[HF WebView] hasSession=$hasSession, isModelPage=$isModelPage, licenseAccepted=$_licenseAccepted, userConfirmed=$_userConfirmed, autoClosing=$_autoClosing, token=${token.isNotEmpty ? "***found***" : "empty"}');
 
-      // Auto-close if: has session AND (license accepted OR user confirmed OR on model page with session)
-      final shouldAutoClose = (!_autoClosing) && hasSession && (_licenseAccepted || _userConfirmed || isModelPage);
+      // Being on the model page does not mean that the gated license was
+      // accepted. Only close after the server-side acceptance was detected or
+      // after the user explicitly confirms that they are ready to download.
+      final shouldAutoClose = (!_autoClosing) &&
+          (_licenseAccepted || _userConfirmed) &&
+          (hasSession || isModelPage);
 
       if (shouldAutoClose) {
         _autoClosing = true;
@@ -186,7 +194,10 @@ class _HfAuthWebViewState extends State<HfAuthWebView> {
 (function() {
   try {
     // Try multiple possible keys where HuggingFace stores the token
-    var keys = ['token', 'hf-token', 'hf_chat_token', 'access_token', 'hf_access_token', 'userMenuToken'];
+    // Do not read generic keys such as "token" or "access_token": the
+    // frontend may use them for unrelated values, which would become an
+    // invalid Bearer token and override a valid WebView session.
+    var keys = ['hf_token', 'hf-token', 'hf_access_token'];
     for (var i = 0; i < keys.length; i++) {
       try {
         var val = localStorage.getItem(keys[i]);
@@ -204,13 +215,27 @@ class _HfAuthWebViewState extends State<HfAuthWebView> {
 })()
 ''';
       final result = await _controller.runJavaScriptReturningResult(script);
-      final token = result.toString().trim();
-      debugPrint('[HF WebView] Token extraction result (len=${token.length}): token found = ${token.isNotEmpty}');
+      final token = _decodeJavaScriptString(result).trim();
+      debugPrint('[HF WebView] Token found = ${token.isNotEmpty}');
       return token;
     } catch (e) {
       debugPrint('[HF WebView] Token extraction error: $e');
       return '';
     }
+  }
+
+  String _decodeJavaScriptString(Object? value) {
+    if (value == null) return '';
+    final raw = value.toString();
+    if (raw.length >= 2 && raw.startsWith('"') && raw.endsWith('"')) {
+      try {
+        final decoded = jsonDecode(raw);
+        if (decoded is String) return decoded;
+      } catch (_) {
+        // Some WebView implementations return a plain string. Fall through.
+      }
+    }
+    return raw;
   }
 
   void _onUserConfirm() {

@@ -151,7 +151,9 @@ class TcpTransferClient {
     // Wait for ACK from server.
     final ack = await _socket!
         .timeout(const Duration(seconds: 30))
-        .map((data) => utf8.decode(data))
+        .cast<List<int>>()
+        .transform(utf8.decoder)
+        .transform(const LineSplitter())
         .first
         .catchError((_) => '{}');
 

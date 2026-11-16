@@ -1143,6 +1143,17 @@ class $ScheduledTasksTable extends ScheduledTasks
     requiredDuringInsert: true,
     defaultConstraints: GeneratedColumn.constraintIsAlways('UNIQUE'),
   );
+  static const VerificationMeta _recurrenceIdMeta = const VerificationMeta(
+    'recurrenceId',
+  );
+  @override
+  late final GeneratedColumn<String> recurrenceId = GeneratedColumn<String>(
+    'recurrence_id',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
   static const VerificationMeta _titleMeta = const VerificationMeta('title');
   @override
   late final GeneratedColumn<String> title = GeneratedColumn<String>(
@@ -1264,9 +1275,21 @@ class $ScheduledTasksTable extends ScheduledTasks
     ),
     defaultValue: const Constant(false),
   );
+  static const VerificationMeta _routineAlertModeMeta = const VerificationMeta(
+    'routineAlertMode',
+  );
+  @override
+  late final GeneratedColumn<String> routineAlertMode = GeneratedColumn<String>(
+    'routine_alert_mode',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
   @override
   List<GeneratedColumn> get $columns => [
     remoteId,
+    recurrenceId,
     title,
     notes,
     dueAt,
@@ -1278,6 +1301,7 @@ class $ScheduledTasksTable extends ScheduledTasks
     startDate,
     endDate,
     isDateRange,
+    routineAlertMode,
   ];
   @override
   String get aliasedName => _alias ?? actualTableName;
@@ -1298,6 +1322,15 @@ class $ScheduledTasksTable extends ScheduledTasks
       );
     } else if (isInserting) {
       context.missing(_remoteIdMeta);
+    }
+    if (data.containsKey('recurrence_id')) {
+      context.handle(
+        _recurrenceIdMeta,
+        recurrenceId.isAcceptableOrUnknown(
+          data['recurrence_id']!,
+          _recurrenceIdMeta,
+        ),
+      );
     }
     if (data.containsKey('title')) {
       context.handle(
@@ -1377,6 +1410,15 @@ class $ScheduledTasksTable extends ScheduledTasks
         ),
       );
     }
+    if (data.containsKey('routine_alert_mode')) {
+      context.handle(
+        _routineAlertModeMeta,
+        routineAlertMode.isAcceptableOrUnknown(
+          data['routine_alert_mode']!,
+          _routineAlertModeMeta,
+        ),
+      );
+    }
     return context;
   }
 
@@ -1390,6 +1432,10 @@ class $ScheduledTasksTable extends ScheduledTasks
         DriftSqlType.string,
         data['${effectivePrefix}remote_id'],
       )!,
+      recurrenceId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}recurrence_id'],
+      ),
       title: attachedDatabase.typeMapping.read(
         DriftSqlType.string,
         data['${effectivePrefix}title'],
@@ -1434,6 +1480,10 @@ class $ScheduledTasksTable extends ScheduledTasks
         DriftSqlType.bool,
         data['${effectivePrefix}is_date_range'],
       )!,
+      routineAlertMode: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}routine_alert_mode'],
+      ),
     );
   }
 
@@ -1445,6 +1495,7 @@ class $ScheduledTasksTable extends ScheduledTasks
 
 class ScheduledTask extends DataClass implements Insertable<ScheduledTask> {
   final String remoteId;
+  final String? recurrenceId;
   final String title;
   final String? notes;
   final DateTime? dueAt;
@@ -1456,8 +1507,10 @@ class ScheduledTask extends DataClass implements Insertable<ScheduledTask> {
   final DateTime? startDate;
   final DateTime? endDate;
   final bool isDateRange;
+  final String? routineAlertMode;
   const ScheduledTask({
     required this.remoteId,
+    this.recurrenceId,
     required this.title,
     this.notes,
     this.dueAt,
@@ -1469,11 +1522,15 @@ class ScheduledTask extends DataClass implements Insertable<ScheduledTask> {
     this.startDate,
     this.endDate,
     required this.isDateRange,
+    this.routineAlertMode,
   });
   @override
   Map<String, Expression> toColumns(bool nullToAbsent) {
     final map = <String, Expression>{};
     map['remote_id'] = Variable<String>(remoteId);
+    if (!nullToAbsent || recurrenceId != null) {
+      map['recurrence_id'] = Variable<String>(recurrenceId);
+    }
     map['title'] = Variable<String>(title);
     if (!nullToAbsent || notes != null) {
       map['notes'] = Variable<String>(notes);
@@ -1493,12 +1550,18 @@ class ScheduledTask extends DataClass implements Insertable<ScheduledTask> {
       map['end_date'] = Variable<DateTime>(endDate);
     }
     map['is_date_range'] = Variable<bool>(isDateRange);
+    if (!nullToAbsent || routineAlertMode != null) {
+      map['routine_alert_mode'] = Variable<String>(routineAlertMode);
+    }
     return map;
   }
 
   ScheduledTasksCompanion toCompanion(bool nullToAbsent) {
     return ScheduledTasksCompanion(
       remoteId: Value(remoteId),
+      recurrenceId: recurrenceId == null && nullToAbsent
+          ? const Value.absent()
+          : Value(recurrenceId),
       title: Value(title),
       notes: notes == null && nullToAbsent
           ? const Value.absent()
@@ -1518,6 +1581,9 @@ class ScheduledTask extends DataClass implements Insertable<ScheduledTask> {
           ? const Value.absent()
           : Value(endDate),
       isDateRange: Value(isDateRange),
+      routineAlertMode: routineAlertMode == null && nullToAbsent
+          ? const Value.absent()
+          : Value(routineAlertMode),
     );
   }
 
@@ -1528,6 +1594,7 @@ class ScheduledTask extends DataClass implements Insertable<ScheduledTask> {
     serializer ??= driftRuntimeOptions.defaultSerializer;
     return ScheduledTask(
       remoteId: serializer.fromJson<String>(json['remoteId']),
+      recurrenceId: serializer.fromJson<String?>(json['recurrenceId']),
       title: serializer.fromJson<String>(json['title']),
       notes: serializer.fromJson<String?>(json['notes']),
       dueAt: serializer.fromJson<DateTime?>(json['dueAt']),
@@ -1539,6 +1606,7 @@ class ScheduledTask extends DataClass implements Insertable<ScheduledTask> {
       startDate: serializer.fromJson<DateTime?>(json['startDate']),
       endDate: serializer.fromJson<DateTime?>(json['endDate']),
       isDateRange: serializer.fromJson<bool>(json['isDateRange']),
+      routineAlertMode: serializer.fromJson<String?>(json['routineAlertMode']),
     );
   }
   @override
@@ -1546,6 +1614,7 @@ class ScheduledTask extends DataClass implements Insertable<ScheduledTask> {
     serializer ??= driftRuntimeOptions.defaultSerializer;
     return <String, dynamic>{
       'remoteId': serializer.toJson<String>(remoteId),
+      'recurrenceId': serializer.toJson<String?>(recurrenceId),
       'title': serializer.toJson<String>(title),
       'notes': serializer.toJson<String?>(notes),
       'dueAt': serializer.toJson<DateTime?>(dueAt),
@@ -1557,11 +1626,13 @@ class ScheduledTask extends DataClass implements Insertable<ScheduledTask> {
       'startDate': serializer.toJson<DateTime?>(startDate),
       'endDate': serializer.toJson<DateTime?>(endDate),
       'isDateRange': serializer.toJson<bool>(isDateRange),
+      'routineAlertMode': serializer.toJson<String?>(routineAlertMode),
     };
   }
 
   ScheduledTask copyWith({
     String? remoteId,
+    Value<String?> recurrenceId = const Value.absent(),
     String? title,
     Value<String?> notes = const Value.absent(),
     Value<DateTime?> dueAt = const Value.absent(),
@@ -1573,8 +1644,10 @@ class ScheduledTask extends DataClass implements Insertable<ScheduledTask> {
     Value<DateTime?> startDate = const Value.absent(),
     Value<DateTime?> endDate = const Value.absent(),
     bool? isDateRange,
+    Value<String?> routineAlertMode = const Value.absent(),
   }) => ScheduledTask(
     remoteId: remoteId ?? this.remoteId,
+    recurrenceId: recurrenceId.present ? recurrenceId.value : this.recurrenceId,
     title: title ?? this.title,
     notes: notes.present ? notes.value : this.notes,
     dueAt: dueAt.present ? dueAt.value : this.dueAt,
@@ -1586,10 +1659,16 @@ class ScheduledTask extends DataClass implements Insertable<ScheduledTask> {
     startDate: startDate.present ? startDate.value : this.startDate,
     endDate: endDate.present ? endDate.value : this.endDate,
     isDateRange: isDateRange ?? this.isDateRange,
+    routineAlertMode: routineAlertMode.present
+        ? routineAlertMode.value
+        : this.routineAlertMode,
   );
   ScheduledTask copyWithCompanion(ScheduledTasksCompanion data) {
     return ScheduledTask(
       remoteId: data.remoteId.present ? data.remoteId.value : this.remoteId,
+      recurrenceId: data.recurrenceId.present
+          ? data.recurrenceId.value
+          : this.recurrenceId,
       title: data.title.present ? data.title.value : this.title,
       notes: data.notes.present ? data.notes.value : this.notes,
       dueAt: data.dueAt.present ? data.dueAt.value : this.dueAt,
@@ -1605,6 +1684,9 @@ class ScheduledTask extends DataClass implements Insertable<ScheduledTask> {
       isDateRange: data.isDateRange.present
           ? data.isDateRange.value
           : this.isDateRange,
+      routineAlertMode: data.routineAlertMode.present
+          ? data.routineAlertMode.value
+          : this.routineAlertMode,
     );
   }
 
@@ -1612,6 +1694,7 @@ class ScheduledTask extends DataClass implements Insertable<ScheduledTask> {
   String toString() {
     return (StringBuffer('ScheduledTask(')
           ..write('remoteId: $remoteId, ')
+          ..write('recurrenceId: $recurrenceId, ')
           ..write('title: $title, ')
           ..write('notes: $notes, ')
           ..write('dueAt: $dueAt, ')
@@ -1622,7 +1705,8 @@ class ScheduledTask extends DataClass implements Insertable<ScheduledTask> {
           ..write('updatedAt: $updatedAt, ')
           ..write('startDate: $startDate, ')
           ..write('endDate: $endDate, ')
-          ..write('isDateRange: $isDateRange')
+          ..write('isDateRange: $isDateRange, ')
+          ..write('routineAlertMode: $routineAlertMode')
           ..write(')'))
         .toString();
   }
@@ -1630,6 +1714,7 @@ class ScheduledTask extends DataClass implements Insertable<ScheduledTask> {
   @override
   int get hashCode => Object.hash(
     remoteId,
+    recurrenceId,
     title,
     notes,
     dueAt,
@@ -1641,12 +1726,14 @@ class ScheduledTask extends DataClass implements Insertable<ScheduledTask> {
     startDate,
     endDate,
     isDateRange,
+    routineAlertMode,
   );
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
       (other is ScheduledTask &&
           other.remoteId == this.remoteId &&
+          other.recurrenceId == this.recurrenceId &&
           other.title == this.title &&
           other.notes == this.notes &&
           other.dueAt == this.dueAt &&
@@ -1657,11 +1744,13 @@ class ScheduledTask extends DataClass implements Insertable<ScheduledTask> {
           other.updatedAt == this.updatedAt &&
           other.startDate == this.startDate &&
           other.endDate == this.endDate &&
-          other.isDateRange == this.isDateRange);
+          other.isDateRange == this.isDateRange &&
+          other.routineAlertMode == this.routineAlertMode);
 }
 
 class ScheduledTasksCompanion extends UpdateCompanion<ScheduledTask> {
   final Value<String> remoteId;
+  final Value<String?> recurrenceId;
   final Value<String> title;
   final Value<String?> notes;
   final Value<DateTime?> dueAt;
@@ -1673,9 +1762,11 @@ class ScheduledTasksCompanion extends UpdateCompanion<ScheduledTask> {
   final Value<DateTime?> startDate;
   final Value<DateTime?> endDate;
   final Value<bool> isDateRange;
+  final Value<String?> routineAlertMode;
   final Value<int> rowid;
   const ScheduledTasksCompanion({
     this.remoteId = const Value.absent(),
+    this.recurrenceId = const Value.absent(),
     this.title = const Value.absent(),
     this.notes = const Value.absent(),
     this.dueAt = const Value.absent(),
@@ -1687,10 +1778,12 @@ class ScheduledTasksCompanion extends UpdateCompanion<ScheduledTask> {
     this.startDate = const Value.absent(),
     this.endDate = const Value.absent(),
     this.isDateRange = const Value.absent(),
+    this.routineAlertMode = const Value.absent(),
     this.rowid = const Value.absent(),
   });
   ScheduledTasksCompanion.insert({
     required String remoteId,
+    this.recurrenceId = const Value.absent(),
     required String title,
     this.notes = const Value.absent(),
     this.dueAt = const Value.absent(),
@@ -1702,6 +1795,7 @@ class ScheduledTasksCompanion extends UpdateCompanion<ScheduledTask> {
     this.startDate = const Value.absent(),
     this.endDate = const Value.absent(),
     this.isDateRange = const Value.absent(),
+    this.routineAlertMode = const Value.absent(),
     this.rowid = const Value.absent(),
   }) : remoteId = Value(remoteId),
        title = Value(title),
@@ -1709,6 +1803,7 @@ class ScheduledTasksCompanion extends UpdateCompanion<ScheduledTask> {
        updatedAt = Value(updatedAt);
   static Insertable<ScheduledTask> custom({
     Expression<String>? remoteId,
+    Expression<String>? recurrenceId,
     Expression<String>? title,
     Expression<String>? notes,
     Expression<DateTime>? dueAt,
@@ -1720,10 +1815,12 @@ class ScheduledTasksCompanion extends UpdateCompanion<ScheduledTask> {
     Expression<DateTime>? startDate,
     Expression<DateTime>? endDate,
     Expression<bool>? isDateRange,
+    Expression<String>? routineAlertMode,
     Expression<int>? rowid,
   }) {
     return RawValuesInsertable({
       if (remoteId != null) 'remote_id': remoteId,
+      if (recurrenceId != null) 'recurrence_id': recurrenceId,
       if (title != null) 'title': title,
       if (notes != null) 'notes': notes,
       if (dueAt != null) 'due_at': dueAt,
@@ -1735,12 +1832,14 @@ class ScheduledTasksCompanion extends UpdateCompanion<ScheduledTask> {
       if (startDate != null) 'start_date': startDate,
       if (endDate != null) 'end_date': endDate,
       if (isDateRange != null) 'is_date_range': isDateRange,
+      if (routineAlertMode != null) 'routine_alert_mode': routineAlertMode,
       if (rowid != null) 'rowid': rowid,
     });
   }
 
   ScheduledTasksCompanion copyWith({
     Value<String>? remoteId,
+    Value<String?>? recurrenceId,
     Value<String>? title,
     Value<String?>? notes,
     Value<DateTime?>? dueAt,
@@ -1752,10 +1851,12 @@ class ScheduledTasksCompanion extends UpdateCompanion<ScheduledTask> {
     Value<DateTime?>? startDate,
     Value<DateTime?>? endDate,
     Value<bool>? isDateRange,
+    Value<String?>? routineAlertMode,
     Value<int>? rowid,
   }) {
     return ScheduledTasksCompanion(
       remoteId: remoteId ?? this.remoteId,
+      recurrenceId: recurrenceId ?? this.recurrenceId,
       title: title ?? this.title,
       notes: notes ?? this.notes,
       dueAt: dueAt ?? this.dueAt,
@@ -1767,6 +1868,7 @@ class ScheduledTasksCompanion extends UpdateCompanion<ScheduledTask> {
       startDate: startDate ?? this.startDate,
       endDate: endDate ?? this.endDate,
       isDateRange: isDateRange ?? this.isDateRange,
+      routineAlertMode: routineAlertMode ?? this.routineAlertMode,
       rowid: rowid ?? this.rowid,
     );
   }
@@ -1776,6 +1878,9 @@ class ScheduledTasksCompanion extends UpdateCompanion<ScheduledTask> {
     final map = <String, Expression>{};
     if (remoteId.present) {
       map['remote_id'] = Variable<String>(remoteId.value);
+    }
+    if (recurrenceId.present) {
+      map['recurrence_id'] = Variable<String>(recurrenceId.value);
     }
     if (title.present) {
       map['title'] = Variable<String>(title.value);
@@ -1810,6 +1915,9 @@ class ScheduledTasksCompanion extends UpdateCompanion<ScheduledTask> {
     if (isDateRange.present) {
       map['is_date_range'] = Variable<bool>(isDateRange.value);
     }
+    if (routineAlertMode.present) {
+      map['routine_alert_mode'] = Variable<String>(routineAlertMode.value);
+    }
     if (rowid.present) {
       map['rowid'] = Variable<int>(rowid.value);
     }
@@ -1820,6 +1928,7 @@ class ScheduledTasksCompanion extends UpdateCompanion<ScheduledTask> {
   String toString() {
     return (StringBuffer('ScheduledTasksCompanion(')
           ..write('remoteId: $remoteId, ')
+          ..write('recurrenceId: $recurrenceId, ')
           ..write('title: $title, ')
           ..write('notes: $notes, ')
           ..write('dueAt: $dueAt, ')
@@ -1831,6 +1940,817 @@ class ScheduledTasksCompanion extends UpdateCompanion<ScheduledTask> {
           ..write('startDate: $startDate, ')
           ..write('endDate: $endDate, ')
           ..write('isDateRange: $isDateRange, ')
+          ..write('routineAlertMode: $routineAlertMode, ')
+          ..write('rowid: $rowid')
+          ..write(')'))
+        .toString();
+  }
+}
+
+class $RecurringTaskDefinitionsTable extends RecurringTaskDefinitions
+    with TableInfo<$RecurringTaskDefinitionsTable, RecurringTaskDefinition> {
+  @override
+  final GeneratedDatabase attachedDatabase;
+  final String? _alias;
+  $RecurringTaskDefinitionsTable(this.attachedDatabase, [this._alias]);
+  static const VerificationMeta _idMeta = const VerificationMeta('id');
+  @override
+  late final GeneratedColumn<String> id = GeneratedColumn<String>(
+    'id',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _payloadJsonMeta = const VerificationMeta(
+    'payloadJson',
+  );
+  @override
+  late final GeneratedColumn<String> payloadJson = GeneratedColumn<String>(
+    'payload_json',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _enabledMeta = const VerificationMeta(
+    'enabled',
+  );
+  @override
+  late final GeneratedColumn<bool> enabled = GeneratedColumn<bool>(
+    'enabled',
+    aliasedName,
+    false,
+    type: DriftSqlType.bool,
+    requiredDuringInsert: false,
+    defaultConstraints: GeneratedColumn.constraintIsAlways(
+      'CHECK ("enabled" IN (0, 1))',
+    ),
+    defaultValue: const Constant(true),
+  );
+  static const VerificationMeta _createdAtMeta = const VerificationMeta(
+    'createdAt',
+  );
+  @override
+  late final GeneratedColumn<DateTime> createdAt = GeneratedColumn<DateTime>(
+    'created_at',
+    aliasedName,
+    false,
+    type: DriftSqlType.dateTime,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _updatedAtMeta = const VerificationMeta(
+    'updatedAt',
+  );
+  @override
+  late final GeneratedColumn<DateTime> updatedAt = GeneratedColumn<DateTime>(
+    'updated_at',
+    aliasedName,
+    false,
+    type: DriftSqlType.dateTime,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _lastGeneratedDateMeta = const VerificationMeta(
+    'lastGeneratedDate',
+  );
+  @override
+  late final GeneratedColumn<DateTime> lastGeneratedDate =
+      GeneratedColumn<DateTime>(
+        'last_generated_date',
+        aliasedName,
+        true,
+        type: DriftSqlType.dateTime,
+        requiredDuringInsert: false,
+      );
+  @override
+  List<GeneratedColumn> get $columns => [
+    id,
+    payloadJson,
+    enabled,
+    createdAt,
+    updatedAt,
+    lastGeneratedDate,
+  ];
+  @override
+  String get aliasedName => _alias ?? actualTableName;
+  @override
+  String get actualTableName => $name;
+  static const String $name = 'recurring_task_definitions';
+  @override
+  VerificationContext validateIntegrity(
+    Insertable<RecurringTaskDefinition> instance, {
+    bool isInserting = false,
+  }) {
+    final context = VerificationContext();
+    final data = instance.toColumns(true);
+    if (data.containsKey('id')) {
+      context.handle(_idMeta, id.isAcceptableOrUnknown(data['id']!, _idMeta));
+    } else if (isInserting) {
+      context.missing(_idMeta);
+    }
+    if (data.containsKey('payload_json')) {
+      context.handle(
+        _payloadJsonMeta,
+        payloadJson.isAcceptableOrUnknown(
+          data['payload_json']!,
+          _payloadJsonMeta,
+        ),
+      );
+    } else if (isInserting) {
+      context.missing(_payloadJsonMeta);
+    }
+    if (data.containsKey('enabled')) {
+      context.handle(
+        _enabledMeta,
+        enabled.isAcceptableOrUnknown(data['enabled']!, _enabledMeta),
+      );
+    }
+    if (data.containsKey('created_at')) {
+      context.handle(
+        _createdAtMeta,
+        createdAt.isAcceptableOrUnknown(data['created_at']!, _createdAtMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_createdAtMeta);
+    }
+    if (data.containsKey('updated_at')) {
+      context.handle(
+        _updatedAtMeta,
+        updatedAt.isAcceptableOrUnknown(data['updated_at']!, _updatedAtMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_updatedAtMeta);
+    }
+    if (data.containsKey('last_generated_date')) {
+      context.handle(
+        _lastGeneratedDateMeta,
+        lastGeneratedDate.isAcceptableOrUnknown(
+          data['last_generated_date']!,
+          _lastGeneratedDateMeta,
+        ),
+      );
+    }
+    return context;
+  }
+
+  @override
+  Set<GeneratedColumn> get $primaryKey => {id};
+  @override
+  RecurringTaskDefinition map(
+    Map<String, dynamic> data, {
+    String? tablePrefix,
+  }) {
+    final effectivePrefix = tablePrefix != null ? '$tablePrefix.' : '';
+    return RecurringTaskDefinition(
+      id: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}id'],
+      )!,
+      payloadJson: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}payload_json'],
+      )!,
+      enabled: attachedDatabase.typeMapping.read(
+        DriftSqlType.bool,
+        data['${effectivePrefix}enabled'],
+      )!,
+      createdAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.dateTime,
+        data['${effectivePrefix}created_at'],
+      )!,
+      updatedAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.dateTime,
+        data['${effectivePrefix}updated_at'],
+      )!,
+      lastGeneratedDate: attachedDatabase.typeMapping.read(
+        DriftSqlType.dateTime,
+        data['${effectivePrefix}last_generated_date'],
+      ),
+    );
+  }
+
+  @override
+  $RecurringTaskDefinitionsTable createAlias(String alias) {
+    return $RecurringTaskDefinitionsTable(attachedDatabase, alias);
+  }
+}
+
+class RecurringTaskDefinition extends DataClass
+    implements Insertable<RecurringTaskDefinition> {
+  final String id;
+  final String payloadJson;
+  final bool enabled;
+  final DateTime createdAt;
+  final DateTime updatedAt;
+  final DateTime? lastGeneratedDate;
+  const RecurringTaskDefinition({
+    required this.id,
+    required this.payloadJson,
+    required this.enabled,
+    required this.createdAt,
+    required this.updatedAt,
+    this.lastGeneratedDate,
+  });
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    map['id'] = Variable<String>(id);
+    map['payload_json'] = Variable<String>(payloadJson);
+    map['enabled'] = Variable<bool>(enabled);
+    map['created_at'] = Variable<DateTime>(createdAt);
+    map['updated_at'] = Variable<DateTime>(updatedAt);
+    if (!nullToAbsent || lastGeneratedDate != null) {
+      map['last_generated_date'] = Variable<DateTime>(lastGeneratedDate);
+    }
+    return map;
+  }
+
+  RecurringTaskDefinitionsCompanion toCompanion(bool nullToAbsent) {
+    return RecurringTaskDefinitionsCompanion(
+      id: Value(id),
+      payloadJson: Value(payloadJson),
+      enabled: Value(enabled),
+      createdAt: Value(createdAt),
+      updatedAt: Value(updatedAt),
+      lastGeneratedDate: lastGeneratedDate == null && nullToAbsent
+          ? const Value.absent()
+          : Value(lastGeneratedDate),
+    );
+  }
+
+  factory RecurringTaskDefinition.fromJson(
+    Map<String, dynamic> json, {
+    ValueSerializer? serializer,
+  }) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return RecurringTaskDefinition(
+      id: serializer.fromJson<String>(json['id']),
+      payloadJson: serializer.fromJson<String>(json['payloadJson']),
+      enabled: serializer.fromJson<bool>(json['enabled']),
+      createdAt: serializer.fromJson<DateTime>(json['createdAt']),
+      updatedAt: serializer.fromJson<DateTime>(json['updatedAt']),
+      lastGeneratedDate: serializer.fromJson<DateTime?>(
+        json['lastGeneratedDate'],
+      ),
+    );
+  }
+  @override
+  Map<String, dynamic> toJson({ValueSerializer? serializer}) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return <String, dynamic>{
+      'id': serializer.toJson<String>(id),
+      'payloadJson': serializer.toJson<String>(payloadJson),
+      'enabled': serializer.toJson<bool>(enabled),
+      'createdAt': serializer.toJson<DateTime>(createdAt),
+      'updatedAt': serializer.toJson<DateTime>(updatedAt),
+      'lastGeneratedDate': serializer.toJson<DateTime?>(lastGeneratedDate),
+    };
+  }
+
+  RecurringTaskDefinition copyWith({
+    String? id,
+    String? payloadJson,
+    bool? enabled,
+    DateTime? createdAt,
+    DateTime? updatedAt,
+    Value<DateTime?> lastGeneratedDate = const Value.absent(),
+  }) => RecurringTaskDefinition(
+    id: id ?? this.id,
+    payloadJson: payloadJson ?? this.payloadJson,
+    enabled: enabled ?? this.enabled,
+    createdAt: createdAt ?? this.createdAt,
+    updatedAt: updatedAt ?? this.updatedAt,
+    lastGeneratedDate: lastGeneratedDate.present
+        ? lastGeneratedDate.value
+        : this.lastGeneratedDate,
+  );
+  RecurringTaskDefinition copyWithCompanion(
+    RecurringTaskDefinitionsCompanion data,
+  ) {
+    return RecurringTaskDefinition(
+      id: data.id.present ? data.id.value : this.id,
+      payloadJson: data.payloadJson.present
+          ? data.payloadJson.value
+          : this.payloadJson,
+      enabled: data.enabled.present ? data.enabled.value : this.enabled,
+      createdAt: data.createdAt.present ? data.createdAt.value : this.createdAt,
+      updatedAt: data.updatedAt.present ? data.updatedAt.value : this.updatedAt,
+      lastGeneratedDate: data.lastGeneratedDate.present
+          ? data.lastGeneratedDate.value
+          : this.lastGeneratedDate,
+    );
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('RecurringTaskDefinition(')
+          ..write('id: $id, ')
+          ..write('payloadJson: $payloadJson, ')
+          ..write('enabled: $enabled, ')
+          ..write('createdAt: $createdAt, ')
+          ..write('updatedAt: $updatedAt, ')
+          ..write('lastGeneratedDate: $lastGeneratedDate')
+          ..write(')'))
+        .toString();
+  }
+
+  @override
+  int get hashCode => Object.hash(
+    id,
+    payloadJson,
+    enabled,
+    createdAt,
+    updatedAt,
+    lastGeneratedDate,
+  );
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      (other is RecurringTaskDefinition &&
+          other.id == this.id &&
+          other.payloadJson == this.payloadJson &&
+          other.enabled == this.enabled &&
+          other.createdAt == this.createdAt &&
+          other.updatedAt == this.updatedAt &&
+          other.lastGeneratedDate == this.lastGeneratedDate);
+}
+
+class RecurringTaskDefinitionsCompanion
+    extends UpdateCompanion<RecurringTaskDefinition> {
+  final Value<String> id;
+  final Value<String> payloadJson;
+  final Value<bool> enabled;
+  final Value<DateTime> createdAt;
+  final Value<DateTime> updatedAt;
+  final Value<DateTime?> lastGeneratedDate;
+  final Value<int> rowid;
+  const RecurringTaskDefinitionsCompanion({
+    this.id = const Value.absent(),
+    this.payloadJson = const Value.absent(),
+    this.enabled = const Value.absent(),
+    this.createdAt = const Value.absent(),
+    this.updatedAt = const Value.absent(),
+    this.lastGeneratedDate = const Value.absent(),
+    this.rowid = const Value.absent(),
+  });
+  RecurringTaskDefinitionsCompanion.insert({
+    required String id,
+    required String payloadJson,
+    this.enabled = const Value.absent(),
+    required DateTime createdAt,
+    required DateTime updatedAt,
+    this.lastGeneratedDate = const Value.absent(),
+    this.rowid = const Value.absent(),
+  }) : id = Value(id),
+       payloadJson = Value(payloadJson),
+       createdAt = Value(createdAt),
+       updatedAt = Value(updatedAt);
+  static Insertable<RecurringTaskDefinition> custom({
+    Expression<String>? id,
+    Expression<String>? payloadJson,
+    Expression<bool>? enabled,
+    Expression<DateTime>? createdAt,
+    Expression<DateTime>? updatedAt,
+    Expression<DateTime>? lastGeneratedDate,
+    Expression<int>? rowid,
+  }) {
+    return RawValuesInsertable({
+      if (id != null) 'id': id,
+      if (payloadJson != null) 'payload_json': payloadJson,
+      if (enabled != null) 'enabled': enabled,
+      if (createdAt != null) 'created_at': createdAt,
+      if (updatedAt != null) 'updated_at': updatedAt,
+      if (lastGeneratedDate != null) 'last_generated_date': lastGeneratedDate,
+      if (rowid != null) 'rowid': rowid,
+    });
+  }
+
+  RecurringTaskDefinitionsCompanion copyWith({
+    Value<String>? id,
+    Value<String>? payloadJson,
+    Value<bool>? enabled,
+    Value<DateTime>? createdAt,
+    Value<DateTime>? updatedAt,
+    Value<DateTime?>? lastGeneratedDate,
+    Value<int>? rowid,
+  }) {
+    return RecurringTaskDefinitionsCompanion(
+      id: id ?? this.id,
+      payloadJson: payloadJson ?? this.payloadJson,
+      enabled: enabled ?? this.enabled,
+      createdAt: createdAt ?? this.createdAt,
+      updatedAt: updatedAt ?? this.updatedAt,
+      lastGeneratedDate: lastGeneratedDate ?? this.lastGeneratedDate,
+      rowid: rowid ?? this.rowid,
+    );
+  }
+
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    if (id.present) {
+      map['id'] = Variable<String>(id.value);
+    }
+    if (payloadJson.present) {
+      map['payload_json'] = Variable<String>(payloadJson.value);
+    }
+    if (enabled.present) {
+      map['enabled'] = Variable<bool>(enabled.value);
+    }
+    if (createdAt.present) {
+      map['created_at'] = Variable<DateTime>(createdAt.value);
+    }
+    if (updatedAt.present) {
+      map['updated_at'] = Variable<DateTime>(updatedAt.value);
+    }
+    if (lastGeneratedDate.present) {
+      map['last_generated_date'] = Variable<DateTime>(lastGeneratedDate.value);
+    }
+    if (rowid.present) {
+      map['rowid'] = Variable<int>(rowid.value);
+    }
+    return map;
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('RecurringTaskDefinitionsCompanion(')
+          ..write('id: $id, ')
+          ..write('payloadJson: $payloadJson, ')
+          ..write('enabled: $enabled, ')
+          ..write('createdAt: $createdAt, ')
+          ..write('updatedAt: $updatedAt, ')
+          ..write('lastGeneratedDate: $lastGeneratedDate, ')
+          ..write('rowid: $rowid')
+          ..write(')'))
+        .toString();
+  }
+}
+
+class $RoutineDefinitionsTable extends RoutineDefinitions
+    with TableInfo<$RoutineDefinitionsTable, RoutineDefinition> {
+  @override
+  final GeneratedDatabase attachedDatabase;
+  final String? _alias;
+  $RoutineDefinitionsTable(this.attachedDatabase, [this._alias]);
+  static const VerificationMeta _idMeta = const VerificationMeta('id');
+  @override
+  late final GeneratedColumn<String> id = GeneratedColumn<String>(
+    'id',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _payloadJsonMeta = const VerificationMeta(
+    'payloadJson',
+  );
+  @override
+  late final GeneratedColumn<String> payloadJson = GeneratedColumn<String>(
+    'payload_json',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _enabledMeta = const VerificationMeta(
+    'enabled',
+  );
+  @override
+  late final GeneratedColumn<bool> enabled = GeneratedColumn<bool>(
+    'enabled',
+    aliasedName,
+    false,
+    type: DriftSqlType.bool,
+    requiredDuringInsert: false,
+    defaultConstraints: GeneratedColumn.constraintIsAlways(
+      'CHECK ("enabled" IN (0, 1))',
+    ),
+    defaultValue: const Constant(true),
+  );
+  static const VerificationMeta _createdAtMeta = const VerificationMeta(
+    'createdAt',
+  );
+  @override
+  late final GeneratedColumn<DateTime> createdAt = GeneratedColumn<DateTime>(
+    'created_at',
+    aliasedName,
+    false,
+    type: DriftSqlType.dateTime,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _updatedAtMeta = const VerificationMeta(
+    'updatedAt',
+  );
+  @override
+  late final GeneratedColumn<DateTime> updatedAt = GeneratedColumn<DateTime>(
+    'updated_at',
+    aliasedName,
+    false,
+    type: DriftSqlType.dateTime,
+    requiredDuringInsert: true,
+  );
+  @override
+  List<GeneratedColumn> get $columns => [
+    id,
+    payloadJson,
+    enabled,
+    createdAt,
+    updatedAt,
+  ];
+  @override
+  String get aliasedName => _alias ?? actualTableName;
+  @override
+  String get actualTableName => $name;
+  static const String $name = 'routine_definitions';
+  @override
+  VerificationContext validateIntegrity(
+    Insertable<RoutineDefinition> instance, {
+    bool isInserting = false,
+  }) {
+    final context = VerificationContext();
+    final data = instance.toColumns(true);
+    if (data.containsKey('id')) {
+      context.handle(_idMeta, id.isAcceptableOrUnknown(data['id']!, _idMeta));
+    } else if (isInserting) {
+      context.missing(_idMeta);
+    }
+    if (data.containsKey('payload_json')) {
+      context.handle(
+        _payloadJsonMeta,
+        payloadJson.isAcceptableOrUnknown(
+          data['payload_json']!,
+          _payloadJsonMeta,
+        ),
+      );
+    } else if (isInserting) {
+      context.missing(_payloadJsonMeta);
+    }
+    if (data.containsKey('enabled')) {
+      context.handle(
+        _enabledMeta,
+        enabled.isAcceptableOrUnknown(data['enabled']!, _enabledMeta),
+      );
+    }
+    if (data.containsKey('created_at')) {
+      context.handle(
+        _createdAtMeta,
+        createdAt.isAcceptableOrUnknown(data['created_at']!, _createdAtMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_createdAtMeta);
+    }
+    if (data.containsKey('updated_at')) {
+      context.handle(
+        _updatedAtMeta,
+        updatedAt.isAcceptableOrUnknown(data['updated_at']!, _updatedAtMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_updatedAtMeta);
+    }
+    return context;
+  }
+
+  @override
+  Set<GeneratedColumn> get $primaryKey => {id};
+  @override
+  RoutineDefinition map(Map<String, dynamic> data, {String? tablePrefix}) {
+    final effectivePrefix = tablePrefix != null ? '$tablePrefix.' : '';
+    return RoutineDefinition(
+      id: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}id'],
+      )!,
+      payloadJson: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}payload_json'],
+      )!,
+      enabled: attachedDatabase.typeMapping.read(
+        DriftSqlType.bool,
+        data['${effectivePrefix}enabled'],
+      )!,
+      createdAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.dateTime,
+        data['${effectivePrefix}created_at'],
+      )!,
+      updatedAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.dateTime,
+        data['${effectivePrefix}updated_at'],
+      )!,
+    );
+  }
+
+  @override
+  $RoutineDefinitionsTable createAlias(String alias) {
+    return $RoutineDefinitionsTable(attachedDatabase, alias);
+  }
+}
+
+class RoutineDefinition extends DataClass
+    implements Insertable<RoutineDefinition> {
+  final String id;
+  final String payloadJson;
+  final bool enabled;
+  final DateTime createdAt;
+  final DateTime updatedAt;
+  const RoutineDefinition({
+    required this.id,
+    required this.payloadJson,
+    required this.enabled,
+    required this.createdAt,
+    required this.updatedAt,
+  });
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    map['id'] = Variable<String>(id);
+    map['payload_json'] = Variable<String>(payloadJson);
+    map['enabled'] = Variable<bool>(enabled);
+    map['created_at'] = Variable<DateTime>(createdAt);
+    map['updated_at'] = Variable<DateTime>(updatedAt);
+    return map;
+  }
+
+  RoutineDefinitionsCompanion toCompanion(bool nullToAbsent) {
+    return RoutineDefinitionsCompanion(
+      id: Value(id),
+      payloadJson: Value(payloadJson),
+      enabled: Value(enabled),
+      createdAt: Value(createdAt),
+      updatedAt: Value(updatedAt),
+    );
+  }
+
+  factory RoutineDefinition.fromJson(
+    Map<String, dynamic> json, {
+    ValueSerializer? serializer,
+  }) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return RoutineDefinition(
+      id: serializer.fromJson<String>(json['id']),
+      payloadJson: serializer.fromJson<String>(json['payloadJson']),
+      enabled: serializer.fromJson<bool>(json['enabled']),
+      createdAt: serializer.fromJson<DateTime>(json['createdAt']),
+      updatedAt: serializer.fromJson<DateTime>(json['updatedAt']),
+    );
+  }
+  @override
+  Map<String, dynamic> toJson({ValueSerializer? serializer}) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return <String, dynamic>{
+      'id': serializer.toJson<String>(id),
+      'payloadJson': serializer.toJson<String>(payloadJson),
+      'enabled': serializer.toJson<bool>(enabled),
+      'createdAt': serializer.toJson<DateTime>(createdAt),
+      'updatedAt': serializer.toJson<DateTime>(updatedAt),
+    };
+  }
+
+  RoutineDefinition copyWith({
+    String? id,
+    String? payloadJson,
+    bool? enabled,
+    DateTime? createdAt,
+    DateTime? updatedAt,
+  }) => RoutineDefinition(
+    id: id ?? this.id,
+    payloadJson: payloadJson ?? this.payloadJson,
+    enabled: enabled ?? this.enabled,
+    createdAt: createdAt ?? this.createdAt,
+    updatedAt: updatedAt ?? this.updatedAt,
+  );
+  RoutineDefinition copyWithCompanion(RoutineDefinitionsCompanion data) {
+    return RoutineDefinition(
+      id: data.id.present ? data.id.value : this.id,
+      payloadJson: data.payloadJson.present
+          ? data.payloadJson.value
+          : this.payloadJson,
+      enabled: data.enabled.present ? data.enabled.value : this.enabled,
+      createdAt: data.createdAt.present ? data.createdAt.value : this.createdAt,
+      updatedAt: data.updatedAt.present ? data.updatedAt.value : this.updatedAt,
+    );
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('RoutineDefinition(')
+          ..write('id: $id, ')
+          ..write('payloadJson: $payloadJson, ')
+          ..write('enabled: $enabled, ')
+          ..write('createdAt: $createdAt, ')
+          ..write('updatedAt: $updatedAt')
+          ..write(')'))
+        .toString();
+  }
+
+  @override
+  int get hashCode =>
+      Object.hash(id, payloadJson, enabled, createdAt, updatedAt);
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      (other is RoutineDefinition &&
+          other.id == this.id &&
+          other.payloadJson == this.payloadJson &&
+          other.enabled == this.enabled &&
+          other.createdAt == this.createdAt &&
+          other.updatedAt == this.updatedAt);
+}
+
+class RoutineDefinitionsCompanion extends UpdateCompanion<RoutineDefinition> {
+  final Value<String> id;
+  final Value<String> payloadJson;
+  final Value<bool> enabled;
+  final Value<DateTime> createdAt;
+  final Value<DateTime> updatedAt;
+  final Value<int> rowid;
+  const RoutineDefinitionsCompanion({
+    this.id = const Value.absent(),
+    this.payloadJson = const Value.absent(),
+    this.enabled = const Value.absent(),
+    this.createdAt = const Value.absent(),
+    this.updatedAt = const Value.absent(),
+    this.rowid = const Value.absent(),
+  });
+  RoutineDefinitionsCompanion.insert({
+    required String id,
+    required String payloadJson,
+    this.enabled = const Value.absent(),
+    required DateTime createdAt,
+    required DateTime updatedAt,
+    this.rowid = const Value.absent(),
+  }) : id = Value(id),
+       payloadJson = Value(payloadJson),
+       createdAt = Value(createdAt),
+       updatedAt = Value(updatedAt);
+  static Insertable<RoutineDefinition> custom({
+    Expression<String>? id,
+    Expression<String>? payloadJson,
+    Expression<bool>? enabled,
+    Expression<DateTime>? createdAt,
+    Expression<DateTime>? updatedAt,
+    Expression<int>? rowid,
+  }) {
+    return RawValuesInsertable({
+      if (id != null) 'id': id,
+      if (payloadJson != null) 'payload_json': payloadJson,
+      if (enabled != null) 'enabled': enabled,
+      if (createdAt != null) 'created_at': createdAt,
+      if (updatedAt != null) 'updated_at': updatedAt,
+      if (rowid != null) 'rowid': rowid,
+    });
+  }
+
+  RoutineDefinitionsCompanion copyWith({
+    Value<String>? id,
+    Value<String>? payloadJson,
+    Value<bool>? enabled,
+    Value<DateTime>? createdAt,
+    Value<DateTime>? updatedAt,
+    Value<int>? rowid,
+  }) {
+    return RoutineDefinitionsCompanion(
+      id: id ?? this.id,
+      payloadJson: payloadJson ?? this.payloadJson,
+      enabled: enabled ?? this.enabled,
+      createdAt: createdAt ?? this.createdAt,
+      updatedAt: updatedAt ?? this.updatedAt,
+      rowid: rowid ?? this.rowid,
+    );
+  }
+
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    if (id.present) {
+      map['id'] = Variable<String>(id.value);
+    }
+    if (payloadJson.present) {
+      map['payload_json'] = Variable<String>(payloadJson.value);
+    }
+    if (enabled.present) {
+      map['enabled'] = Variable<bool>(enabled.value);
+    }
+    if (createdAt.present) {
+      map['created_at'] = Variable<DateTime>(createdAt.value);
+    }
+    if (updatedAt.present) {
+      map['updated_at'] = Variable<DateTime>(updatedAt.value);
+    }
+    if (rowid.present) {
+      map['rowid'] = Variable<int>(rowid.value);
+    }
+    return map;
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('RoutineDefinitionsCompanion(')
+          ..write('id: $id, ')
+          ..write('payloadJson: $payloadJson, ')
+          ..write('enabled: $enabled, ')
+          ..write('createdAt: $createdAt, ')
+          ..write('updatedAt: $updatedAt, ')
           ..write('rowid: $rowid')
           ..write(')'))
         .toString();
@@ -3310,6 +4230,10 @@ abstract class _$AppDatabase extends GeneratedDatabase {
   late final $SyncItemsTable syncItems = $SyncItemsTable(this);
   late final $PlacesTable places = $PlacesTable(this);
   late final $ScheduledTasksTable scheduledTasks = $ScheduledTasksTable(this);
+  late final $RecurringTaskDefinitionsTable recurringTaskDefinitions =
+      $RecurringTaskDefinitionsTable(this);
+  late final $RoutineDefinitionsTable routineDefinitions =
+      $RoutineDefinitionsTable(this);
   late final $NotesTable notes = $NotesTable(this);
   late final $PlaceVisitsTable placeVisits = $PlaceVisitsTable(this);
   @override
@@ -3320,6 +4244,8 @@ abstract class _$AppDatabase extends GeneratedDatabase {
     syncItems,
     places,
     scheduledTasks,
+    recurringTaskDefinitions,
+    routineDefinitions,
     notes,
     placeVisits,
   ];
@@ -3866,6 +4792,7 @@ typedef $$PlacesTableProcessedTableManager =
 typedef $$ScheduledTasksTableCreateCompanionBuilder =
     ScheduledTasksCompanion Function({
       required String remoteId,
+      Value<String?> recurrenceId,
       required String title,
       Value<String?> notes,
       Value<DateTime?> dueAt,
@@ -3877,11 +4804,13 @@ typedef $$ScheduledTasksTableCreateCompanionBuilder =
       Value<DateTime?> startDate,
       Value<DateTime?> endDate,
       Value<bool> isDateRange,
+      Value<String?> routineAlertMode,
       Value<int> rowid,
     });
 typedef $$ScheduledTasksTableUpdateCompanionBuilder =
     ScheduledTasksCompanion Function({
       Value<String> remoteId,
+      Value<String?> recurrenceId,
       Value<String> title,
       Value<String?> notes,
       Value<DateTime?> dueAt,
@@ -3893,6 +4822,7 @@ typedef $$ScheduledTasksTableUpdateCompanionBuilder =
       Value<DateTime?> startDate,
       Value<DateTime?> endDate,
       Value<bool> isDateRange,
+      Value<String?> routineAlertMode,
       Value<int> rowid,
     });
 
@@ -3907,6 +4837,11 @@ class $$ScheduledTasksTableFilterComposer
   });
   ColumnFilters<String> get remoteId => $composableBuilder(
     column: $table.remoteId,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get recurrenceId => $composableBuilder(
+    column: $table.recurrenceId,
     builder: (column) => ColumnFilters(column),
   );
 
@@ -3964,6 +4899,11 @@ class $$ScheduledTasksTableFilterComposer
     column: $table.isDateRange,
     builder: (column) => ColumnFilters(column),
   );
+
+  ColumnFilters<String> get routineAlertMode => $composableBuilder(
+    column: $table.routineAlertMode,
+    builder: (column) => ColumnFilters(column),
+  );
 }
 
 class $$ScheduledTasksTableOrderingComposer
@@ -3977,6 +4917,11 @@ class $$ScheduledTasksTableOrderingComposer
   });
   ColumnOrderings<String> get remoteId => $composableBuilder(
     column: $table.remoteId,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get recurrenceId => $composableBuilder(
+    column: $table.recurrenceId,
     builder: (column) => ColumnOrderings(column),
   );
 
@@ -4034,6 +4979,11 @@ class $$ScheduledTasksTableOrderingComposer
     column: $table.isDateRange,
     builder: (column) => ColumnOrderings(column),
   );
+
+  ColumnOrderings<String> get routineAlertMode => $composableBuilder(
+    column: $table.routineAlertMode,
+    builder: (column) => ColumnOrderings(column),
+  );
 }
 
 class $$ScheduledTasksTableAnnotationComposer
@@ -4047,6 +4997,11 @@ class $$ScheduledTasksTableAnnotationComposer
   });
   GeneratedColumn<String> get remoteId =>
       $composableBuilder(column: $table.remoteId, builder: (column) => column);
+
+  GeneratedColumn<String> get recurrenceId => $composableBuilder(
+    column: $table.recurrenceId,
+    builder: (column) => column,
+  );
 
   GeneratedColumn<String> get title =>
       $composableBuilder(column: $table.title, builder: (column) => column);
@@ -4082,6 +5037,11 @@ class $$ScheduledTasksTableAnnotationComposer
 
   GeneratedColumn<bool> get isDateRange => $composableBuilder(
     column: $table.isDateRange,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get routineAlertMode => $composableBuilder(
+    column: $table.routineAlertMode,
     builder: (column) => column,
   );
 }
@@ -4120,6 +5080,7 @@ class $$ScheduledTasksTableTableManager
           updateCompanionCallback:
               ({
                 Value<String> remoteId = const Value.absent(),
+                Value<String?> recurrenceId = const Value.absent(),
                 Value<String> title = const Value.absent(),
                 Value<String?> notes = const Value.absent(),
                 Value<DateTime?> dueAt = const Value.absent(),
@@ -4131,9 +5092,11 @@ class $$ScheduledTasksTableTableManager
                 Value<DateTime?> startDate = const Value.absent(),
                 Value<DateTime?> endDate = const Value.absent(),
                 Value<bool> isDateRange = const Value.absent(),
+                Value<String?> routineAlertMode = const Value.absent(),
                 Value<int> rowid = const Value.absent(),
               }) => ScheduledTasksCompanion(
                 remoteId: remoteId,
+                recurrenceId: recurrenceId,
                 title: title,
                 notes: notes,
                 dueAt: dueAt,
@@ -4145,11 +5108,13 @@ class $$ScheduledTasksTableTableManager
                 startDate: startDate,
                 endDate: endDate,
                 isDateRange: isDateRange,
+                routineAlertMode: routineAlertMode,
                 rowid: rowid,
               ),
           createCompanionCallback:
               ({
                 required String remoteId,
+                Value<String?> recurrenceId = const Value.absent(),
                 required String title,
                 Value<String?> notes = const Value.absent(),
                 Value<DateTime?> dueAt = const Value.absent(),
@@ -4161,9 +5126,11 @@ class $$ScheduledTasksTableTableManager
                 Value<DateTime?> startDate = const Value.absent(),
                 Value<DateTime?> endDate = const Value.absent(),
                 Value<bool> isDateRange = const Value.absent(),
+                Value<String?> routineAlertMode = const Value.absent(),
                 Value<int> rowid = const Value.absent(),
               }) => ScheduledTasksCompanion.insert(
                 remoteId: remoteId,
+                recurrenceId: recurrenceId,
                 title: title,
                 notes: notes,
                 dueAt: dueAt,
@@ -4175,6 +5142,7 @@ class $$ScheduledTasksTableTableManager
                 startDate: startDate,
                 endDate: endDate,
                 isDateRange: isDateRange,
+                routineAlertMode: routineAlertMode,
                 rowid: rowid,
               ),
           withReferenceMapper: (p0) => p0
@@ -4200,6 +5168,463 @@ typedef $$ScheduledTasksTableProcessedTableManager =
         BaseReferences<_$AppDatabase, $ScheduledTasksTable, ScheduledTask>,
       ),
       ScheduledTask,
+      PrefetchHooks Function()
+    >;
+typedef $$RecurringTaskDefinitionsTableCreateCompanionBuilder =
+    RecurringTaskDefinitionsCompanion Function({
+      required String id,
+      required String payloadJson,
+      Value<bool> enabled,
+      required DateTime createdAt,
+      required DateTime updatedAt,
+      Value<DateTime?> lastGeneratedDate,
+      Value<int> rowid,
+    });
+typedef $$RecurringTaskDefinitionsTableUpdateCompanionBuilder =
+    RecurringTaskDefinitionsCompanion Function({
+      Value<String> id,
+      Value<String> payloadJson,
+      Value<bool> enabled,
+      Value<DateTime> createdAt,
+      Value<DateTime> updatedAt,
+      Value<DateTime?> lastGeneratedDate,
+      Value<int> rowid,
+    });
+
+class $$RecurringTaskDefinitionsTableFilterComposer
+    extends Composer<_$AppDatabase, $RecurringTaskDefinitionsTable> {
+  $$RecurringTaskDefinitionsTableFilterComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnFilters<String> get id => $composableBuilder(
+    column: $table.id,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get payloadJson => $composableBuilder(
+    column: $table.payloadJson,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<bool> get enabled => $composableBuilder(
+    column: $table.enabled,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<DateTime> get createdAt => $composableBuilder(
+    column: $table.createdAt,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<DateTime> get updatedAt => $composableBuilder(
+    column: $table.updatedAt,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<DateTime> get lastGeneratedDate => $composableBuilder(
+    column: $table.lastGeneratedDate,
+    builder: (column) => ColumnFilters(column),
+  );
+}
+
+class $$RecurringTaskDefinitionsTableOrderingComposer
+    extends Composer<_$AppDatabase, $RecurringTaskDefinitionsTable> {
+  $$RecurringTaskDefinitionsTableOrderingComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnOrderings<String> get id => $composableBuilder(
+    column: $table.id,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get payloadJson => $composableBuilder(
+    column: $table.payloadJson,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<bool> get enabled => $composableBuilder(
+    column: $table.enabled,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<DateTime> get createdAt => $composableBuilder(
+    column: $table.createdAt,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<DateTime> get updatedAt => $composableBuilder(
+    column: $table.updatedAt,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<DateTime> get lastGeneratedDate => $composableBuilder(
+    column: $table.lastGeneratedDate,
+    builder: (column) => ColumnOrderings(column),
+  );
+}
+
+class $$RecurringTaskDefinitionsTableAnnotationComposer
+    extends Composer<_$AppDatabase, $RecurringTaskDefinitionsTable> {
+  $$RecurringTaskDefinitionsTableAnnotationComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  GeneratedColumn<String> get id =>
+      $composableBuilder(column: $table.id, builder: (column) => column);
+
+  GeneratedColumn<String> get payloadJson => $composableBuilder(
+    column: $table.payloadJson,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<bool> get enabled =>
+      $composableBuilder(column: $table.enabled, builder: (column) => column);
+
+  GeneratedColumn<DateTime> get createdAt =>
+      $composableBuilder(column: $table.createdAt, builder: (column) => column);
+
+  GeneratedColumn<DateTime> get updatedAt =>
+      $composableBuilder(column: $table.updatedAt, builder: (column) => column);
+
+  GeneratedColumn<DateTime> get lastGeneratedDate => $composableBuilder(
+    column: $table.lastGeneratedDate,
+    builder: (column) => column,
+  );
+}
+
+class $$RecurringTaskDefinitionsTableTableManager
+    extends
+        RootTableManager<
+          _$AppDatabase,
+          $RecurringTaskDefinitionsTable,
+          RecurringTaskDefinition,
+          $$RecurringTaskDefinitionsTableFilterComposer,
+          $$RecurringTaskDefinitionsTableOrderingComposer,
+          $$RecurringTaskDefinitionsTableAnnotationComposer,
+          $$RecurringTaskDefinitionsTableCreateCompanionBuilder,
+          $$RecurringTaskDefinitionsTableUpdateCompanionBuilder,
+          (
+            RecurringTaskDefinition,
+            BaseReferences<
+              _$AppDatabase,
+              $RecurringTaskDefinitionsTable,
+              RecurringTaskDefinition
+            >,
+          ),
+          RecurringTaskDefinition,
+          PrefetchHooks Function()
+        > {
+  $$RecurringTaskDefinitionsTableTableManager(
+    _$AppDatabase db,
+    $RecurringTaskDefinitionsTable table,
+  ) : super(
+        TableManagerState(
+          db: db,
+          table: table,
+          createFilteringComposer: () =>
+              $$RecurringTaskDefinitionsTableFilterComposer(
+                $db: db,
+                $table: table,
+              ),
+          createOrderingComposer: () =>
+              $$RecurringTaskDefinitionsTableOrderingComposer(
+                $db: db,
+                $table: table,
+              ),
+          createComputedFieldComposer: () =>
+              $$RecurringTaskDefinitionsTableAnnotationComposer(
+                $db: db,
+                $table: table,
+              ),
+          updateCompanionCallback:
+              ({
+                Value<String> id = const Value.absent(),
+                Value<String> payloadJson = const Value.absent(),
+                Value<bool> enabled = const Value.absent(),
+                Value<DateTime> createdAt = const Value.absent(),
+                Value<DateTime> updatedAt = const Value.absent(),
+                Value<DateTime?> lastGeneratedDate = const Value.absent(),
+                Value<int> rowid = const Value.absent(),
+              }) => RecurringTaskDefinitionsCompanion(
+                id: id,
+                payloadJson: payloadJson,
+                enabled: enabled,
+                createdAt: createdAt,
+                updatedAt: updatedAt,
+                lastGeneratedDate: lastGeneratedDate,
+                rowid: rowid,
+              ),
+          createCompanionCallback:
+              ({
+                required String id,
+                required String payloadJson,
+                Value<bool> enabled = const Value.absent(),
+                required DateTime createdAt,
+                required DateTime updatedAt,
+                Value<DateTime?> lastGeneratedDate = const Value.absent(),
+                Value<int> rowid = const Value.absent(),
+              }) => RecurringTaskDefinitionsCompanion.insert(
+                id: id,
+                payloadJson: payloadJson,
+                enabled: enabled,
+                createdAt: createdAt,
+                updatedAt: updatedAt,
+                lastGeneratedDate: lastGeneratedDate,
+                rowid: rowid,
+              ),
+          withReferenceMapper: (p0) => p0
+              .map((e) => (e.readTable(table), BaseReferences(db, table, e)))
+              .toList(),
+          prefetchHooksCallback: null,
+        ),
+      );
+}
+
+typedef $$RecurringTaskDefinitionsTableProcessedTableManager =
+    ProcessedTableManager<
+      _$AppDatabase,
+      $RecurringTaskDefinitionsTable,
+      RecurringTaskDefinition,
+      $$RecurringTaskDefinitionsTableFilterComposer,
+      $$RecurringTaskDefinitionsTableOrderingComposer,
+      $$RecurringTaskDefinitionsTableAnnotationComposer,
+      $$RecurringTaskDefinitionsTableCreateCompanionBuilder,
+      $$RecurringTaskDefinitionsTableUpdateCompanionBuilder,
+      (
+        RecurringTaskDefinition,
+        BaseReferences<
+          _$AppDatabase,
+          $RecurringTaskDefinitionsTable,
+          RecurringTaskDefinition
+        >,
+      ),
+      RecurringTaskDefinition,
+      PrefetchHooks Function()
+    >;
+typedef $$RoutineDefinitionsTableCreateCompanionBuilder =
+    RoutineDefinitionsCompanion Function({
+      required String id,
+      required String payloadJson,
+      Value<bool> enabled,
+      required DateTime createdAt,
+      required DateTime updatedAt,
+      Value<int> rowid,
+    });
+typedef $$RoutineDefinitionsTableUpdateCompanionBuilder =
+    RoutineDefinitionsCompanion Function({
+      Value<String> id,
+      Value<String> payloadJson,
+      Value<bool> enabled,
+      Value<DateTime> createdAt,
+      Value<DateTime> updatedAt,
+      Value<int> rowid,
+    });
+
+class $$RoutineDefinitionsTableFilterComposer
+    extends Composer<_$AppDatabase, $RoutineDefinitionsTable> {
+  $$RoutineDefinitionsTableFilterComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnFilters<String> get id => $composableBuilder(
+    column: $table.id,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get payloadJson => $composableBuilder(
+    column: $table.payloadJson,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<bool> get enabled => $composableBuilder(
+    column: $table.enabled,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<DateTime> get createdAt => $composableBuilder(
+    column: $table.createdAt,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<DateTime> get updatedAt => $composableBuilder(
+    column: $table.updatedAt,
+    builder: (column) => ColumnFilters(column),
+  );
+}
+
+class $$RoutineDefinitionsTableOrderingComposer
+    extends Composer<_$AppDatabase, $RoutineDefinitionsTable> {
+  $$RoutineDefinitionsTableOrderingComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnOrderings<String> get id => $composableBuilder(
+    column: $table.id,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get payloadJson => $composableBuilder(
+    column: $table.payloadJson,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<bool> get enabled => $composableBuilder(
+    column: $table.enabled,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<DateTime> get createdAt => $composableBuilder(
+    column: $table.createdAt,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<DateTime> get updatedAt => $composableBuilder(
+    column: $table.updatedAt,
+    builder: (column) => ColumnOrderings(column),
+  );
+}
+
+class $$RoutineDefinitionsTableAnnotationComposer
+    extends Composer<_$AppDatabase, $RoutineDefinitionsTable> {
+  $$RoutineDefinitionsTableAnnotationComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  GeneratedColumn<String> get id =>
+      $composableBuilder(column: $table.id, builder: (column) => column);
+
+  GeneratedColumn<String> get payloadJson => $composableBuilder(
+    column: $table.payloadJson,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<bool> get enabled =>
+      $composableBuilder(column: $table.enabled, builder: (column) => column);
+
+  GeneratedColumn<DateTime> get createdAt =>
+      $composableBuilder(column: $table.createdAt, builder: (column) => column);
+
+  GeneratedColumn<DateTime> get updatedAt =>
+      $composableBuilder(column: $table.updatedAt, builder: (column) => column);
+}
+
+class $$RoutineDefinitionsTableTableManager
+    extends
+        RootTableManager<
+          _$AppDatabase,
+          $RoutineDefinitionsTable,
+          RoutineDefinition,
+          $$RoutineDefinitionsTableFilterComposer,
+          $$RoutineDefinitionsTableOrderingComposer,
+          $$RoutineDefinitionsTableAnnotationComposer,
+          $$RoutineDefinitionsTableCreateCompanionBuilder,
+          $$RoutineDefinitionsTableUpdateCompanionBuilder,
+          (
+            RoutineDefinition,
+            BaseReferences<
+              _$AppDatabase,
+              $RoutineDefinitionsTable,
+              RoutineDefinition
+            >,
+          ),
+          RoutineDefinition,
+          PrefetchHooks Function()
+        > {
+  $$RoutineDefinitionsTableTableManager(
+    _$AppDatabase db,
+    $RoutineDefinitionsTable table,
+  ) : super(
+        TableManagerState(
+          db: db,
+          table: table,
+          createFilteringComposer: () =>
+              $$RoutineDefinitionsTableFilterComposer($db: db, $table: table),
+          createOrderingComposer: () =>
+              $$RoutineDefinitionsTableOrderingComposer($db: db, $table: table),
+          createComputedFieldComposer: () =>
+              $$RoutineDefinitionsTableAnnotationComposer(
+                $db: db,
+                $table: table,
+              ),
+          updateCompanionCallback:
+              ({
+                Value<String> id = const Value.absent(),
+                Value<String> payloadJson = const Value.absent(),
+                Value<bool> enabled = const Value.absent(),
+                Value<DateTime> createdAt = const Value.absent(),
+                Value<DateTime> updatedAt = const Value.absent(),
+                Value<int> rowid = const Value.absent(),
+              }) => RoutineDefinitionsCompanion(
+                id: id,
+                payloadJson: payloadJson,
+                enabled: enabled,
+                createdAt: createdAt,
+                updatedAt: updatedAt,
+                rowid: rowid,
+              ),
+          createCompanionCallback:
+              ({
+                required String id,
+                required String payloadJson,
+                Value<bool> enabled = const Value.absent(),
+                required DateTime createdAt,
+                required DateTime updatedAt,
+                Value<int> rowid = const Value.absent(),
+              }) => RoutineDefinitionsCompanion.insert(
+                id: id,
+                payloadJson: payloadJson,
+                enabled: enabled,
+                createdAt: createdAt,
+                updatedAt: updatedAt,
+                rowid: rowid,
+              ),
+          withReferenceMapper: (p0) => p0
+              .map((e) => (e.readTable(table), BaseReferences(db, table, e)))
+              .toList(),
+          prefetchHooksCallback: null,
+        ),
+      );
+}
+
+typedef $$RoutineDefinitionsTableProcessedTableManager =
+    ProcessedTableManager<
+      _$AppDatabase,
+      $RoutineDefinitionsTable,
+      RoutineDefinition,
+      $$RoutineDefinitionsTableFilterComposer,
+      $$RoutineDefinitionsTableOrderingComposer,
+      $$RoutineDefinitionsTableAnnotationComposer,
+      $$RoutineDefinitionsTableCreateCompanionBuilder,
+      $$RoutineDefinitionsTableUpdateCompanionBuilder,
+      (
+        RoutineDefinition,
+        BaseReferences<
+          _$AppDatabase,
+          $RoutineDefinitionsTable,
+          RoutineDefinition
+        >,
+      ),
+      RoutineDefinition,
       PrefetchHooks Function()
     >;
 typedef $$NotesTableCreateCompanionBuilder =
@@ -4892,6 +6317,13 @@ class $AppDatabaseManager {
       $$PlacesTableTableManager(_db, _db.places);
   $$ScheduledTasksTableTableManager get scheduledTasks =>
       $$ScheduledTasksTableTableManager(_db, _db.scheduledTasks);
+  $$RecurringTaskDefinitionsTableTableManager get recurringTaskDefinitions =>
+      $$RecurringTaskDefinitionsTableTableManager(
+        _db,
+        _db.recurringTaskDefinitions,
+      );
+  $$RoutineDefinitionsTableTableManager get routineDefinitions =>
+      $$RoutineDefinitionsTableTableManager(_db, _db.routineDefinitions);
   $$NotesTableTableManager get notes =>
       $$NotesTableTableManager(_db, _db.notes);
   $$PlaceVisitsTableTableManager get placeVisits =>

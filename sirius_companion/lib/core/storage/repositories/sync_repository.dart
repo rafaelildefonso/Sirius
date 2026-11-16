@@ -12,14 +12,16 @@ class SyncRepository {
     required String payloadJson,
     required String clientId,
   }) async {
-    return await db.into(db.syncItems).insert(
-      SyncItemsCompanion.insert(
-        type: type,
-        payloadJson: payloadJson,
-        clientId: clientId,
-        createdAt: DateTime.now(),
-      ),
-    );
+    return await db
+        .into(db.syncItems)
+        .insert(
+          SyncItemsCompanion.insert(
+            type: type,
+            payloadJson: payloadJson,
+            clientId: clientId,
+            createdAt: DateTime.now(),
+          ),
+        );
   }
 
   Future<void> enqueueBatch(List<SyncItemsCompanion> items) async {
@@ -32,31 +34,44 @@ class SyncRepository {
     int limit = 100,
     int maxRetries = AppConstants.deadLetterRetries,
   }) async {
-    final driftItems = await (db.select(db.syncItems)
-          ..where((tbl) =>
-              tbl.syncedAt.isNull() &
-              (tbl.retryCount.isSmallerOrEqualValue(maxRetries) |
-                  // Task actions are durable user actions. Keep retrying
-                  // them after the generic dead-letter threshold so an
-                  // offline notification action cannot be lost before the
-                  // next successful manual sync. This also preserves the
-                  // creation item when a task was created on the phone.
-                   tbl.type.equals(SyncItemType.quickTask.value) |
-                   tbl.type.equals(SyncItemType.taskDone.value) |
-                   tbl.type.equals(SyncItemType.taskSnooze.value) |
-                   tbl.type.equals(SyncItemType.taskEdit.value)))
-          ..orderBy([(tbl) => OrderingTerm.asc(tbl.createdAt)])
-          ..limit(limit))
-        .get();
+    final driftItems =
+        await (db.select(db.syncItems)
+              ..where(
+                (tbl) =>
+                    tbl.syncedAt.isNull() &
+                    (tbl.retryCount.isSmallerOrEqualValue(maxRetries) |
+                        // Task actions are durable user actions. Keep retrying
+                        // them after the generic dead-letter threshold so an
+                        // offline notification action cannot be lost before the
+                        // next successful manual sync. This also preserves the
+                        // creation item when a task was created on the phone.
+                        tbl.type.equals(SyncItemType.quickTask.value) |
+                        tbl.type.equals(SyncItemType.taskDone.value) |
+                        tbl.type.equals(SyncItemType.taskSnooze.value) |
+                        tbl.type.equals(SyncItemType.taskEdit.value) |
+                        tbl.type.equals(
+                          SyncItemType.recurringTaskUpsert.value,
+                        ) |
+                        tbl.type.equals(
+                          SyncItemType.recurringTaskDelete.value,
+                        )),
+              )
+              ..orderBy([(tbl) => OrderingTerm.asc(tbl.createdAt)])
+              ..limit(limit))
+            .get();
     return driftItems.map(_toModel).toList();
   }
 
-  Future<List<model.SyncItem>> getPendingByType(String type, {int limit = 100}) async {
-    final driftItems = await (db.select(db.syncItems)
-          ..where((tbl) => tbl.syncedAt.isNull() & tbl.type.equals(type))
-          ..orderBy([(tbl) => OrderingTerm.asc(tbl.createdAt)])
-          ..limit(limit))
-        .get();
+  Future<List<model.SyncItem>> getPendingByType(
+    String type, {
+    int limit = 100,
+  }) async {
+    final driftItems =
+        await (db.select(db.syncItems)
+              ..where((tbl) => tbl.syncedAt.isNull() & tbl.type.equals(type))
+              ..orderBy([(tbl) => OrderingTerm.asc(tbl.createdAt)])
+              ..limit(limit))
+            .get();
     return driftItems.map(_toModel).toList();
   }
 
@@ -65,51 +80,60 @@ class SyncRepository {
       for (final clientId in clientIds) {
         await (db.update(db.syncItems)
               ..where((tbl) => tbl.clientId.equals(clientId)))
-            .write(SyncItemsCompanion(
-              syncedAt: Value(DateTime.now()),
-            ));
+            .write(SyncItemsCompanion(syncedAt: Value(DateTime.now())));
       }
     });
   }
 
   Future<void> incrementRetry(String clientId, String error) async {
-    final item = await (db.select(db.syncItems)
-          ..where((tbl) => tbl.clientId.equals(clientId)))
-        .getSingleOrNull();
+    final item = await (db.select(
+      db.syncItems,
+    )..where((tbl) => tbl.clientId.equals(clientId))).getSingleOrNull();
     if (item != null) {
-      await (db.update(db.syncItems)
-            ..where((tbl) => tbl.clientId.equals(clientId)))
-        .write(SyncItemsCompanion(
+      await (db.update(
+        db.syncItems,
+      )..where((tbl) => tbl.clientId.equals(clientId))).write(
+        SyncItemsCompanion(
           retryCount: Value(item.retryCount + 1),
           lastError: Value(error),
-        ));
+        ),
+      );
     }
   }
 
   Future<int> getPendingCount() async {
     final countExp = db.syncItems.id.count();
-    final row = await (db.selectOnly(db.syncItems)
-          ..addColumns([countExp])
-          ..where(db.syncItems.syncedAt.isNull()))
-        .getSingle();
+    final row =
+        await (db.selectOnly(db.syncItems)
+              ..addColumns([countExp])
+              ..where(db.syncItems.syncedAt.isNull()))
+            .getSingle();
     return row.read(countExp) ?? 0;
   }
 
   Future<int> getFailedCount({int? maxRetries}) async {
     final effectiveMax = maxRetries ?? AppConstants.deadLetterRetries;
     final countExp = db.syncItems.id.count();
-    final row = await (db.selectOnly(db.syncItems)
-          ..addColumns([countExp])
-          ..where(db.syncItems.syncedAt.isNull() &
-              db.syncItems.retryCount.isBiggerThanValue(effectiveMax)))
-        .getSingle();
+    final row =
+        await (db.selectOnly(db.syncItems)
+              ..addColumns([countExp])
+              ..where(
+                db.syncItems.syncedAt.isNull() &
+                    db.syncItems.retryCount.isBiggerThanValue(effectiveMax),
+              ))
+            .getSingle();
     return row.read(countExp) ?? 0;
   }
 
-  Future<void> clearSynced({Duration olderThan = const Duration(days: 7)}) async {
+  Future<void> clearSynced({
+    Duration olderThan = const Duration(days: 7),
+  }) async {
     final cutoff = DateTime.now().subtract(olderThan);
-    await (db.delete(db.syncItems)
-          ..where((tbl) => tbl.syncedAt.isNotNull() & tbl.syncedAt.isSmallerThanValue(cutoff)))
+    await (db.delete(db.syncItems)..where(
+          (tbl) =>
+              tbl.syncedAt.isNotNull() &
+              tbl.syncedAt.isSmallerThanValue(cutoff),
+        ))
         .go();
   }
 
