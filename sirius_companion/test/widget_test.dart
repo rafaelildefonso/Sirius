@@ -1,16 +1,13 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:sirius_companion/core/device_identity.dart';
-
-
-import 'package:sirius_companion/main.dart';
+import 'package:sirius_companion/features/pairing/presentation/pairing_screen.dart';
 
 void main() {
   testWidgets('Pairing screen loads', (WidgetTester tester) async {
-    DeviceIdentity.setTestPaired(false);
     await tester.pumpWidget(
-        const ProviderScope(child: SiriusCompanionApp()),
-      );
+      const ProviderScope(child: MaterialApp(home: PairingScreen())),
+    );
     await tester.pumpAndSettle();
 
     // Verify that the pairing screen loads

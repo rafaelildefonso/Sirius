@@ -31,4 +31,3 @@ def request_shutdown(
     if getattr(result, "returncode", 1) != 0:
         detail = getattr(result, "stderr", "") or "Operating system rejected the request"
         raise RuntimeError(str(detail).strip())
-

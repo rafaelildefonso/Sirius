@@ -81,6 +81,8 @@ def main() -> int:
 
     headers = {"X-Device-ID": "dev-qr", "Authorization": f"Bearer {qr_token}"}
 
+    headers = {**headers, "X-Sync-Announce": "true"}
+
     # -- 4. sync/batch ENCRYPTED item -> processed ----------------------------
     aes = _derive_key(sk)
     payload = {"text": "ligue as luzes", "timestamp": "2026-01-01T00:00:00"}
@@ -93,6 +95,9 @@ def main() -> int:
           r.status_code == 200 and body["results"][0]["status"] == "processed", f"({body})")
     got = ds._command_queue.get_nowait()
     check("command decrypted into queue", got == "ligue as luzes", f"(got {got!r})")
+    speech = ds._command_queue.get_nowait()
+    check("encrypted sync queues voice summary",
+          "Recebi os dados do celular: 1 comando." in speech)
 
     # tampered ciphertext -> failed
     bad = base64.b64encode(b"\x00" * 48).decode()
@@ -101,6 +106,9 @@ def main() -> int:
     })
     check("tampered payload -> failed",
           r.json()["results"][0]["status"] == "failed")
+    tampered_speech = ds._command_queue.get_nowait()
+    check("tampered sync queues spoken failure",
+          "O computador processou 0 e houve 1 falha" in tampered_speech)
 
     # plaintext still accepted (legacy compat)
     r = client.post("/api/sync/batch", headers=headers, json={
@@ -108,6 +116,36 @@ def main() -> int:
     })
     check("plaintext batch accepted",
           r.json()["results"][0]["status"] == "processed")
+    ds._command_queue.get_nowait()  # plaintext command
+    ds._command_queue.get_nowait()  # voice summary for the accepted item
+
+    r = client.post("/api/sync/batch", headers=headers, json={
+        "items": [{
+            "client_id": "c4",
+            "type": "unsupported_type",
+            "payload": {},
+        }],
+    })
+    check("failed batch returns item error",
+          r.status_code == 200 and
+          r.json()["results"][0].get("error") == "Unknown type: unsupported_type")
+    failure_speech = ds._command_queue.get_nowait()
+    check("failed sync queues spoken status",
+          "houve 1 falha" in failure_speech and "unsupported_type" in failure_speech)
+
+    automatic_headers = {**headers, "X-Sync-Announce": "false"}
+    r = client.post("/api/sync/batch", headers=automatic_headers, json={
+        "items": [{
+            "client_id": "c5",
+            "type": "unsupported_type",
+            "payload": {},
+        }],
+    })
+    check("automatic retry still reports item failure",
+          r.status_code == 200 and
+          r.json()["results"][0]["status"] == "failed")
+    check("automatic retry does not queue spoken failure",
+          ds._command_queue.empty())
 
     # -- 5. push PC->phone + pull encrypted ------------------------------------
     n = ds.queue_phone_command({"text": "ola do PC"})

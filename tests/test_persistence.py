@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
+import threading
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Iterator
@@ -74,6 +76,73 @@ class TestDatabase:
         assert "credential" in names
         assert "embedding" in names
         assert "schema_version" in names
+        assert "place_visits" in names
+        assert "place_confirmations" in names
+
+    def test_connections_wait_for_concurrent_writes(self, db: Database):
+        assert db.conn.execute("PRAGMA busy_timeout").fetchone()[0] == 15_000
+
+        db.conn.execute("CREATE TABLE lock_probe (value INTEGER)")
+        db.conn.commit()
+        db.conn.execute("BEGIN IMMEDIATE")
+
+        result: list[str] = []
+        errors: list[Exception] = []
+        worker_ready = threading.Event()
+
+        def write_from_worker() -> None:
+            try:
+                worker_conn = db.conn
+                worker_ready.set()
+                worker_conn.execute("INSERT INTO lock_probe VALUES (1)")
+                worker_conn.commit()
+                result.append("written")
+            except Exception as exc:
+                errors.append(exc)
+
+        worker = threading.Thread(target=write_from_worker)
+        worker.start()
+        try:
+            assert worker_ready.wait(timeout=2)
+            time.sleep(0.1)
+        finally:
+            db.conn.commit()
+            worker.join(timeout=2)
+
+        assert not worker.is_alive()
+        assert result == ["written"]
+        assert errors == []
+
+    def test_concurrent_scheduled_task_writes_are_serialized(
+        self, db: Database
+    ):
+        """Dashboard/task-alarm threads must not make sync writes fail."""
+        errors: list[Exception] = []
+
+        def create_task(index: int) -> None:
+            try:
+                Repository(db=db).add_scheduled_task(
+                    title=f"Sync task {index}",
+                    due_at="2026-11-08T12:00:00",
+                    task_id=f"sync-task-{index}",
+                )
+            except Exception as exc:
+                errors.append(exc)
+
+        workers = [
+            threading.Thread(target=create_task, args=(index,))
+            for index in range(20)
+        ]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join(timeout=5)
+
+        assert all(not worker.is_alive() for worker in workers)
+        assert errors == []
+        assert len(db.fetchall(
+            "SELECT id FROM scheduled_tasks WHERE id LIKE 'sync-task-%'"
+        )) == 20
 
     def test_fts_tables_exist(self, db: Database):
         tables = db.fetchall("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
@@ -437,6 +506,12 @@ class TestScheduledTasks:
         assert task["title"] == "Original"          # untouched
         assert task["notes"] == "velho"             # untouched
         assert task["due_at"] == "2026-10-12T18:30:00"
+
+    def test_update_can_clear_notes(self, repo: Repository):
+        repo.add_scheduled_task(title="Com notas", notes="remover", task_id="task-clear-notes")
+
+        assert repo.update_scheduled_task("task-clear-notes", clear_notes=True)
+        assert repo.get_scheduled_task("task-clear-notes")["notes"] is None
 
     def test_update_resets_notified_to_pending(self, repo: Repository):
         repo.add_scheduled_task(title="Rangou", due_at="2026-10-10T09:00:00", task_id="task-3")
