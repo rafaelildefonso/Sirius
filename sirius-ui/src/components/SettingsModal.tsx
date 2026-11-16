@@ -571,7 +571,7 @@ function SettingsModal({
                 />
                 <ToggleRow
                   label="Sugestões Proativas"
-                  value={cfg["proactive_mode_enabled"] !== "false"}
+                  value={String(cfg["proactive_mode_enabled"] ?? "").toLowerCase() === "true"}
                   onChange={(v) => updateCfg("proactive_mode_enabled", v ? "true" : "false")}
                 />
               </div>

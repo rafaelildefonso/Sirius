@@ -53,6 +53,7 @@ google-auth-oauthlib
 
 # Transcription / TTS
 faster-whisper
+onnxruntime==1.26.0
 edge-tts
 
 # Utilities

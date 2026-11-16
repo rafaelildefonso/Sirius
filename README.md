@@ -174,10 +174,12 @@ Simply speak naturally – the AI identifies intent and calls the correct tool.
 
 ### How to use the shutdown commands
 
+The phone's **Desligar computador** button requests an operating-system shutdown after an explicit confirmation. The AI has no PC shutdown tool. `shutdown_sirius` below closes only the SIRIUS interface and backend; it does not power off the computer.
+
 | Action | How to say it | What happens |
 |---|---|---|
 | **Hide only the interface** (keeps backend running) | Say “tchau”, “até logo”, “pode fechar” or similar | The Tauri window is hidden to the system tray. The backend keeps running in the background; you can restore the window from the tray icon. |
-| **Shut down completely** (closes interface and backend) | Say “fechar tudo”, “desligar tudo”, “encerrar completamente” | The interface closes and the backend process is terminated. Everything stops. |
+| **Close SIRIUS** (closes interface and backend) | Ask to close or exit SIRIUS | The interface closes and the backend process is terminated. The PC stays on. |
 
 > 💡 **Tip**: Clicking the window’s **X** button or pressing Alt+F4 also hides the interface (same as “tchau”) – it does **not** quit the backend.
 
@@ -200,11 +202,10 @@ eminder |
 | “Write a code that …” | code_helper |
 | “Create a React project with …” | dev_agent |
 | “Run this background task” | Agent_task |
-| “Shut down / hibernate / sleep” | computer_control |
 | “Update Steam games” | game_updater |
 | “Search for flights to SP on 15th” | Flight_finder |
 | “Hide interface” | hide_interface |
-| “Shut down completely” | shutdown_sirius |
+| “Close SIRIUS” | shutdown_sirius |
 | Process uploaded file (drag‑and‑drop) | File_processor |
 | “Remember this info” | save_memory |
 | “Schedule a meeting…” | google_calendar |
@@ -234,8 +235,8 @@ npx tauri dev
 ### Building for Production
 
 ```bash
-# 1. Prepare the Python environment once (reuses the lock on later runs)
-python setup.py
+# 1. Prepare the project's Python environment (rerun after dependency lock changes)
+.\venv\Scripts\python.exe setup.py
 
 # 2. Install frontend dependencies only on a new environment or lock change
 cd sirius-ui
@@ -304,6 +305,12 @@ python build_headless.py --clean --force
 
 # Companion Android
 .\build_companion.ps1 -Mode release -Clean
+
+# Ou com o flutter build
+cd sirius_companion; flutter build apk --debug
+
+# Ou se quiser gerar um apk release
+cd sirius_companion; flutter build apk --release
 ```
 
 Use rebuild forçado quando trocar manualmente a versão do Python, PyInstaller, Flutter, Gradle ou Android SDK. Alterações em código, assets e lockfiles invalidam automaticamente somente o cache afetado. Configurações pessoais, banco, memória e `.env` não entram no bundle nem provocam rebuild.

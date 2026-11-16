@@ -7,12 +7,15 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+import time
 from pathlib import Path
 from typing import Optional
 
 from cryptography.fernet import Fernet
 
 DEFAULT_DB_FILENAME = "sirius.db"
+_SQLITE_BUSY_TIMEOUT_MS = 15_000
+_SQLITE_BUSY_RETRY_DELAYS = (0.1, 0.25, 0.5)
 
 _SQL_SCHEMA = """\
 -- Schema version tracking
@@ -228,7 +231,55 @@ CREATE TABLE IF NOT EXISTS scheduled_tasks (
     notified_at     DATETIME,
     start_date      DATE,
     end_date        DATE,
-    is_date_range   INTEGER DEFAULT 0
+    is_date_range   INTEGER DEFAULT 0,
+    recurrence_id   TEXT,
+    sirius_call_enabled INTEGER NOT NULL DEFAULT 0
+);
+
+-- Recurring task definitions (generate concrete scheduled_tasks instances)
+CREATE TABLE IF NOT EXISTS recurring_tasks (
+    id              TEXT PRIMARY KEY,
+    title           TEXT NOT NULL,
+    notes           TEXT,
+    recurrence_type TEXT NOT NULL
+                    CHECK(recurrence_type IN ('daily','weekly','interval','monthly')),
+    weekdays_json   TEXT,             -- weekly: JSON list of ints 0-6 (0=Monday)
+    interval_days   INTEGER,          -- interval: every N days (anchored on start_from/creation)
+    month_day       INTEGER,          -- monthly: day of month 1-31 (clamped to month length)
+    time_of_day     TEXT,             -- 'HH:MM' for timed instances (24h)
+    period_days     INTEGER DEFAULT 0,-- >0: instance is a date-range lasting N days
+    start_from      DATE,             -- first day the recurrence runs (anchor for interval)
+    end_date        DATE,             -- stop generating after this date
+    last_generated_date DATE,         -- real run date of the last generation
+    source          TEXT NOT NULL DEFAULT 'pc',
+    device_id       TEXT,
+    enabled         INTEGER NOT NULL DEFAULT 1,
+    sirius_call_enabled INTEGER NOT NULL DEFAULT 0,
+    created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Place visits received from the companion app.
+CREATE TABLE IF NOT EXISTS place_visits (
+    uuid             TEXT PRIMARY KEY,
+    place_id         TEXT NOT NULL,
+    place_name       TEXT NOT NULL DEFAULT '',
+    entered_at       DATETIME NOT NULL,
+    exited_at        DATETIME,
+    duration_seconds INTEGER NOT NULL DEFAULT 0,
+    device_id        TEXT,
+    created_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS place_confirmations (
+    client_id   TEXT PRIMARY KEY,
+    place_id    TEXT NOT NULL,
+    event_type  TEXT,
+    latitude    REAL,
+    longitude   REAL,
+    occurred_at DATETIME,
+    device_id   TEXT,
+    received_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Indexes for performance
@@ -246,9 +297,12 @@ CREATE INDEX IF NOT EXISTS idx_file_importance     ON file_reference(importance)
 CREATE INDEX IF NOT EXISTS idx_embedding_source    ON embedding(source_id, source_type);
 CREATE INDEX IF NOT EXISTS idx_credential_service  ON credential(service);
 CREATE INDEX IF NOT EXISTS idx_sched_tasks_due     ON scheduled_tasks(status, due_at);
+CREATE INDEX IF NOT EXISTS idx_recurring_enabled   ON recurring_tasks(enabled);
+CREATE INDEX IF NOT EXISTS idx_place_visits_place ON place_visits(place_id, entered_at);
+CREATE INDEX IF NOT EXISTS idx_place_confirmations_place ON place_confirmations(place_id, occurred_at);
 """
 
-_SCHEMA_VERSION = 6
+_SCHEMA_VERSION = 10
 
 
 class Database:
@@ -270,6 +324,12 @@ class Database:
         self._fernet = Fernet(self.encryption_key)
         self._conn: Optional[sqlite3.Connection] = None
         self._local = threading.local()
+        # The dashboard, scheduler and WebSocket handlers all share this
+        # Database instance but run in different threads.  WAL allows readers
+        # to coexist, but SQLite still permits only one writer at a time.  A
+        # short in-process critical section prevents our own threads from
+        # needlessly competing for that writer slot.
+        self._operation_lock = threading.RLock()
         self.open()
 
     @staticmethod
@@ -298,17 +358,26 @@ class Database:
 
     def _create_connection(self) -> sqlite3.Connection:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
+        conn = sqlite3.connect(
+            str(self.db_path),
+            timeout=_SQLITE_BUSY_TIMEOUT_MS / 1000,
+            check_same_thread=False,
+            # Repository methods explicitly call commit().  Autocommit keeps
+            # a write transaction from remaining open between execute() and
+            # that commit() call, which was the main source of intermittent
+            # "database is locked" responses during phone sync.
+            isolation_level=None,
+        )
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute(f"PRAGMA busy_timeout={_SQLITE_BUSY_TIMEOUT_MS}")
         conn.execute("PRAGMA foreign_keys=ON")
-        conn.execute("PRAGMA busy_timeout=5000")
         return conn
 
     def open(self) -> None:
         if self._conn is not None:
             return
         self._conn = self._create_connection()
+        self._conn.execute("PRAGMA journal_mode=WAL")
         self._run_migrations()
 
     def close(self) -> None:
@@ -358,6 +427,67 @@ class Database:
                 source_uuid TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, target_path TEXT NOT NULL,
                 summary TEXT, tags_json TEXT, delivered_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
 
+        if from_version < 7:
+            # Recurring tasks: add the generated-instance link column (the
+            # recurring_tasks table itself is created idempotently above).
+            try:
+                self._conn.execute("ALTER TABLE scheduled_tasks ADD COLUMN recurrence_id TEXT")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
+            try:
+                self._conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_sched_tasks_rec ON scheduled_tasks(recurrence_id)"
+                )
+            except sqlite3.OperationalError:
+                pass
+
+        if from_version < 8:
+            # Place visits were previously accepted by the sync endpoint but
+            # had no destination table on the PC, so the phone could delete
+            # them after a response even though nothing was persisted.
+            self._conn.execute("""CREATE TABLE IF NOT EXISTS place_visits (
+                uuid TEXT PRIMARY KEY,
+                place_id TEXT NOT NULL,
+                place_name TEXT NOT NULL DEFAULT '',
+                entered_at DATETIME NOT NULL,
+                exited_at DATETIME,
+                duration_seconds INTEGER NOT NULL DEFAULT 0,
+                device_id TEXT,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_place_visits_place "
+                "ON place_visits(place_id, entered_at)"
+            )
+            self._conn.execute("""CREATE TABLE IF NOT EXISTS place_confirmations (
+                client_id TEXT PRIMARY KEY,
+                place_id TEXT NOT NULL,
+                event_type TEXT,
+                latitude REAL,
+                longitude REAL,
+                occurred_at DATETIME,
+                device_id TEXT,
+                received_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_place_confirmations_place "
+                "ON place_confirmations(place_id, occurred_at)"
+            )
+
+        if from_version < 9:
+            try:
+                self._conn.execute(
+                    "ALTER TABLE scheduled_tasks ADD COLUMN sirius_call_enabled INTEGER NOT NULL DEFAULT 0"
+                )
+            except sqlite3.OperationalError:
+                pass
+
+        if from_version < 10:
+            try:
+                self._conn.execute(
+                    "ALTER TABLE recurring_tasks ADD COLUMN sirius_call_enabled INTEGER NOT NULL DEFAULT 0"
+                )
+            except sqlite3.OperationalError:
+                pass
+
         self._conn.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (?)", (_SCHEMA_VERSION,))
         self._conn.commit()
 
@@ -367,11 +497,31 @@ class Database:
     def decrypt(self, ciphertext: bytes) -> str:
         return self._fernet.decrypt(ciphertext).decode("utf-8")
 
+    @staticmethod
+    def _is_busy_error(exc: sqlite3.OperationalError) -> bool:
+        message = str(exc).lower()
+        return "database is locked" in message or "database table is locked" in message
+
+    def _run_with_busy_retry(self, operation):
+        """Run one SQLite operation, handling a lock released just after timeout."""
+        for delay in (*_SQLITE_BUSY_RETRY_DELAYS, None):
+            try:
+                return operation()
+            except sqlite3.OperationalError as exc:
+                if not self._is_busy_error(exc) or delay is None:
+                    raise
+                time.sleep(delay)
+        raise AssertionError("unreachable")
+
     def execute(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
-        return self.conn.execute(sql, params)
+        with self._operation_lock:
+            return self._run_with_busy_retry(lambda: self.conn.execute(sql, params))
 
     def executemany(self, sql: str, params_list: list[tuple]) -> sqlite3.Cursor:
-        return self.conn.executemany(sql, params_list)
+        with self._operation_lock:
+            return self._run_with_busy_retry(
+                lambda: self.conn.executemany(sql, params_list)
+            )
 
     def fetchone(self, sql: str, params: tuple = ()) -> Optional[sqlite3.Row]:
         return self.conn.execute(sql, params).fetchone()
@@ -380,7 +530,8 @@ class Database:
         return self.conn.execute(sql, params).fetchall()
 
     def commit(self) -> None:
-        self.conn.commit()
+        with self._operation_lock:
+            self._run_with_busy_retry(self.conn.commit)
 
     def vacuum(self) -> None:
         self.conn.execute("VACUUM")

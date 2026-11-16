@@ -6,6 +6,13 @@ import time
 from datetime import datetime
 
 
+def is_proactive_mode_enabled(config: dict) -> bool:
+    value = config.get("proactive_mode_enabled", False)
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 class ProactiveEngine:
     """
     Decides when SIRIUS should speak unprompted and builds a context-rich prompt.

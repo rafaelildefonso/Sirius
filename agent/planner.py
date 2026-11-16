@@ -35,7 +35,6 @@ game_updater
   platform: "steam" | "epic" | "both" (optional, default: both)
   game_name: string (optional)
   app_id: string (optional)
-  shutdown_when_done: boolean (optional)
 
 browser_control
   action: "go_to" | "search" | "click" | "type" | "scroll" | "get_text" | "press" | "close" (required)

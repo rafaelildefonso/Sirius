@@ -1,6 +1,7 @@
 {
   "os_system": "windows",
   "assistant_mode": "gemini",
+  "proactive_mode_enabled": false,
   "stt_engine": "whisper",
   "stt_language": "auto",
   "stt_model": "medium",

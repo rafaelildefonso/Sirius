@@ -15,6 +15,8 @@ from core.llm_utils import call_llm_for_action
 BASE_DIR = get_base_dir()
 
 def _run_generated_code(description: str, speak: Callable | None = None) -> str:
+    from actions.system_power_guard import reject_explicit_shutdown
+    reject_explicit_shutdown(description)
     if speak:
         speak("Writing custom code for this task, sir.")
 
@@ -51,6 +53,7 @@ def _run_generated_code(description: str, speak: Callable | None = None) -> str:
             system=system_prompt,
         )
         code = re.sub(r"```(?:python)?", "", code).strip().rstrip("`").strip()
+        reject_explicit_shutdown(code)
 
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".py", delete=False, encoding="utf-8"

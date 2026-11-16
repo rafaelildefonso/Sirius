@@ -518,16 +518,6 @@ def restart_computer():
     else:
         subprocess.run(["systemctl", "reboot"], capture_output=True)
 
-def shutdown_computer():
-    if _OS == "Windows":
-        subprocess.run(["shutdown", "/s", "/t", "10"], capture_output=True)
-    elif _OS == "Darwin":
-        subprocess.run(["osascript", "-e",
-            'tell application "System Events" to shut down'],
-            capture_output=True)
-    else:
-        subprocess.run(["systemctl", "poweroff"], capture_output=True)
-
 ACTION_MAP: dict[str, callable] = {
     "volume_up":           volume_up,
     "volume_down":         volume_down,
@@ -587,10 +577,9 @@ ACTION_MAP: dict[str, callable] = {
     "dark_mode":           dark_mode,
     "toggle_wifi":         toggle_wifi,
     "restart":             restart_computer,
-    "shutdown":            shutdown_computer,
 }
 
-_DANGEROUS_ACTIONS = {"restart", "shutdown"}
+_DANGEROUS_ACTIONS = {"restart"}
 
 
 

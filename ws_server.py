@@ -2153,7 +2153,7 @@ class WsUI:
     def __init__(self):
         self._muted = False
         self._muted_by_user = False
-        self._window_visible = True
+        self._window_visible = False
         self._visibility_set = False
         self._current_state = "INITIALISING"
         self._current_file_path: str | None = None

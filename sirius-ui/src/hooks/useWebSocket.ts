@@ -50,7 +50,7 @@ export function useWebSocket() {
   const [state, setState_] = useState<AssistantState>("INITIALISING");
   const [voiceLevel, setVoiceLevel] = useState(0);
   const [logs, setLogs] = useState<LogEntry[]>([]);
-  const [muted, setMuted_] = useState(false);
+  const [muted, setMuted_] = useState(true);
   const [permissionRequest, setPermissionRequest] = useState<{
     perm_key: string;
     label: string;

@@ -154,6 +154,9 @@ def _fix_code(code: str, error_output: str, description: str) -> str:
 
 
 def _run_file(path: Path, args: list, timeout: int) -> str:
+    from actions.system_power_guard import reject_explicit_shutdown
+    source = path.read_text(encoding="utf-8", errors="replace")
+    reject_explicit_shutdown(source + " " + " ".join(map(str, args or [])))
     interpreters = {
         ".py":  [sys.executable],
         ".js":  ["node"],

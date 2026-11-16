@@ -114,12 +114,25 @@ Todos exigem headers `Authorization: Bearer <device_token>` +
 | `quick_task` | usuário cria lembrete no app | SQLite `add_scheduled_task` |
 | `task_done` / `task_snooze` | alarme dispensado/adiado | SQLite `complete/snooze_scheduled_task` |
 | `task_edit` | usuário edita tarefa na home (título/prazo/notas) | SQLite `update_scheduled_task` + reescrita da linha no Obsidian (`update_task_in_obsidian`); alarme local cancelado e re-armado |
+| `recurring_task_upsert` / `recurring_task_delete` | cria/edita/pausa/exclui recorrência no celular | espelha a definição; `source='mobile'` evita geração duplicada no PC |
 
 Retry: itens que falham voltam à fila com backoff exponencial
 (30 s → 2 min → 10 min → 1 h); após 10 tentativas viram dead-letter
 (`constants.dart`) — exceto as ações duráveis de tarefa
-(`quick_task`/`task_done`/`task_snooze`/`task_edit`), que continuam com
+(`quick_task`/`task_done`/`task_snooze`/`task_edit`/`recurring_task_upsert`/
+`recurring_task_delete`), que continuam com
 retry mesmo após o limite (`sync_repository.dart::getPending`).
+Criações de tarefa são deduplicadas pelo ID remoto; conclusão e edição
+repetidas são confirmadas quando o estado já foi aplicado, evitando uma fila
+presa quando a resposta do PC se perde.
+O SQLite do PC usa WAL e aguarda até 15 segundos por uma escrita concorrente;
+se o banco continuar ocupado, a sincronização informa a falha e mantém o item
+na fila para nova tentativa.
+
+Anotações usam o canal TCP da porta 8001. Se o envio falhar ou for
+interrompido, o status `error`/`syncing` permanece elegível para nova tentativa
+no próximo ciclo; a sincronização manual também mostra a falha em vez de
+reportar sucesso com zero itens.
 
 ## 6. Push PC → celular
 
@@ -133,11 +146,59 @@ retry mesmo após o limite (`sync_repository.dart::getPending`).
   as tasks ativas do SQLite (`get_active_scheduled_tasks`) e o
   `TaskAlarmService.syncFromServer` arma os alarmes locais.
 
+### 6.1 Tarefas recorrentes
+
+O celular é a fonte principal: definições ficam no SQLite local do app e a
+geração das ocorrências/alarmes não depende do PC. O outbox envia
+`recurring_task_upsert` e `recurring_task_delete` quando houver conexão. O PC
+espelha essas definições em `recurring_tasks`; as definições com
+`source='mobile'` são ignoradas pelo daemon Python para não gerar uma segunda
+ocorrência. O pull sincroniza alterações feitas no PC de volta ao celular.
+
+O app gera a ocorrência do dia na inicialização e por uma tarefa local do
+WorkManager (15 min, sem requisito de rede). Cada ocorrência usa um ID
+determinístico (`<recurrence-id>_<AAAAMMDD>`), evitando duplicação em retries.
+O PC mantém o gerador legado de 60 s para recorrências criadas diretamente
+nele que ainda não foram adotadas pelo celular.
+
+- **Regras**: `daily` (horário fixo), `weekly` (dias da semana), `interval`
+  (a cada N dias, ancorado em `start_from`) e `monthly` (dia N do mês,
+  clampado à duração do mês). A tarefa gerada é **de horário** (`time_of_day`
+  → `due_at`) ou **de período** (`period_days` > 0 → date-range, notificada
+  pelo `DateRangeNotifier`).
+- **Sem duplicação**: a ocorrência do dia é gravada no banco local antes do
+  alarme; IDs estáveis e o índice único impedem duplicação em execuções
+  concorrentes. Instâncias concluídas/dispensadas ficam como histórico.
+- Ocorrências locais sincronizadas (`source='recurring'`,
+  `recurrence_id`) aparecem também no PC e podem ser concluídas/adiadas pelo
+  fluxo de tarefas existente.
+
+Endpoints (mesma autenticação de device do §4):
+
+| Endpoint | Método | Payload / resposta |
+|---|---|---|
+| `/api/recurring` | GET | → `{recurring:[{..., next_occurrence}]}` |
+| `/api/recurring` | POST | `{title, recurrence_type:'daily'\|'weekly'\|'interval'\|'monthly', weekdays?, interval_days?, month_day?, time_of_day:'HH:MM', period_days?, start_from?, end_date?, notes?}` → `{recurring}` |
+| `/api/recurring/{id}` | PATCH | campos parciais (mesmos do POST + `enabled: bool`) |
+| `/api/recurring/{id}` | DELETE | apaga a definição + instâncias pendentes geradas |
+
+No app Flutter (`sirius_companion`): a tela de criação de tarefa tem o toggle
+**"Repetir automaticamente"** (`create_task_screen.dart`), que revela as
+opções (todo dia / semana com seletor de dias / a cada X dias / mensal,
+horário ou período de N dias) e salva localmente via
+`recurring_task_service.dart`, sem exigir pareamento ou rede. A home tem a
+seção **TAREFAS RECORRENTES** (`home_screen.dart::_RecurringTasksSection`)
+com o Switch para ativar/pausar cada definição, descrição da regra + próxima
+ocorrência, e exclusão por long-press. Pelo PC, o tool de voz
+**`recurring_reminder`**
+(`create|list|update|delete`, em `actions/reminder.py`) usa a mesma lógica
+de validação de `core/recurring_tasks.create_recurring/update_recurring`.
+
 ## 7. Timings do app Flutter
 
 | Mecanismo | Frequência | Código |
 |---|---|---|
-| WorkManager periódico | 15 min (+ tarefa única 10 s após registro) | `sync_worker.dart::initWorkManager` |
+| WorkManager periódico | 15 min para recorrências locais; 60 min para sync/manutenção | `sync_worker.dart::initWorkManager` |
 | Sync em foreground | 45 s com app aberto; catch-up ao abrir/regain de rede | `foreground_sync.dart` |
 | Event-driven | criar/concluir/sonecar/editar dispara sync ~1 s depois | `TaskAlarmService` → `SyncWorker.triggerSync` |
 | Manual | botão na home | `home_controller.dart` |

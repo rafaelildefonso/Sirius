@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import platform as _platform
+import queue
 import re
 import subprocess as _subprocess
 import sys
@@ -65,7 +66,12 @@ from actions.browser_control import browser_control
 from actions.business_radar import business_radar
 from actions.code_helper import code_helper
 from actions.computer_control import computer_control
-from actions.computer_settings import computer_settings
+from actions.computer_settings import (
+    ACTION_MAP as COMPUTER_SETTING_ACTIONS,
+)
+from actions.computer_settings import (
+    computer_settings,
+)
 from actions.deep_research import deep_research
 from actions.desktop import desktop_control
 from actions.dev_agent import dev_agent
@@ -79,7 +85,7 @@ from actions.google_calendar import google_calendar as calendar_action
 from actions.linkedin_jobs_radar import linkedin_jobs_radar
 from actions.notion_calendar import notion_calendar as notion_calendar_action
 from actions.open_app import open_app
-from actions.reminder import reminder
+from actions.reminder import recurring_reminder, reminder
 from actions.screen_processor import screen_process
 from actions.send_message import send_message
 from actions.send_to_phone import send_to_phone
@@ -440,6 +446,33 @@ TOOL_DECLARATIONS = [
         }
     },
     {
+        "name": "recurring_reminder",
+        "description": (
+            "Creates recurring tasks that automatically regenerate (every day, "
+            "specific weekdays, every N days, or monthly on day N). The task fires "
+            "on the PC and syncs to the phone. Use instead of 'reminder' when the "
+            "user asks for a repeating reminder. Supports list/update/delete by id."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action":   {"type": "STRING", "description": "One of: create (default), list, update, delete"},
+                "message":  {"type": "STRING", "description": "Task text (create/update)"},
+                "recurrence_type": {"type": "STRING", "description": "create only: 'daily', 'weekly', 'interval' or 'monthly'"},
+                "time":     {"type": "STRING", "description": "Time in HH:MM format (24h), e.g. 09:30"},
+                "weekdays": {"type": "STRING", "description": "weekly only: weekday list e.g. 'mon,wed,fri' or '0-6' (0=Monday)"},
+                "interval_days": {"type": "INTEGER", "description": "interval only: repeat every N days"},
+                "month_day": {"type": "INTEGER", "description": "monthly only: day of month (1-31)"},
+                "period_days": {"type": "INTEGER", "description": "Optional: makes the task a date-range lasting N days instead of an exact time"},
+                "notes":    {"type": "STRING", "description": "Optional extra notes"},
+                "start_from": {"type": "STRING", "description": "Optional first day YYYY-MM-DD (interval anchor)"},
+                "end_date": {"type": "STRING", "description": "Optional last day YYYY-MM-DD"},
+                "id":       {"type": "STRING", "description": "Recurring task id (update/delete) — get it with action='list'"}
+            },
+            "required": ["action"]
+        }
+    },
+    {
         "name": "send_to_phone",
         "description": (
             "Sends a message/notification to the user's phone (SIRIUS companion app). "
@@ -502,14 +535,21 @@ TOOL_DECLARATIONS = [
         "name": "computer_settings",
         "description": (
             "Controls the computer: volume, brightness, window management, keyboard shortcuts, "
-            "typing text on screen, closing apps, fullscreen, dark mode, WiFi, restart, shutdown, "
+            "typing text on screen, closing apps, fullscreen, dark mode, WiFi, restart, "
             "scrolling, tab management, zoom, screenshots, lock screen, refresh/reload page. "
             "Use for ANY single computer control command. NEVER route to agent_task."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "action":      {"type": "STRING", "description": "The action to perform"},
+                "action":      {
+                    "type": "STRING",
+                    "description": "Choose one supported computer action from the list.",
+                    "enum": sorted(set(COMPUTER_SETTING_ACTIONS) | {
+                        "volume_set", "type_text", "write_on_screen", "type", "write",
+                        "press_key", "reload_n", "refresh_n", "reload_page_n",
+                    }),
+                },
                 "description": {"type": "STRING", "description": "Natural language description of what to do"},
                 "value":       {"type": "STRING", "description": "Optional value: volume level, text to type, application name for minimize/maximize/close, etc."}
             },
@@ -703,7 +743,6 @@ TOOL_DECLARATIONS = [
                 "app_id":    {"type": "STRING",  "description": "Steam AppID for install (optional)"},
                 "hour":      {"type": "INTEGER", "description": "Hour for scheduled update 0-23 (default: 3)"},
                 "minute":    {"type": "INTEGER", "description": "Minute for scheduled update 0-59 (default: 0)"},
-                "shutdown_when_done": {"type": "BOOLEAN", "description": "Shut down PC when download finishes"},
             },
             "required": []
         }
@@ -734,9 +773,7 @@ TOOL_DECLARATIONS = [
             "Call this when the user says goodbye like tchau, até logo, "
             "pode fechar, or expresses intent to close the interface "
             "but NOT to terminate the system. "
-            "The user can say this in ANY language. "
-            "If the user explicitly says 'fechar tudo' or wants to "
-            "shut down everything, use shutdown_sirius instead."
+            "The user can say this in ANY language. Never use this to turn off the PC."
         ),
         "parameters": {
             "type": "OBJECT",
@@ -746,11 +783,10 @@ TOOL_DECLARATIONS = [
     {
         "name": "shutdown_sirius",
         "description": (
-            "Shuts down the assistant completely — closes the interface "
-            "AND terminates the backend process. "
-            "Call this ONLY when the user explicitly says 'fechar tudo', "
-            "'desligar tudo', 'shut down completely', or makes it clear "
-            "they want to stop the entire system. "
+            "Closes the SIRIUS interface and terminates the SIRIUS backend process. "
+            "This ends the assistant only; it does not shut down the computer. "
+            "Call ONLY when the user explicitly asks to close or exit SIRIUS. "
+            "Never call this for a request to turn off the PC. "
             "DO NOT call this for simple goodbyes like 'tchau' or 'até logo' "
             "— use hide_interface instead."
         ),
@@ -1530,9 +1566,10 @@ class SiriusLive:
         while True:
             await asyncio.sleep(15)
             try:
+                from actions.proactive import is_proactive_mode_enabled
                 from memory.config_manager import load_api_keys
                 cfg = load_api_keys()
-                if cfg.get("proactive_mode_enabled", "true") == "false":
+                if not is_proactive_mode_enabled(cfg):
                     continue
                 memory = load_memory()
                 if not self._proactive.should_trigger(self._last_user_speech):
@@ -1714,6 +1751,10 @@ class SiriusLive:
             elif name == "reminder":
                 r = await loop.run_in_executor(None, lambda: reminder(parameters=args, response=None, player=self.ui))
                 result = r or "Reminder set."
+
+            elif name == "recurring_reminder":
+                r = await loop.run_in_executor(None, lambda: recurring_reminder(parameters=args, response=None, player=self.ui))
+                result = r or "Recurring task saved."
 
             elif name == "send_to_phone":
                 r = await loop.run_in_executor(None, lambda: send_to_phone(parameters=args, player=self.ui))
@@ -2016,6 +2057,7 @@ class SiriusLive:
                     if response.data:
                         if self._interrupted:
                             continue  # discard: interrupted
+                        self.set_speaking(True)
                         if not self._gemini_turn.is_set():
                             self._gemini_turn.set()
                         if self._turn_done_event and self._turn_done_event.is_set():
@@ -2217,8 +2259,8 @@ class SiriusLive:
     async def _process_dashboard_commands(self) -> None:
         while True:
             try:
-                text = await asyncio.wait_for(
-                    self._dashboard._command_queue.get(), timeout=0.5
+                text = await asyncio.to_thread(
+                    self._dashboard._command_queue.get, True, 0.5
                 )
                 if not text:
                     continue
@@ -2236,7 +2278,7 @@ class SiriusLive:
                     _persist_message_to_db(self, "user", text)
                 else:
                     print(f"[Dashboard] Dropped command (no session): {text}")
-            except asyncio.TimeoutError:
+            except queue.Empty:
                 pass
             except Exception as e:
                 print(f"[Dashboard] Command error: {e}")
@@ -2656,6 +2698,10 @@ class SiriusLocal:
             elif name == "reminder":
                 r = reminder(parameters=args, response=None, player=self.ui)
                 result = r or "Reminder set."
+
+            elif name == "recurring_reminder":
+                r = recurring_reminder(parameters=args, response=None, player=self.ui)
+                result = r or "Recurring task saved."
 
             elif name == "send_to_phone":
                 r = send_to_phone(parameters=args, player=self.ui)
@@ -3295,6 +3341,15 @@ def main():
         print("[DEBUG main] DateRangeNotifier started.")
     except Exception as e:
         print(f"[MAIN] Date range notifier disabled: {e}")
+
+    # Start the recurring-task generator: on each recurrence day it removes the
+    # previous pending instance and creates the new one (no duplicate tasks).
+    try:
+        from core.recurring_tasks import start_recurring
+        start_recurring()
+        print("[DEBUG main] RecurringTaskGenerator started.")
+    except Exception as e:
+        print(f"[MAIN] Recurring task generator disabled: {e}")
 
     # Put today's sticky task toasts back when Windows drops them from
     # Action Center (reboot, "clear all notifications", history overflow).

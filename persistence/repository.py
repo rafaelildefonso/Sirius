@@ -521,6 +521,8 @@ class Repository:
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
         is_date_range: bool = False,
+        recurrence_id: Optional[str] = None,
+        sirius_call_enabled: bool = False,
     ) -> dict:
         """Create a scheduled task. `due_at` is an ISO datetime string (optional for date-range tasks)."""
         import uuid
@@ -528,9 +530,9 @@ class Repository:
         now = datetime.now().isoformat()
         tid = task_id or uuid.uuid4().hex[:12]
         self.db.execute(
-            """INSERT INTO scheduled_tasks (id, title, notes, due_at, status, source, device_id, created_at, updated_at, start_date, end_date, is_date_range)
-               VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)""",
-            (tid, title, notes, due_at, source, device_id, now, now, start_date, end_date, 1 if is_date_range else 0),
+            """INSERT INTO scheduled_tasks (id, title, notes, due_at, status, source, device_id, created_at, updated_at, start_date, end_date, is_date_range, recurrence_id, sirius_call_enabled)
+               VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (tid, title, notes, due_at, source, device_id, now, now, start_date, end_date, 1 if is_date_range else 0, recurrence_id, 1 if sirius_call_enabled else 0),
         )
         self.db.commit()
         return self.get_scheduled_task(tid)  # type: ignore[return-value]
@@ -621,14 +623,16 @@ class Repository:
         due_at: Optional[str] = None,
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
+        clear_notes: bool = False,
+        sirius_call_enabled: Optional[bool] = None,
     ) -> bool:
-        """Edit an existing scheduled task. Only non-None fields are changed; done tasks are immutable."""
+        """Edit an existing scheduled task; done tasks are immutable."""
         sets: list[str] = []
         params: list[object] = []
         if title is not None:
             sets.append("title = ?")
             params.append(title)
-        if notes is not None:
+        if notes is not None or clear_notes:
             sets.append("notes = ?")
             params.append(notes)
         if due_at is not None:
@@ -640,6 +644,9 @@ class Repository:
         if end_date is not None:
             sets.append("end_date = ?")
             params.append(end_date)
+        if sirius_call_enabled is not None:
+            sets.append("sirius_call_enabled = ?")
+            params.append(1 if sirius_call_enabled else 0)
         if not sets:
             return False
         # A rescheduled task that already fired must fire again at the new time.
@@ -672,6 +679,176 @@ class Repository:
         )
         self.db.commit()
         return cur.rowcount
+
+    def delete_scheduled_task(self, task_id: str) -> bool:
+        """Hard-delete a scheduled task (used to remove stale recurring instances)."""
+        cur = self.db.execute("DELETE FROM scheduled_tasks WHERE id = ?", (task_id,))
+        self.db.commit()
+        return cur.rowcount > 0
+
+    def delete_pending_recurrence_instances(self, recurrence_id: str) -> int:
+        """Delete instances generated for a recurrence that are still pending/notified.
+
+        Done/dismissed instances are kept as history (cleaned up later by
+        cleanup_finished_scheduled_tasks), so completed work is never duplicated.
+        """
+        cur = self.db.execute(
+            "DELETE FROM scheduled_tasks WHERE recurrence_id = ? AND status IN ('pending','notified')",
+            (recurrence_id,),
+        )
+        self.db.commit()
+        return cur.rowcount
+
+    # ------------------------------------------------------------------
+    # Recurring task definitions (templates that generate scheduled_tasks)
+    # ------------------------------------------------------------------
+
+    def add_recurring_task(
+        self,
+        title: str,
+        recurrence_type: str,
+        weekdays: Optional[list[int]] = None,
+        interval_days: Optional[int] = None,
+        month_day: Optional[int] = None,
+        time_of_day: Optional[str] = None,
+        period_days: int = 0,
+        notes: Optional[str] = None,
+        start_from: Optional[str] = None,
+        end_date: Optional[str] = None,
+        source: str = "pc",
+        device_id: Optional[str] = None,
+        enabled: bool = True,
+        rec_id: Optional[str] = None,
+        sirius_call_enabled: bool = False,
+    ) -> dict:
+        """Create a recurring task definition. `time_of_day` is 'HH:MM' (24h)."""
+        import uuid
+
+        now = datetime.now().isoformat()
+        rid = rec_id or uuid.uuid4().hex[:12]
+        weekdays_json = json.dumps(weekdays) if weekdays is not None else None
+        self.db.execute(
+            """INSERT INTO recurring_tasks
+               (id, title, notes, recurrence_type, weekdays_json, interval_days, month_day,
+                time_of_day, period_days, start_from, end_date, source, device_id, enabled, sirius_call_enabled,
+                created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (rid, title, notes, recurrence_type, weekdays_json, interval_days, month_day,
+             time_of_day, period_days, start_from, end_date, source, device_id,
+             1 if enabled else 0, 1 if sirius_call_enabled else 0, now, now),
+        )
+        self.db.commit()
+        return self.get_recurring_task(rid)  # type: ignore[return-value]
+
+    def get_recurring_task(self, rec_id: str) -> Optional[dict]:
+        row = self.db.fetchone("SELECT * FROM recurring_tasks WHERE id = ?", (rec_id,))
+        return self._hydrate_recurring(row) if row else None
+
+    def list_recurring_tasks(self, enabled_only: bool = False, limit: int = 200) -> list[dict]:
+        if enabled_only:
+            rows = self.db.fetchall(
+                "SELECT * FROM recurring_tasks WHERE enabled = 1 ORDER BY created_at ASC LIMIT ?",
+                (limit,),
+            )
+        else:
+            rows = self.db.fetchall(
+                "SELECT * FROM recurring_tasks ORDER BY created_at ASC LIMIT ?", (limit,)
+            )
+        return [self._hydrate_recurring(r) for r in rows]
+
+    def update_recurring_task(
+        self,
+        rec_id: str,
+        title: Optional[str] = None,
+        notes: Optional[str] = None,
+        weekdays: Optional[list[int]] = None,
+        interval_days: Optional[int] = None,
+        month_day: Optional[int] = None,
+        time_of_day: Optional[str] = None,
+        period_days: Optional[int] = None,
+        start_from: Optional[str] = None,
+        end_date: Optional[str] = None,
+        enabled: Optional[bool] = None,
+        source: Optional[str] = None,
+        sirius_call_enabled: Optional[bool] = None,
+    ) -> bool:
+        """Partial edit of a recurring definition. Only non-None fields change."""
+        sets: list[str] = []
+        params: list[object] = []
+        if title is not None:
+            sets.append("title = ?")
+            params.append(title)
+        if notes is not None:
+            sets.append("notes = ?")
+            params.append(notes)
+        if weekdays is not None:
+            sets.append("weekdays_json = ?")
+            params.append(json.dumps(weekdays))
+        if interval_days is not None:
+            sets.append("interval_days = ?")
+            params.append(interval_days)
+        if month_day is not None:
+            sets.append("month_day = ?")
+            params.append(month_day)
+        if time_of_day is not None:
+            sets.append("time_of_day = ?")
+            params.append(time_of_day)
+        if period_days is not None:
+            sets.append("period_days = ?")
+            params.append(period_days)
+        if start_from is not None:
+            sets.append("start_from = ?")
+            params.append(start_from)
+        if end_date is not None:
+            sets.append("end_date = ?")
+            params.append(end_date)
+        if enabled is not None:
+            sets.append("enabled = ?")
+            params.append(1 if enabled else 0)
+        if source is not None:
+            sets.append("source = ?")
+            params.append(source)
+        if sirius_call_enabled is not None:
+            sets.append("sirius_call_enabled = ?")
+            params.append(1 if sirius_call_enabled else 0)
+        if not sets:
+            return False
+        sets.append("updated_at = ?")
+        params.append(datetime.now().isoformat())
+        params.append(rec_id)
+        cur = self.db.execute(
+            f"UPDATE recurring_tasks SET {', '.join(sets)} WHERE id = ?", tuple(params)
+        )
+        self.db.commit()
+        return cur.rowcount > 0
+
+    def set_recurring_last_generated(self, rec_id: str, run_date: str) -> None:
+        self.db.execute(
+            "UPDATE recurring_tasks SET last_generated_date = ?, updated_at = ? WHERE id = ?",
+            (run_date, datetime.now().isoformat(), rec_id),
+        )
+        self.db.commit()
+
+    def delete_recurring_task(self, rec_id: str, delete_pending: bool = True) -> dict:
+        """Delete a recurring definition. By default also removes its pending/notified
+        generated instances (done/dismissed stay as history)."""
+        deleted = self.delete_pending_recurrence_instances(rec_id) if delete_pending else 0
+        cur = self.db.execute("DELETE FROM recurring_tasks WHERE id = ?", (rec_id,))
+        self.db.commit()
+        return {"definition_deleted": cur.rowcount > 0, "instances_deleted": deleted}
+
+    @staticmethod
+    def _hydrate_recurring(row) -> dict:
+        rec = dict(row)
+        if rec.get("weekdays_json"):
+            try:
+                rec["weekdays"] = json.loads(rec.pop("weekdays_json"))
+            except (ValueError, TypeError):
+                rec["weekdays"] = None
+        else:
+            rec["weekdays"] = None
+            rec.pop("weekdays_json", None)
+        return rec
 
     def add_note(self, file_path: str, content: str, embedding: Optional[bytes] = None) -> int:
         now = datetime.now().isoformat()

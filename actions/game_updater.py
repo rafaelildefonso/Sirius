@@ -622,44 +622,6 @@ def _get_download_status(steam_path: Path) -> str:
     return " ".join(lines) if lines else "No active downloads or pending updates."
 
 
-def _system_shutdown() -> None:
-    if is_windows():
-        subprocess.run(["shutdown", "/s", "/t", "10"])
-    elif is_mac():
-        subprocess.run(["osascript", "-e", 'tell app "System Events" to shut down'])
-    else:
-        subprocess.run(["systemctl", "poweroff"])
-
-
-def _watch_and_shutdown(steam_path: Path, speak=None,
-                        check_interval: int = 30, timeout_hours: int = 12):
-    print("[GameUpdater]...")
-    deadline = time.time() + timeout_hours * 3600
-
-    for _ in range(24):
-        time.sleep(5)
-        active = [g for g in _get_steam_games(steam_path) if g["state"] == 1026]
-        if active:
-            names = ", ".join(g["name"] for g in active)
-            if speak:
-                speak(f"Download started for {names}. I'll shut down when done.")
-            break
-    else:
-        return
-
-    while time.time() < deadline:
-        time.sleep(check_interval)
-        if not any(g["state"] == 1026 for g in _get_steam_games(steam_path)):
-            if speak:
-                speak("Download complete. Shutting down now.")
-            time.sleep(5)
-            _system_shutdown()
-            return
-
-    if speak:
-        speak("Download taking too long. Cancelling auto-shutdown.")
-
-
 def _find_epic_exe() -> Path | None:
     if is_windows(): return _find_epic_exe_windows()
     if is_mac():     return _find_epic_exe_mac()
@@ -934,7 +896,6 @@ def game_updater(parameters: dict, player=None, speak=None) -> str:
     app_id    = (p.get("app_id")    or "").strip() or None
     hour      = int(p.get("hour",   3))
     minute    = int(p.get("minute", 0))
-    shutdown  = str(p.get("shutdown_when_done", "false")).lower() == "true"
 
     results = []
 
@@ -994,13 +955,6 @@ def game_updater(parameters: dict, player=None, speak=None) -> str:
                         msg = _install_steam_game(
                             steam_path, game_name=game_name, app_id=app_id
                         )
-                        if shutdown:
-                            threading.Thread(
-                                target=_watch_and_shutdown,
-                                kwargs={"steam_path": steam_path, "speak": speak},
-                                daemon=True
-                            ).start()
-                            msg += " Auto-shutdown enabled."
                         if player: player.write_log(f"[GameUpdater] {msg[:100]}")
                         if speak:  speak(msg)
                         return msg
@@ -1014,13 +968,6 @@ def game_updater(parameters: dict, player=None, speak=None) -> str:
                     else:
                         results.append(f"Steam: {_update_steam_games(steam_path)}")
 
-                if shutdown:
-                    threading.Thread(
-                        target=_watch_and_shutdown,
-                        kwargs={"steam_path": steam_path, "speak": speak},
-                        daemon=True
-                    ).start()
-                    results.append("Auto-shutdown enabled.")
 
         if platform in ("epic", "both"):
             if is_linux():

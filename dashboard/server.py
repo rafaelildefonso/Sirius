@@ -11,6 +11,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import queue
 import re
 import secrets
 import socket
@@ -88,6 +89,14 @@ def _parse_due_at(raw) -> str | None:
     """Normalize a due datetime (ISO or 'YYYY-MM-DD HH:MM') into an ISO string."""
     if not raw:
         return None
+    if isinstance(raw, (int, float)):
+        # Some older clients persisted Unix timestamps instead of ISO text.
+        # Dart timestamps are milliseconds; accept seconds too for safety.
+        timestamp = raw / 1000 if abs(raw) >= 10_000_000_000 else raw
+        try:
+            return datetime.fromtimestamp(timestamp).isoformat()
+        except (OverflowError, OSError, ValueError):
+            return None
     s = str(raw).strip()
     if s.endswith("Z"):
         s = s[:-1]
@@ -103,15 +112,55 @@ def _parse_due_at(raw) -> str | None:
         return None
 
 
+def _parse_date_only(raw) -> str | None:
+    """Normalize a date/date-time value to the DATE format used by SQLite."""
+    parsed = _parse_due_at(raw)
+    return parsed[:10] if parsed else None
+
+
+def _as_bool(raw) -> bool:
+    """Parse booleans from current and legacy JSON clients."""
+    if isinstance(raw, str):
+        return raw.strip().lower() in {"1", "true", "yes", "sim"}
+    return bool(raw)
+
+
 def _create_quick_task(payload: dict, device_id: str = "") -> dict | None:
     """Create a scheduled task coming from a companion app / REST client."""
-    title = str(payload.get("title") or payload.get("text") or "").strip()
+    # Accept payloads produced by both the current app and older builds that
+    # used camelCase or wrapped the task under a `task` object.
+    task_payload = payload
+    nested_task = payload.get("task")
+    if isinstance(nested_task, dict):
+        task_payload = {**nested_task, **payload}
 
-    # Check if this is a date-range task
-    is_date_range = bool(payload.get("is_date_range"))
-    start_date = payload.get("start_date")
-    end_date = payload.get("end_date")
-    due_iso = _parse_due_at(payload.get("due_at") or payload.get("due") or "")
+    title = str(
+        task_payload.get("title")
+        or task_payload.get("text")
+        or task_payload.get("name")
+        or ""
+    ).strip()
+
+    # Check if this is a date-range task.  Infer it for items queued by older
+    # companion builds, which sent start/end dates but had no is_date_range flag.
+    raw_start_date = task_payload.get("start_date") or task_payload.get("startDate")
+    raw_end_date = task_payload.get("end_date") or task_payload.get("endDate")
+    due_raw = (
+        task_payload.get("due_at")
+        or task_payload.get("dueAt")
+        or task_payload.get("due")
+        or ""
+    )
+    is_date_range = _as_bool(
+        task_payload.get("is_date_range")
+        if task_payload.get("is_date_range") is not None
+        else task_payload.get("isDateRange")
+    ) or (
+        not due_raw and bool(raw_start_date) and bool(raw_end_date)
+    )
+    start_date = _parse_date_only(raw_start_date) if is_date_range else raw_start_date
+    end_date = _parse_date_only(raw_end_date) if is_date_range else raw_end_date
+    due_iso = _parse_due_at(due_raw)
 
     if not title:
         return None
@@ -128,14 +177,21 @@ def _create_quick_task(payload: dict, device_id: str = "") -> dict | None:
 
     try:
         from persistence.repository import Repository
-        client_id = str(payload.get("id") or "").strip()
-        task = Repository().add_scheduled_task(
+        client_id = str(task_payload.get("id") or task_payload.get("remoteId") or "").strip()
+        repo = Repository()
+        if client_id:
+            existing = repo.get_scheduled_task(client_id)
+            if existing:
+                return existing
+        task = repo.add_scheduled_task(
             title=title,
             due_at=due_iso,
-            notes=(str(payload.get("notes")).strip() or None) if payload.get("notes") else None,
-            source=str(payload.get("source") or "phone"),
+            notes=(str(task_payload.get("notes")).strip() or None) if task_payload.get("notes") else None,
+            source=str(task_payload.get("source") or "phone"),
             device_id=device_id or None,
             task_id=client_id or None,
+            recurrence_id=str(task_payload.get("recurrence_id") or task_payload.get("recurrenceId") or "") or None,
+            sirius_call_enabled=_as_bool(task_payload.get("sirius_call_enabled")),
             start_date=start_date,
             end_date=end_date,
             is_date_range=is_date_range,
@@ -154,7 +210,10 @@ def _update_quick_task(task_id: str, action: str, minutes: int = 5) -> bool:
         from persistence.repository import Repository
         repo = Repository()
         if action == "done":
-            return repo.complete_scheduled_task(task_id)
+            if repo.complete_scheduled_task(task_id):
+                return True
+            task = repo.get_scheduled_task(task_id)
+            return bool(task and task.get("status") == "done")
         if action == "snooze":
             return repo.snooze_scheduled_task(task_id, minutes=minutes)
         if action == "dismiss":
@@ -173,7 +232,7 @@ def _edit_quick_task(payload: dict) -> tuple[bool, dict | None, dict | None]:
         from persistence.repository import Repository
         repo = Repository()
         old = repo.get_scheduled_task(task_id)
-        if not old or old.get("status") == "done":
+        if not old:
             return False, old, None
 
         kwargs: dict = {}
@@ -184,7 +243,8 @@ def _edit_quick_task(payload: dict) -> tuple[bool, dict | None, dict | None]:
             kwargs["title"] = title
         if "notes" in payload:
             notes = payload.get("notes")
-            kwargs["notes"] = str(notes).strip() or None
+            normalized_notes = str(notes).strip() if notes is not None else ""
+            kwargs["notes"] = normalized_notes or None
         if payload.get("due_at") is not None:
             due_iso = _parse_due_at(payload.get("due_at"))
             if not due_iso:
@@ -194,10 +254,39 @@ def _edit_quick_task(payload: dict) -> tuple[bool, dict | None, dict | None]:
             kwargs["start_date"] = str(payload.get("start_date"))[:10]
         if payload.get("end_date") is not None:
             kwargs["end_date"] = str(payload.get("end_date"))[:10]
+        if payload.get("sirius_call_enabled") is not None:
+            kwargs["sirius_call_enabled"] = _as_bool(payload.get("sirius_call_enabled"))
 
         if not kwargs:
             return False, old, None
-        ok = repo.update_scheduled_task(task_id, **kwargs)
+        if old.get("status") == "done":
+            already_applied = all(
+                (
+                    old.get("title") == value
+                    if field == "title"
+                    else _parse_due_at(old.get("due_at")) == value
+                    if field == "due_at"
+                    else str(old.get(field) or "")[:10] == value
+                )
+                for field, value in kwargs.items()
+                if field != "notes"
+            )
+            if "notes" in kwargs:
+                old_notes = str(old.get("notes") or "").strip()
+                requested_notes = str(kwargs["notes"] or "").strip()
+                already_applied = already_applied and (
+                    old_notes == requested_notes
+                    or (not requested_notes and old_notes == "None")
+                )
+            if already_applied:
+                return True, old, old
+            return False, old, None
+        clear_notes = "notes" in payload and kwargs["notes"] is None
+        ok = repo.update_scheduled_task(
+            task_id,
+            **kwargs,
+            clear_notes=clear_notes,
+        )
         if not ok:
             return False, old, None
         new = repo.get_scheduled_task(task_id)
@@ -933,7 +1022,7 @@ class DashboardServer:
         self._aes_cache:  dict[str, bytes]= {}   # session_key -> AES bytes
         self._clients: set[WebSocket]     = set()
         self._history: list[dict]         = []
-        self._command_queue               = asyncio.Queue()
+        self._command_queue               = queue.Queue()
         self._connect_callback            = None
         self._pending_keys: dict[str, float] = {}
         self._device_sessions: dict[str, dict] = {}  # device_token -> {session_key}
@@ -947,6 +1036,8 @@ class DashboardServer:
         self._trusted_devices: dict[str, dict] = {}  # device_id -> {name, token, paired_at, last_seen}
         self._pending_pair: dict[str, dict] = {}     # device_id -> {name, ts}
         self._pending_phone_commands: dict[str, list] = {}  # device_id -> [commands]
+        self._shutdown_lock = threading.Lock()
+        self._shutdown_requested = False
         self._pair_request_callback = None           # fn(dict) -> None (notifies PC UI)
         self._loop = None                            # running asyncio loop (set in serve())
         self._load_trusted_devices()
@@ -1163,6 +1254,17 @@ class DashboardServer:
         def _auth(req: Request) -> bool:
             tok = req.headers.get("authorization", "").removeprefix("Bearer ").strip()
             return bool(tok) and tok in self._tokens
+
+        def _request_shutdown_once() -> str:
+            # Runs in a worker thread so concurrent HTTP requests never block
+            # the event loop while a shutdown command is in progress.
+            with self._shutdown_lock:
+                if self._shutdown_requested:
+                    return "already_requested"
+                from actions.computer_power import request_shutdown
+                request_shutdown()
+                self._shutdown_requested = True
+                return "accepted"
 
         # serve CryptoJS from local cache, fallback to CDN redirect
         @app.get("/static/crypto.js")
@@ -1536,6 +1638,7 @@ sessionStorage.setItem('sirius_token','{tok}');
             # Auth via headers
             device_id = req.headers.get("X-Device-ID", "").strip()
             token = req.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+            announce_to_pc = req.headers.get("X-Sync-Announce", "").lower() == "true"
 
             if not self._validate_device_token(token, device_id):
                 return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
@@ -1585,12 +1688,11 @@ sessionStorage.setItem('sirius_token','{tok}');
                     if dec_err:
                         results.append({"client_id": client_id, "status": "failed", "error": dec_err})
                         continue
-
                     if itype == "command":
                         text = payload.get("text", "").strip()
                         if text:
                             # Queue command for assistant processing
-                            await self._command_queue.put(text)
+                            self._command_queue.put(text)
                             results.append({"client_id": client_id, "status": "processed", "server_id": f"cmd_{int(time.time()*1000)}"})
                         else:
                             results.append({"client_id": client_id, "status": "failed", "error": "Empty command"})
@@ -1599,7 +1701,27 @@ sessionStorage.setItem('sirius_token','{tok}');
                         # User confirmed presence at a place
                         place_id = payload.get("place_id")
                         if place_id:
-                            results.append({"client_id": client_id, "status": "processed", "server_id": f"place_{int(time.time()*1000)}"})
+                            try:
+                                from persistence.repository import Repository
+                                repo = Repository()
+                                repo.db.execute(
+                                    "INSERT OR IGNORE INTO place_confirmations "
+                                    "(client_id, place_id, event_type, latitude, longitude, occurred_at, device_id) "
+                                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                                    (
+                                        str(client_id),
+                                        str(place_id),
+                                        payload.get("event_type"),
+                                        payload.get("latitude"),
+                                        payload.get("longitude"),
+                                        payload.get("timestamp"),
+                                        device_id,
+                                    ),
+                                )
+                                repo.db.commit()
+                                results.append({"client_id": client_id, "status": "processed", "server_id": f"place_{int(time.time()*1000)}"})
+                            except Exception as e:
+                                results.append({"client_id": client_id, "status": "failed", "error": str(e)})
                         else:
                             results.append({"client_id": client_id, "status": "failed", "error": "Missing place_id"})
 
@@ -1607,7 +1729,7 @@ sessionStorage.setItem('sirius_token','{tok}');
                         # Command that couldn't be processed on-device, queue for PC
                         text = payload.get("text", "").strip()
                         if text:
-                            await self._command_queue.put(text)
+                            self._command_queue.put(text)
                             results.append({"client_id": client_id, "status": "processed", "server_id": f"fallback_{int(time.time()*1000)}"})
                         else:
                             results.append({"client_id": client_id, "status": "failed", "error": "Empty fallback command"})
@@ -1648,7 +1770,9 @@ sessionStorage.setItem('sirius_token','{tok}');
                         ok = _update_quick_task(tid, "done")
                         results.append({"client_id": client_id,
                                         "status": "processed" if ok else "failed",
-                                        "server_id": f"tdone_{int(time.time()*1000)}"})
+                                        "server_id": f"tdone_{int(time.time()*1000)}",
+                                        **({"error": "Tarefa não encontrada ou não pôde ser concluída"}
+                                           if not ok else {})})
 
                     elif itype == "task_snooze":
                         tid = payload.get("task_id") or payload.get("id") or ""
@@ -1656,7 +1780,9 @@ sessionStorage.setItem('sirius_token','{tok}');
                         ok = _update_quick_task(tid, "snooze", minutes=minutes)
                         results.append({"client_id": client_id,
                                         "status": "processed" if ok else "failed",
-                                        "server_id": f"tsnooze_{int(time.time()*1000)}"})
+                                        "server_id": f"tsnooze_{int(time.time()*1000)}",
+                                        **({"error": "Tarefa não encontrada ou não pôde ser adiada"}
+                                           if not ok else {})})
 
                     elif itype == "task_edit":
                         ok, old_task, new_task = _edit_quick_task(payload)
@@ -1665,7 +1791,58 @@ sessionStorage.setItem('sirius_token','{tok}');
                         results.append({"client_id": client_id,
                                         "status": "processed" if ok else "failed",
                                         "server_id": f"tedit_{int(time.time()*1000)}",
-                                        "task": new_task if ok else None})
+                                        "task": new_task if ok else None,
+                                        **({"error": "Tarefa não encontrada ou não pôde ser editada"}
+                                           if not ok else {})})
+
+                    elif itype == "recurring_task_upsert":
+                        rec_id = str(payload.get("id") or "").strip()
+                        if not rec_id:
+                            results.append({"client_id": client_id, "status": "failed",
+                                            "error": "Missing recurring task id"})
+                        else:
+                            try:
+                                from core.recurring_tasks import create_recurring, update_recurring
+                                from persistence.repository import Repository
+                                repo = Repository()
+                                existing = repo.get_recurring_task(rec_id)
+                                if existing:
+                                    if (
+                                        payload.get("source") == "mobile"
+                                        and existing.get("source") != "mobile"
+                                    ):
+                                        repo.delete_pending_recurrence_instances(rec_id)
+                                    rec = update_recurring(rec_id, payload)
+                                else:
+                                    rec = create_recurring(
+                                        payload,
+                                        source="mobile",
+                                        device_id=device_id,
+                                        rec_id=rec_id,
+                                    )
+                                results.append({"client_id": client_id,
+                                                "status": "processed",
+                                                "server_id": rec_id,
+                                                "recurring": rec})
+                            except ValueError as exc:
+                                results.append({"client_id": client_id, "status": "failed",
+                                                "error": str(exc)})
+
+                    elif itype == "recurring_task_delete":
+                        rec_id = str(payload.get("id") or "").strip()
+                        if not rec_id:
+                            results.append({"client_id": client_id, "status": "failed",
+                                            "error": "Missing recurring task id"})
+                        else:
+                            try:
+                                from persistence.repository import Repository
+                                Repository().delete_recurring_task(rec_id)
+                                results.append({"client_id": client_id,
+                                                "status": "processed",
+                                                "server_id": rec_id})
+                            except Exception as exc:
+                                results.append({"client_id": client_id, "status": "failed",
+                                                "error": str(exc)})
 
                     elif itype == "note":
                         # Note synced from companion — the organizer resolves
@@ -1718,13 +1895,23 @@ sessionStorage.setItem('sirius_token','{tok}');
                                 # Store visit in local DB
                                 repo.db.execute(
                                     "INSERT OR IGNORE INTO place_visits "
-                                    "(place_id, place_name, entered_at, exited_at, duration_seconds, device_id) "
-                                    "VALUES (?, ?, ?, ?, ?, ?)",
-                                    (place_id, place_name, entered_at, exited_at, duration_seconds, device_id),
+                                    "(uuid, place_id, place_name, entered_at, exited_at, duration_seconds, device_id) "
+                                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                                    (
+                                        str(payload.get("uuid") or f"{device_id}:{client_id}"),
+                                        place_id,
+                                        place_name,
+                                        entered_at,
+                                        exited_at,
+                                        int(duration_seconds or 0),
+                                        device_id,
+                                    ),
                                 )
                                 repo.db.commit()
                             except Exception as e:
                                 print(f"[SyncBatch] Failed to save place_visit to DB: {e}")
+                                results.append({"client_id": client_id, "status": "failed", "error": str(e)})
+                                continue
 
                             # Write to Obsidian diary
                             try:
@@ -1760,81 +1947,81 @@ sessionStorage.setItem('sirius_token','{tok}');
                     results.append({"client_id": item.get("client_id", ""), "status": "failed", "error": str(e)})
 
             processed = sum(1 for r in results if r["status"] == "processed")
+            failed = len(results) - processed
+            labels = {
+                "note": "anotação",
+                "place_visit": "visita",
+                "command": "comando",
+                "quick_task": "tarefa",
+                "task_done": "tarefa",
+                "task_snooze": "tarefa",
+                "task_edit": "tarefa editada",
+                "recurring_task_upsert": "recorrência",
+                "recurring_task_delete": "recorrência removida",
+                "place_confirmation": "confirmação",
+                "gemma_fallback": "comando",
+            }
+            type_counts: dict[str, int] = {}
+            failed_type_counts: dict[str, int] = {}
+            for item, result in zip(items, results):
+                counts = type_counts if result["status"] == "processed" else failed_type_counts
+                item_type = item.get("type", "unknown")
+                counts[item_type] = counts.get(item_type, 0) + 1
 
-            # -- Broadcast sync feedback to React frontend -------------------
-            if processed > 0:
-                # Count by itype from original items (reliable, not server_id)
-                type_counts: dict[str, int] = {}
-                for item, result in zip(items, results):
-                    if result["status"] == "processed":
-                        t = item.get("type", "unknown")
-                        type_counts[t] = type_counts.get(t, 0) + 1
-                # 1. Notificar a interface web/React via WebSocket
-                try:
-                    import ws_server
-                    _labels = {
-                        "note": "anotação",
-                        "place_visit": "visita",
-                        "command": "comando",
-                        "quick_task": "tarefa",
-                        "task_done": "tarefa",
-                        "task_snooze": "tarefa",
-                        "task_edit": "tarefa editada",
-                        "place_confirmation": "confirmação",
-                        "gemma_fallback": "comando",
-                    }
-                    parts = []
-                    for itype, count in type_counts.items():
-                        label = _labels.get(itype, itype)
-                        parts.append(f"{count} {label}{'(ões)' if count > 1 else ''}")
-                    detail = ", ".join(parts) if parts else f"{processed} item(s)"
-                    ws_server.manager.broadcast_sync(WsMessage("sync_summary", {
-                        "text": f"📱 {detail} recebido(s) do celular",
-                        "processed": processed,
-                        "counts": type_counts,
-                    }))
-                except Exception as e:
-                    print(f"[Dashboard] Broadcast sync_summary error: {e}")
+            def _format_counts(counts: dict[str, int]) -> str:
+                return ", ".join(
+                    f"{count} {labels.get(item_type, item_type)}"
+                    for item_type, count in counts.items()
+                ) or "nenhum item"
 
-                # 2. Voz oficial do Gemini Live: montar resumo detalhado e enviar para _command_queue
-                # (sem nenhum TTS local)
-                received_summaries = []
-                for item, result in zip(items, results):
-                    if result.get("status") == "processed":
-                        t = item.get("type", "")
-                        p = item.get("payload")
-                        if isinstance(p, dict):
-                            if t == "note":
-                                note_title = p.get("title") or (p.get("content", "")[:30] + "...")
-                                received_summaries.append(f"Anotação '{note_title}'")
-                            elif t == "quick_task":
-                                task_title = p.get("title", "sem título")
-                                received_summaries.append(f"Tarefa '{task_title}'")
-                            elif t == "place_visit":
-                                place_name = p.get("place_name") or p.get("place_id") or "local"
-                                received_summaries.append(f"Visita ao local '{place_name}'")
-                            elif t == "task_done":
-                                received_summaries.append("Tarefa concluída")
-                            elif t == "task_snooze":
-                                received_summaries.append("Tarefa adiada")
-                            elif t == "task_edit":
-                                task_title = p.get("title") or "tarefa"
-                                received_summaries.append(f"Tarefa '{task_title}' editada")
+            success_detail = _format_counts(type_counts)
+            failure_detail = _format_counts(failed_type_counts)
+            failure_examples = [
+                f"{item.get('type', 'unknown')}: {result.get('error', 'falha')}"
+                for item, result in zip(items, results)
+                if result["status"] != "processed"
+            ][:3]
+            print(
+                f"[SyncBatch] Completed: {processed}/{len(items)} processed; "
+                f"failed types={failed_type_counts}; errors={failure_examples}"
+            )
+            if failed:
+                status_text = (
+                    f"📱 Sync do celular: {processed}/{len(items)} processados; "
+                    f"{failed} falharam ({failure_detail})."
+                )
+            else:
+                status_text = (
+                    f"📱 Sync do celular: {processed} recebido(s) "
+                    f"({success_detail})."
+                )
 
-                if received_summaries:
-                    summary_text = "; ".join(received_summaries)
-                    gemini_prompt = (
-                        f"[SISTEMA: O celular sincronizou dados com o computador com sucesso.\n"
-                        f"Itens recebidos do celular: {summary_text}.\n\n"
-                        f"INSTRUÇÃO OBRIGATÓRIA: Fale agora em voz alta para o usuário, com a sua voz oficial do Gemini, "
-                        f"de forma breve, concisa e amigável (em no máximo 2 frases curtas), "
-                        f"que você recebeu essas informações do celular e faça um resumo sucinto do que chegou. "
-                        f"Não mencione comandos de sistema nem termos técnicos.]"
-                    )
-                    try:
-                        await self._command_queue.put(gemini_prompt)
-                    except Exception as e:
-                        print(f"[Dashboard] Failed to enqueue Gemini speech prompt: {e}")
+            try:
+                import ws_server
+                ws_server.manager.broadcast_sync(WsMessage("sync_summary", {
+                    "text": status_text,
+                    "processed": processed,
+                    "failed": failed,
+                    "counts": type_counts,
+                    "failed_counts": failed_type_counts,
+                }))
+            except Exception as e:
+                print(f"[Dashboard] Broadcast sync_summary error: {e}")
+
+            if failed:
+                failure_word = "falha" if failed == 1 else "falhas"
+                speech_text = (
+                    f"O celular tentou sincronizar {len(items)} itens. "
+                    f"O computador processou {processed} e houve {failed} {failure_word}, "
+                    f"principalmente em: {failure_detail}."
+                )
+            else:
+                speech_text = f"Recebi os dados do celular: {success_detail}."
+            if announce_to_pc:
+                self._command_queue.put(
+                    "[SISTEMA: Informe ao usuário, em uma frase curta e natural, "
+                    f"o resultado da sincronização do celular. {speech_text}]"
+                )
 
             return JSONResponse({
                 "ok": True,
@@ -1859,9 +2046,19 @@ sessionStorage.setItem('sirius_token','{tok}');
 
             # Pull scheduled tasks (active + recently closed so the phone can cancel alarms)
             tasks: list[dict] = []
+            recurring: list[dict] = []
             try:
                 from persistence.repository import Repository
-                tasks = Repository().get_active_scheduled_tasks()
+                repo = Repository()
+                tasks = repo.get_active_scheduled_tasks()
+                from core.recurring_tasks import compute_next_occurrence_iso
+                recurring = repo.list_recurring_tasks()
+                for definition in recurring:
+                    definition["next_occurrence"] = (
+                        compute_next_occurrence_iso(definition)
+                        if definition.get("enabled")
+                        else None
+                    )
             except Exception as e:
                 print(f"[Tasks] Pull failed: {e}")
 
@@ -1880,6 +2077,11 @@ sessionStorage.setItem('sirius_token','{tok}');
                         {"enc": True, "payload": _encrypt_cbc(aes, json.dumps(t, ensure_ascii=False))}
                         for t in tasks
                     ]
+                if recurring:
+                    recurring = [
+                        {"enc": True, "payload": _encrypt_cbc(aes, json.dumps(r, ensure_ascii=False))}
+                        for r in recurring
+                    ]
 
             # Pull places configured on PC (currently empty — can be populated via UI later)
             return JSONResponse({
@@ -1888,6 +2090,7 @@ sessionStorage.setItem('sirius_token','{tok}');
                 "commands": pending_commands,
                 "places": [],
                 "tasks": tasks,
+                "recurring": recurring,
             })
 
         # -- Companion App: Scheduled Tasks -----------------------------------------
@@ -1909,7 +2112,7 @@ sessionStorage.setItem('sirius_token','{tok}');
             task = _create_quick_task(body if isinstance(body, dict) else {}, device_id)
             if not task:
                 return JSONResponse(
-                    {"ok": False, "error": "title and due_at (ISO) are required"},
+                    {"ok": False, "error": "title and due_at (ISO), or title with start_date/end_date for a period task, are required"},
                     status_code=400,
                 )
             return JSONResponse({"ok": True, "task": task})
@@ -1964,6 +2167,89 @@ sessionStorage.setItem('sirius_token','{tok}');
             ok = _update_quick_task(task_id, "dismiss")
             return JSONResponse({"ok": ok}, status_code=200 if ok else 404)
 
+        # -- Companion App: Recurring Tasks ------------------------------------------
+        # Definitions live in `recurring_tasks`; each recurrence day the backend
+        # deletes the previous pending instance and generates the new one, which
+        # then reaches this device through /api/device/sync/pull like any task.
+
+        @app.get("/api/recurring")
+        async def recurring_list(req: Request):
+            device_id = req.headers.get("X-Device-ID", "").strip()
+            token = req.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+            if not self._validate_device_token(token, device_id):
+                return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
+            try:
+                from core.recurring_tasks import compute_next_occurrence_iso
+                from persistence.repository import Repository
+                recs = Repository().list_recurring_tasks()
+                for rec in recs:
+                    rec["next_occurrence"] = (
+                        compute_next_occurrence_iso(rec) if rec.get("enabled") else None
+                    )
+                return JSONResponse({"ok": True, "recurring": recs})
+            except Exception as e:
+                print(f"[Recurring] List failed: {e}")
+                return JSONResponse({"ok": False, "error": "List failed"}, status_code=500)
+
+        @app.post("/api/recurring")
+        async def recurring_create(req: Request):
+            device_id = req.headers.get("X-Device-ID", "").strip()
+            token = req.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+            if not self._validate_device_token(token, device_id):
+                return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
+            try:
+                body = await req.json()
+            except Exception:
+                return JSONResponse({"ok": False, "error": "Invalid JSON"}, status_code=400)
+            try:
+                from core.recurring_tasks import create_recurring
+                rec = create_recurring(body if isinstance(body, dict) else {}, source="phone", device_id=device_id)
+            except ValueError as e:
+                return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+            except Exception as e:
+                print(f"[Recurring] Create failed: {e}")
+                return JSONResponse({"ok": False, "error": "Create failed"}, status_code=500)
+            print(f"[Recurring] Created '{rec['title']}' ({rec['recurrence_type']}, source=phone)")
+            return JSONResponse({"ok": True, "recurring": rec})
+
+        @app.patch("/api/recurring/{rec_id}")
+        async def recurring_edit(rec_id: str, req: Request):
+            device_id = req.headers.get("X-Device-ID", "").strip()
+            token = req.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+            if not self._validate_device_token(token, device_id):
+                return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
+            try:
+                body = await req.json()
+            except Exception:
+                return JSONResponse({"ok": False, "error": "Invalid JSON"}, status_code=400)
+            try:
+                from core.recurring_tasks import update_recurring
+                rec = update_recurring(rec_id, body if isinstance(body, dict) else {})
+            except ValueError as e:
+                msg = str(e)
+                status = 404 if "not found" in msg.lower() else 400
+                return JSONResponse({"ok": False, "error": msg}, status_code=status)
+            except Exception as e:
+                print(f"[Recurring] Edit failed for {rec_id}: {e}")
+                return JSONResponse({"ok": False, "error": "Edit failed"}, status_code=500)
+            return JSONResponse({"ok": True, "recurring": rec})
+
+        @app.delete("/api/recurring/{rec_id}")
+        async def recurring_delete(rec_id: str, req: Request):
+            device_id = req.headers.get("X-Device-ID", "").strip()
+            token = req.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+            if not self._validate_device_token(token, device_id):
+                return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
+            try:
+                from persistence.repository import Repository
+                result = Repository().delete_recurring_task(rec_id)
+            except Exception as e:
+                print(f"[Recurring] Delete failed for {rec_id}: {e}")
+                return JSONResponse({"ok": False, "error": "Delete failed"}, status_code=500)
+            if not result["definition_deleted"]:
+                return JSONResponse({"ok": False, "error": "Not found"}, status_code=404)
+            return JSONResponse({"ok": True, "instances_deleted": result["instances_deleted"]})
+
         @app.post("/api/command")
         async def command(req: Request):
             if not _auth(req):
@@ -1978,8 +2264,31 @@ sessionStorage.setItem('sirius_token','{tok}');
             else:
                 text = (body.get("text") or "").strip()
             if text:
-                await self._command_queue.put(text)
+                self._command_queue.put(text)
             return JSONResponse({"ok": True})
+
+        @app.post("/api/device/shutdown")
+        async def device_shutdown(req: Request):
+            """Direct OS shutdown request from the specifically paired app."""
+            token = req.headers.get("authorization", "").removeprefix("Bearer ").strip()
+            device_id = req.headers.get("x-device-id", "").strip()
+            trusted = self._trusted_devices.get(device_id, {})
+            if (not device_id or not token or trusted.get("token") != token
+                    or not self._validate_device_token(token, device_id)):
+                return JSONResponse({"ok": False, "error": "Unauthorized device"}, status_code=401)
+
+            try:
+                status = await asyncio.to_thread(_request_shutdown_once)
+            except Exception as exc:
+                return JSONResponse({
+                    "ok": False, "status": "failed",
+                    "error": str(exc) or "Operating system rejected the request",
+                }, status_code=500)
+            return JSONResponse({
+                "ok": True, "status": status,
+                "message": "Operating system accepted the shutdown request."
+                if status == "accepted" else "Shutdown request was already accepted.",
+            })
 
         @app.post("/api/wake")
         async def wake_ep(req: Request):
@@ -2199,7 +2508,7 @@ sessionStorage.setItem('sirius_token','{tok}');
                         enc = data.get("enc", "")
                         t   = self._decrypt(tok, enc) if enc else (data.get("text") or "").strip()
                         if t:
-                            await self._command_queue.put(t)
+                            self._command_queue.put(t)
             except WebSocketDisconnect:
                 pass
             finally:

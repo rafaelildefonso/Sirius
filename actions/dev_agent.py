@@ -164,6 +164,8 @@ def _write_file(
 
     try:
         code = _strip_fences(call_llm_for_action(prompt, system=system))
+        from actions.system_power_guard import reject_explicit_shutdown
+        reject_explicit_shutdown(code)
 
         full_path = project_dir / file_path
         full_path.parent.mkdir(parents=True, exist_ok=True)
@@ -233,6 +235,8 @@ def _open_vscode(project_dir: Path) -> bool:
     return False
 
 def _run_project(run_command: str, project_dir: Path, timeout: int = 30) -> str:
+    from actions.system_power_guard import reject_explicit_shutdown
+    reject_explicit_shutdown(run_command)
     print(f"[DevAgent] [RUN] Running: {run_command}")
     try:
         parts = run_command.split()
@@ -344,6 +348,8 @@ def _fix_files(
 
         try:
             fixed = _strip_fences(call_llm_for_action(prompt, system=system))
+            from actions.system_power_guard import reject_explicit_shutdown
+            reject_explicit_shutdown(fixed)
 
             full_path = project_dir / fix_path
             full_path.parent.mkdir(parents=True, exist_ok=True)

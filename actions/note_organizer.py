@@ -7,6 +7,7 @@ import inspect
 import json
 import logging
 import re
+import threading
 import time
 import unicodedata
 from dataclasses import dataclass
@@ -22,6 +23,8 @@ _AI_COOLDOWN_UNTIL = 0.0
 _AI_FAILURE_COOLDOWN = 300.0
 _AI_SYSTEM = "Você é o organizador de notas do SIRIUS. Responda somente JSON válido."
 _STOPWORDS = {"de", "do", "da", "dos", "das", "no", "na", "nos", "nas", "um", "uma", "e", "ou", "que", "com", "sem", "por", "para", "pra", "sobre", "the", "and", "for", "with"}
+_DELIVERY_LOCKS: dict[str, threading.Lock] = {}
+_DELIVERY_LOCKS_GUARD = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -72,10 +75,13 @@ def _list_note_files(notes_dir: Path) -> list[Path]:
         return []
 
 
-def _routing_prompt(candidates: list[Path], notes_dir: Path, title: str, content: str, category: str) -> str:
+def _routing_prompt(candidates: list[Path], notes_dir: Path, title: str, content: str, category: str,
+                   tags: list[str] | None = None, suggested_folder: str | None = None) -> str:
     names = "\n".join(f"- {path.relative_to(notes_dir)}" for path in candidates) or "(nenhum)"
     return ("Escolha o documento existente mais adequado. Você só conhece nomes e não pode ler conteúdo.\n\n"
             f"Documentos:\n{names}\n\nCategoria: {category or 'geral'}\nTítulo: {title or '(sem título)'}\n"
+            f"Pasta sugerida pela classificação local: {suggested_folder or '(nenhuma)'}\n"
+            f"Palavras-chave: {', '.join(tags or []) or '(nenhuma)'}\n"
             f"Anotação:\n{content[:800]}\n\n"
             'Retorne somente JSON: {"file":"nome-exato.md ou vazio", "summary":"resumo", "tags":["tag"]}. '
             "Use file vazio quando nenhum servir.")
@@ -92,12 +98,14 @@ def _parse_json(raw: str) -> dict | None:
             return None
 
 
-async def _ask_ai(candidates: list[Path], notes_dir: Path, title: str, content: str, category: str, llm_client=None) -> dict | None:
+async def _ask_ai(candidates: list[Path], notes_dir: Path, title: str, content: str, category: str,
+                  tags: list[str] | None = None, suggested_folder: str | None = None,
+                  llm_client=None) -> dict | None:
     global _AI_COOLDOWN_UNTIL
     if time.monotonic() < _AI_COOLDOWN_UNTIL:
         return None
     try:
-        prompt = _routing_prompt(candidates, notes_dir, title, content, category)
+        prompt = _routing_prompt(candidates, notes_dir, title, content, category, tags, suggested_folder)
         if llm_client is not None and hasattr(llm_client, "generate"):
             response = llm_client.generate(prompt)
             raw = await response if inspect.isawaitable(response) else response
@@ -134,8 +142,9 @@ def _tokens(value: str) -> set[str]:
     return words
 
 
-def _keyword_match(candidates: list[Path], title: str, content: str) -> Path | None:
-    note_words = _tokens(f"{title} {content}")
+def _keyword_match(candidates: list[Path], title: str, content: str, category: str = "",
+                   tags: list[str] | None = None, suggested_folder: str | None = None) -> Path | None:
+    note_words = _tokens(f"{title} {content} {category} {' '.join(tags or [])} {suggested_folder or ''}")
     scores = [(sum(len(word) for word in note_words & _tokens(path.stem)), path) for path in candidates]
     scores = [(score, path) for score, path in scores if score >= 5]
     if not scores:
@@ -147,7 +156,16 @@ def _keyword_match(candidates: list[Path], title: str, content: str) -> Path | N
 def _normalize_tags(value: object) -> list[str] | None:
     if not isinstance(value, list):
         return None
-    tags = [str(item).strip() for item in value if str(item).strip()]
+    tags: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        clean = _hashtag(item).removeprefix("#")
+        key = unicodedata.normalize("NFKC", clean).casefold()
+        if clean and key not in seen:
+            seen.add(key)
+            tags.append(clean)
     return tags or None
 
 
@@ -155,14 +173,20 @@ def _fingerprint(title: str, content: str, category: str) -> str:
     return hashlib.sha256(f"{title}\0{content}\0{category}".encode("utf-8")).hexdigest()
 
 
-def _existing_delivery(source_uuid: str, fingerprint: str) -> NoteOrganizationResult | None:
+def _delivery_for_uuid(source_uuid: str) -> tuple[str, NoteOrganizationResult] | None:
     if not source_uuid:
         return None
     try:
         from persistence.database import Database
-        row = Database.get_instance().fetchone("SELECT target_path, summary, tags_json FROM companion_note_deliveries WHERE source_uuid = ? AND fingerprint = ?", (source_uuid, fingerprint))
+        row = Database.get_instance().fetchone(
+            "SELECT fingerprint, target_path, summary, tags_json FROM companion_note_deliveries WHERE source_uuid = ?",
+            (source_uuid,),
+        )
         if row:
-            return NoteOrganizationResult(Path(row["target_path"]), row["summary"], _normalize_tags(json.loads(row["tags_json"] or "[]")), True)
+            return row["fingerprint"], NoteOrganizationResult(
+                Path(row["target_path"]), row["summary"],
+                _normalize_tags(json.loads(row["tags_json"] or "[]")), True,
+            )
     except Exception as exc:
         logger.warning("Could not read note delivery ledger: %s", exc)
     return None
@@ -184,16 +208,92 @@ def _record_delivery(source_uuid: str, fingerprint: str, result: NoteOrganizatio
         logger.error("Could not write note delivery ledger: %s", exc)
 
 
-def _append_note(target: Path, title: str, content: str) -> None:
-    entry = f"## {title.strip()}\n\n{content.strip()}" if title.strip() else content.strip()
+def _hashtag(tag: str) -> str:
+    """Convert a raw Gemma tag into a valid Obsidian inline hashtag."""
+    tag = unicodedata.normalize("NFKC", str(tag)).strip().lstrip("#").lower()
+    tag = re.sub(r"[^\w/_-]+", "-", tag, flags=re.UNICODE)
+    tag = re.sub(r"-{2,}", "-", tag)
+    tag = re.sub(r"/{2,}", "/", tag).strip("/.-_")
+    return f"#{tag}" if tag else ""
+
+
+def _hashtag_line(tags: list[str] | None) -> str:
+    """Join tags into one ' #tag1 #tag2' line, deduplicated and hidden-safe."""
+    if not tags:
+        return ""
+    seen: set[str] = set()
+    parts: list[str] = []
+    for tag in tags:
+        clean = _hashtag(tag)
+        if clean and clean.lower() not in seen:
+            seen.add(clean.lower())
+            parts.append(clean)
+    return "".join(f" {part}" for part in parts)
+
+
+def _analysis_line(summary: str | None) -> str:
+    """Format the Gemma analysis as a single-line blockquote above the hashtags."""
+    if not summary:
+        return ""
+    text = " ".join(str(summary).split())
+    return f"> 💡 {text}" if text else ""
+
+
+def _append_note(target: Path, title: str, content: str, summary: str | None = None,
+                 tags: list[str] | None = None, source_uuid: str = "") -> None:
+    """Append the note with the AI analysis above a trailing #hashtag line."""
+    header = f"## {title.strip()}\n\n" if title.strip() else ""
+    analysis = _analysis_line(summary)
+    hashtags = _hashtag_line(tags)
+    marker = f"<!-- sirius-note:{source_uuid} -->\n" if source_uuid else ""
+    entry = marker + header + content.strip()
+    if analysis:
+        entry += f"\n\n{analysis}"
+    if hashtags:
+        entry += f"\n\n{hashtags.strip()}"
+    entry = entry.rstrip() + "\n"
     with target.open("a", encoding="utf-8") as handle:
-        handle.write(f"\n\n---\n\n{entry}\n")
+        handle.write(f"\n\n---\n\n{entry}")
+
+
+def _append_classification_update(target: Path, source_uuid: str, summary: str | None,
+                                  tags: list[str] | None) -> None:
+    """Append only classification metadata; never repeat the note body."""
+    marker = f"<!-- sirius-classification:{source_uuid} -->"
+    lines = [marker]
+    analysis = _analysis_line(summary)
+    if analysis:
+        lines.append(analysis)
+    hashtag_line = _hashtag_line(tags).strip()
+    if hashtag_line:
+        lines.append(hashtag_line)
+    if len(lines) == 1:
+        return
+    with target.open("a", encoding="utf-8") as handle:
+        handle.write("\n\n---\n\n" + "\n\n".join(lines) + "\n")
 
 
 async def organize_note(title: str, content: str, category: str, ai_summary: str | None = None,
                         ai_tags: list[str] | None = None, vault_path: str | None = None,
-                        llm_client=None, source_uuid: str = "") -> NoteOrganizationResult | None:
+                        llm_client=None, source_uuid: str = "",
+                        ai_suggested_folder: str | None = None) -> NoteOrganizationResult | None:
     """Append to a matching document or a single inbox; never create title files."""
+    if not source_uuid:
+        return await _organize_note(title, content, category, ai_summary, ai_tags, vault_path,
+                                    llm_client, source_uuid, ai_suggested_folder)
+    with _DELIVERY_LOCKS_GUARD:
+        lock = _DELIVERY_LOCKS.setdefault(source_uuid, threading.Lock())
+    await asyncio.to_thread(lock.acquire)
+    try:
+        return await _organize_note(title, content, category, ai_summary, ai_tags, vault_path,
+                                    llm_client, source_uuid, ai_suggested_folder)
+    finally:
+        lock.release()
+
+
+async def _organize_note(title: str, content: str, category: str, ai_summary: str | None,
+                         ai_tags: list[str] | None, vault_path: str | None, llm_client,
+                         source_uuid: str, ai_suggested_folder: str | None) -> NoteOrganizationResult | None:
     vault = _resolve_vault(vault_path)
     if not vault:
         logger.error("No Obsidian vault found")
@@ -201,23 +301,51 @@ async def organize_note(title: str, content: str, category: str, ai_summary: str
     notes_dir = _notes_dir(vault)
     notes_dir.mkdir(parents=True, exist_ok=True)
     fingerprint = _fingerprint(title, content, category)
-    existing = _existing_delivery(source_uuid, fingerprint)
-    if existing:
-        return existing
+    delivery = _delivery_for_uuid(source_uuid)
+    if delivery:
+        old_fingerprint, existing = delivery
+        if old_fingerprint == fingerprint:
+            # A note may have arrived before on-device Gemma finished. Add only
+            # the classification metadata to the original destination.
+            summary = ai_summary or existing.summary
+            incoming_tags = _normalize_tags(ai_tags) or []
+            old_tags = existing.tags or []
+            old_tag_keys = {tag.casefold() for tag in old_tags}
+            new_tags = [tag for tag in incoming_tags if tag.casefold() not in old_tag_keys]
+            tags = old_tags + new_tags
+            summary_changed = summary != existing.summary
+            if (summary_changed or new_tags) and existing.target.exists():
+                await asyncio.to_thread(
+                    _append_classification_update,
+                    existing.target,
+                    source_uuid,
+                    summary if summary_changed else None,
+                    new_tags,
+                )
+                result = NoteOrganizationResult(existing.target, summary, tags, True)
+                _record_delivery(source_uuid, fingerprint, result)
+                logger.info("Companion note classification updated at %s (late metadata)", existing.target)
+                return result
+            return existing
+        logger.info("Companion note content changed for existing source %s; saving a new revision", source_uuid)
     candidates = _list_note_files(notes_dir)
-    ai = await _ask_ai(candidates, notes_dir, title, content, category, llm_client) if candidates or not ai_summary else None
+    mobile_tags = _normalize_tags(ai_tags)
+    ai = await _ask_ai(candidates, notes_dir, title, content, category, mobile_tags,
+                       ai_suggested_folder, llm_client) if candidates else None
     summary = ai_summary or (ai.get("summary").strip() if isinstance(ai, dict) and isinstance(ai.get("summary"), str) and ai.get("summary").strip() else None)
     tags = _normalize_tags(ai_tags) or (_normalize_tags(ai.get("tags")) if isinstance(ai, dict) else None)
     target = _match_choice(ai.get("file"), candidates, notes_dir) if isinstance(ai, dict) else None
-    if target is None and ai is None:
-        target = _keyword_match(candidates, title, content)
+    reason = "ai"
+    if target is None:
+        target = _keyword_match(candidates, title, content, category, tags, ai_suggested_folder)
+        reason = "keyword" if target else ("no_candidates" if not candidates else "no_confident_match")
     target = target or (notes_dir / INBOX_FILENAME)
     if not target.exists():
         target.touch()
-    await asyncio.to_thread(_append_note, target, title, content)
+    await asyncio.to_thread(_append_note, target, title, content, summary, tags, source_uuid)
     result = NoteOrganizationResult(target, summary, tags)
     _record_delivery(source_uuid, fingerprint, result)
-    logger.info("Companion note appended: %s", target)
+    logger.info("Companion note appended to %s (routing=%s, candidates=%d)", target, reason, len(candidates))
     return result
 
 

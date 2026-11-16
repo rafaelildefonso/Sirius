@@ -160,7 +160,6 @@ a = Analysis(
         'ipython',
         'setuptools',
         'pip',
-        'wheel',
         'sphinx',
         'twisted',
         'zmq',
