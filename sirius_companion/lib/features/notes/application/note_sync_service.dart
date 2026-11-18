@@ -320,7 +320,31 @@ final noteSyncServiceProvider =
 
 /// Runs independently of an editor route, so saving a note never has to wait
 /// for local inference and closing the screen cannot cancel classification.
+final Set<int> _classificationsInProgress = {};
+final Set<int> _classificationsRequestedAgain = {};
+Future<void> _classificationQueue = Future.value();
+
 Future<void> classifyNoteInBackground(int noteId) async {
+  if (!_classificationsInProgress.add(noteId)) {
+    _classificationsRequestedAgain.add(noteId);
+    return;
+  }
+  final previous = _classificationQueue;
+  final done = Completer<void>();
+  _classificationQueue = done.future;
+  try {
+    await previous;
+    do {
+      _classificationsRequestedAgain.remove(noteId);
+      await _classifyQueuedNote(noteId);
+    } while (_classificationsRequestedAgain.contains(noteId));
+  } finally {
+    _classificationsInProgress.remove(noteId);
+    done.complete();
+  }
+}
+
+Future<void> _classifyQueuedNote(int noteId) async {
   final repository = NoteRepository(AppDatabase());
   final note = await repository.getById(noteId);
   if (note == null) return;
