@@ -16,7 +16,9 @@ import '../../../../core/storage/repositories/place_visit_repository.dart';
 import '../../../../core/sync/sync_worker.dart';
 import '../../../../core/sync/background_health_monitor.dart';
 
-final geofenceManagerProvider = Provider<GeofenceManager>((ref) => GeofenceManager());
+final geofenceManagerProvider = Provider<GeofenceManager>(
+  (ref) => GeofenceManager(),
+);
 
 class GeofenceRegion {
   final String id;
@@ -92,7 +94,8 @@ class GeofenceManager {
   final _backgroundService = FlutterBackgroundService();
   SendPort? _isolatePort;
   StreamSubscription? _isolateSubscription;
-  final StreamController<GeofenceTriggerEvent> _triggerController = StreamController.broadcast();
+  final StreamController<GeofenceTriggerEvent> _triggerController =
+      StreamController.broadcast();
   final _notifications = FlutterLocalNotificationsPlugin();
 
   /// Tracks active (un-ended) visit UUIDs per place.
@@ -165,9 +168,9 @@ class GeofenceManager {
 
   Future<void> _syncGeofencesToIsolate() async {
     final db = AppDatabase();
-    final places = await (db.select(db.places)
-          ..where((tbl) => tbl.isActive.equals(true)))
-        .get();
+    final places = await (db.select(
+      db.places,
+    )..where((tbl) => tbl.isActive.equals(true))).get();
 
     final geofences = places.map((p) => GeofenceRegion.fromPlace(p)).toList();
     _isolatePort?.send(StartTracking(geofences));
@@ -180,8 +183,11 @@ class GeofenceManager {
       description: 'Notificações ao entrar/sair de lugares salvos',
       importance: Importance.high,
     );
-    await _notifications.resolvePlatformSpecificImplementation<
-        AndroidFlutterLocalNotificationsPlugin>()?.createNotificationChannel(androidDetails);
+    await _notifications
+        .resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin
+        >()
+        ?.createNotificationChannel(androidDetails);
   }
 
   Future<void> _showLocalNotification(GeofenceTriggerEvent event) async {
@@ -233,21 +239,25 @@ class GeofenceManager {
     double radiusMeters = 100,
   }) async {
     final db = AppDatabase();
-    await db.into(db.places).insert(
-      PlacesCompanion.insert(
-        uuid: const Uuid().v4(),
-        name: name,
-        latitude: latitude,
-        longitude: longitude,
-        createdAt: DateTime.now(),
-      ),
-    );
+    await db
+        .into(db.places)
+        .insert(
+          PlacesCompanion.insert(
+            uuid: const Uuid().v4(),
+            name: name,
+            latitude: latitude,
+            longitude: longitude,
+            createdAt: DateTime.now(),
+          ),
+        );
     await _syncGeofencesToIsolate();
   }
 
   Future<void> updatePlace(GeofenceRegion place) async {
     final db = AppDatabase();
-    await (db.update(db.places)..where((tbl) => tbl.uuid.equals(place.id))).write(
+    await (db.update(
+      db.places,
+    )..where((tbl) => tbl.uuid.equals(place.id))).write(
       PlacesCompanion(
         name: Value(place.name),
         latitude: Value(place.latitude),
@@ -261,11 +271,13 @@ class GeofenceManager {
 
   Future<void> confirmPlace(String placeId, String eventType) async {
     final db = AppDatabase();
-    final existing = await (db.select(db.places)
-          ..where((tbl) => tbl.uuid.equals(placeId)))
-        .getSingleOrNull();
+    final existing = await (db.select(
+      db.places,
+    )..where((tbl) => tbl.uuid.equals(placeId))).getSingleOrNull();
     if (existing != null) {
-      await (db.update(db.places)..where((tbl) => tbl.uuid.equals(placeId))).write(
+      await (db.update(
+        db.places,
+      )..where((tbl) => tbl.uuid.equals(placeId))).write(
         PlacesCompanion(
           lastTriggeredAt: Value(DateTime.now()),
           triggerCount: Value(existing.triggerCount + 1),
@@ -297,10 +309,12 @@ class GeofenceManager {
     );
 
     // Store the visit UUID for tracking.
-    final visit = await AppDatabase().customSelect(
-      'SELECT uuid FROM place_visits WHERE id = ?',
-      variables: [Variable.withInt(visitId)],
-    ).getSingleOrNull();
+    final visit = await AppDatabase()
+        .customSelect(
+          'SELECT uuid FROM place_visits WHERE id = ?',
+          variables: [Variable.withInt(visitId)],
+        )
+        .getSingleOrNull();
     if (visit != null) {
       _activeVisitUuids[placeId] = visit.data['uuid'] as String;
     }
@@ -316,9 +330,9 @@ class GeofenceManager {
 
     // Fetch the visit to get duration.
     final db = AppDatabase();
-    final visit = await (db.select(db.placeVisits)
-          ..where((tbl) => tbl.uuid.equals(visitUuid)))
-        .getSingleOrNull();
+    final visit = await (db.select(
+      db.placeVisits,
+    )..where((tbl) => tbl.uuid.equals(visitUuid))).getSingleOrNull();
 
     if (visit != null) {
       final duration = Duration(seconds: visit.durationSeconds);
@@ -372,9 +386,9 @@ class GeofenceManager {
 
   Future<List<GeofenceRegion>> getActiveGeofences() async {
     final db = AppDatabase();
-    final places = await (db.select(db.places)
-          ..where((tbl) => tbl.isActive.equals(true)))
-        .get();
+    final places = await (db.select(
+      db.places,
+    )..where((tbl) => tbl.isActive.equals(true))).get();
     return places.map((p) => GeofenceRegion.fromPlace(p)).toList();
   }
 
@@ -426,7 +440,9 @@ void onStart(ServiceInstance service) async {
     try {
       final isRunning = await FlutterBackgroundService().isRunning();
       if (!isRunning) {
-        print('[BG Service] Watchdog detected service is not running — restarting');
+        print(
+          '[BG Service] Watchdog detected service is not running — restarting',
+        );
         await FlutterBackgroundService().startService();
       }
     } catch (_) {}
@@ -436,10 +452,20 @@ void onStart(ServiceInstance service) async {
   // Gated on Wi-Fi/Ethernet: the SIRIUS server lives on the local network, so
   // on cellular this sync can never succeed — it would just burn radio + CPU
   // on a doomed reachability check every 60 s.
+  var nextSync = DateTime.now();
+  var failures = 0;
   Timer.periodic(const Duration(seconds: 60), (_) async {
     try {
       if (!await _isOnLocalNetworkReady()) return;
-      await SyncWorker.performSync();
+      if (DateTime.now().isBefore(nextSync)) return;
+      final result = await SyncWorker.performSync();
+      if (result.success) {
+        failures = 0;
+        nextSync = DateTime.now().add(const Duration(minutes: 2));
+      } else if (result.error != 'Sincronização já em andamento') {
+        failures = (failures + 1).clamp(1, 5);
+        nextSync = DateTime.now().add(Duration(minutes: 1 << failures));
+      }
     } catch (_) {}
   });
 
@@ -453,8 +479,9 @@ void onStart(ServiceInstance service) async {
 Future<bool> _isOnLocalNetworkReady() async {
   try {
     final results = await Connectivity().checkConnectivity();
-    return results.any((r) =>
-        r == ConnectivityResult.wifi || r == ConnectivityResult.ethernet);
+    return results.any(
+      (r) => r == ConnectivityResult.wifi || r == ConnectivityResult.ethernet,
+    );
   } catch (_) {
     return false;
   }
@@ -463,11 +490,15 @@ Future<bool> _isOnLocalNetworkReady() async {
 // Riverpod providers for reactive UI
 final activeGeofencesProvider = StreamProvider<List<GeofenceRegion>>((ref) {
   final manager = ref.read(geofenceManagerProvider);
-  return Stream.periodic(const Duration(seconds: 10), (_) => null)
-      .asyncMap((_) => manager.getActiveGeofences());
+  return Stream.periodic(
+    const Duration(seconds: 10),
+    (_) => null,
+  ).asyncMap((_) => manager.getActiveGeofences());
 });
 
-final geofenceTriggerStreamProvider = StreamProvider<GeofenceTriggerEvent>((ref) {
+final geofenceTriggerStreamProvider = StreamProvider<GeofenceTriggerEvent>((
+  ref,
+) {
   final manager = ref.read(geofenceManagerProvider);
   return manager.triggerStream;
 });
