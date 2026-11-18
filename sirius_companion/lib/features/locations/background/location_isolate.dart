@@ -16,8 +16,10 @@ void locationIsolateEntry(SendPort mainPort) {
   receivePort.listen((message) async {
     if (message is StartTracking) {
       state.updateGeofences(message.geofences);
-      if (!state._isRunning) {
-        await _startBackgroundTracking(state, mainPort);
+      if (state.geofences.isEmpty) {
+        await state.stop();
+      } else if (!state._isRunning) {
+        _startBackgroundTracking(state, mainPort);
       }
     }
   });
@@ -28,6 +30,14 @@ class _GeofenceState {
   final Map<String, bool> _wasInside = {};
   final Map<String, DateTime> _enteredAt = {};
   bool _isRunning = false;
+  StreamSubscription<Position>? subscription;
+
+  Future<void> stop() async {
+    final current = subscription;
+    subscription = null;
+    _isRunning = false;
+    await current?.cancel();
+  }
 
   void updateGeofences(List<GeofenceRegion> newGeofences) {
     geofences = newGeofences;
@@ -42,7 +52,10 @@ class _GeofenceState {
   void setEnteredAt(String id, DateTime time) => _enteredAt[id] = time;
 }
 
-Future<void> _startBackgroundTracking(_GeofenceState state, SendPort mainPort) async {
+Future<void> _startBackgroundTracking(
+  _GeofenceState state,
+  SendPort mainPort,
+) async {
   if (state._isRunning) return;
   state._isRunning = true;
 
@@ -52,53 +65,70 @@ Future<void> _startBackgroundTracking(_GeofenceState state, SendPort mainPort) a
   );
 
   final stream = Geolocator.getPositionStream(locationSettings: settings);
-  await for (final Position pos in stream) {
-    final now = DateTime.now();
+  state.subscription = stream.listen(
+    (Position pos) {
+      final now = DateTime.now();
 
-    for (final gf in state.geofences) {
-      final dist = Geolocator.distanceBetween(
-        pos.latitude,
-        pos.longitude,
-        gf.latitude,
-        gf.longitude,
-      );
-      final wasInside = state.isInside(gf.id);
-      final isInside = dist <= gf.radiusMeters;
+      for (final gf in state.geofences) {
+        final dist = Geolocator.distanceBetween(
+          pos.latitude,
+          pos.longitude,
+          gf.latitude,
+          gf.longitude,
+        );
+        final wasInside = state.isInside(gf.id);
+        final isInside = dist <= gf.radiusMeters;
 
-      if (isInside && !wasInside) {
-        // Transition: outside → inside (ENTER)
-        state.setInside(gf.id, true);
-        state.setEnteredAt(gf.id, now);
-        mainPort.send(GeofenceTriggerEvent(
-          placeId: gf.id,
-          placeName: gf.name,
-          eventType: GeofenceEventType.enter,
-          location: pos,
-        ));
-      } else if (!isInside && wasInside) {
-        // Transition: inside → outside (EXIT)
-        state.setInside(gf.id, false);
-        state.setEnteredAt(gf.id, now);
-        mainPort.send(GeofenceTriggerEvent(
-          placeId: gf.id,
-          placeName: gf.name,
-          eventType: GeofenceEventType.exit,
-          location: pos,
-        ));
-      } else if (isInside && wasInside) {
-        // Still inside — check dwell (2+ minutes)
-        final entered = state.enteredAt(gf.id);
-        if (entered != null && now.difference(entered) > const Duration(minutes: 2)) {
-          // Reset to avoid repeated dwell events
+        if (isInside && !wasInside) {
+          // Transition: outside → inside (ENTER)
+          state.setInside(gf.id, true);
           state.setEnteredAt(gf.id, now);
-          mainPort.send(GeofenceTriggerEvent(
-            placeId: gf.id,
-            placeName: gf.name,
-            eventType: GeofenceEventType.dwell,
-            location: pos,
-          ));
+          mainPort.send(
+            GeofenceTriggerEvent(
+              placeId: gf.id,
+              placeName: gf.name,
+              eventType: GeofenceEventType.enter,
+              location: pos,
+            ),
+          );
+        } else if (!isInside && wasInside) {
+          // Transition: inside → outside (EXIT)
+          state.setInside(gf.id, false);
+          state.setEnteredAt(gf.id, now);
+          mainPort.send(
+            GeofenceTriggerEvent(
+              placeId: gf.id,
+              placeName: gf.name,
+              eventType: GeofenceEventType.exit,
+              location: pos,
+            ),
+          );
+        } else if (isInside && wasInside) {
+          // Still inside — check dwell (2+ minutes)
+          final entered = state.enteredAt(gf.id);
+          if (entered != null &&
+              now.difference(entered) > const Duration(minutes: 2)) {
+            // Reset to avoid repeated dwell events
+            state.setEnteredAt(gf.id, now);
+            mainPort.send(
+              GeofenceTriggerEvent(
+                placeId: gf.id,
+                placeName: gf.name,
+                eventType: GeofenceEventType.dwell,
+                location: pos,
+              ),
+            );
+          }
         }
       }
-    }
-  }
+    },
+    onError: (Object error) {
+      state._isRunning = false;
+      state.subscription = null;
+    },
+    onDone: () {
+      state._isRunning = false;
+      state.subscription = null;
+    },
+  );
 }
