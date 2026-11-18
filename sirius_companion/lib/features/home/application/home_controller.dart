@@ -1,5 +1,6 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'dart:async';
+import 'package:flutter/widgets.dart';
 import '../../../../core/sync/sync_worker.dart';
 import '../../../../core/storage/repositories/sync_repository.dart';
 import '../../../../core/storage/repositories/note_repository.dart';
@@ -87,7 +88,8 @@ class HomeState {
   }
 }
 
-class HomeController extends StateNotifier<HomeState> {
+class HomeController extends StateNotifier<HomeState>
+    with WidgetsBindingObserver {
   final SyncRepository _syncRepo;
   Timer? _refreshTimer;
   Timer? _connectivityTimer;
@@ -96,6 +98,7 @@ class HomeController extends StateNotifier<HomeState> {
   HomeController()
     : _syncRepo = SyncRepository(AppDatabase()),
       super(HomeState()) {
+    WidgetsBinding.instance.addObserver(this);
     _init();
   }
 
@@ -148,10 +151,20 @@ class HomeController extends StateNotifier<HomeState> {
 
   void _startPeriodicRefresh() {
     _refreshTimer?.cancel();
-    _refreshTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+    _refreshTimer = Timer.periodic(const Duration(minutes: 2), (_) {
       loadStatus();
       checkConnectivity();
     });
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _startPeriodicRefresh();
+    } else {
+      _refreshTimer?.cancel();
+      _refreshTimer = null;
+    }
   }
 
   /// Runs the sync inline (same isolate as the UI).
@@ -259,6 +272,7 @@ class HomeController extends StateNotifier<HomeState> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _mounted = false;
     _refreshTimer?.cancel();
     _connectivityTimer?.cancel();

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:flutter/widgets.dart';
 
 import 'database/database.dart';
 
@@ -21,18 +22,32 @@ class CrossIsolateRefresh {
 
   static Timer? _timer;
   static String? _lastMarker;
+  static final _observer = _RefreshLifecycle();
+  static bool _started = false;
 
   /// Starts the watcher. Idempotent; safe to call from app init.
   static void start() {
-    if (_timer != null) return;
+    if (_started) return;
+    _started = true;
+    WidgetsBinding.instance.addObserver(_observer);
+    resume();
+  }
+
+  static void resume() {
     refreshNow();
-    _timer = Timer.periodic(_interval, (_) => _check());
+    _timer ??= Timer.periodic(_interval, (_) => _check());
+  }
+
+  static void pause() {
+    _timer?.cancel();
+    _timer = null;
   }
 
   /// Stops the watcher (mainly for tests / hot restart).
   static void stop() {
-    _timer?.cancel();
-    _timer = null;
+    pause();
+    WidgetsBinding.instance.removeObserver(_observer);
+    _started = false;
     _lastMarker = null;
   }
 
@@ -79,5 +94,16 @@ class CrossIsolateRefresh {
       print('[CrossIsolateRefresh] marker read failed: $e');
     }
     return null;
+  }
+}
+
+class _RefreshLifecycle with WidgetsBindingObserver {
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      CrossIsolateRefresh.resume();
+    } else {
+      CrossIsolateRefresh.pause();
+    }
   }
 }
