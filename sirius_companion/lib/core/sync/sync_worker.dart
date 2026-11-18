@@ -93,7 +93,6 @@ void callbackDispatcher() {
     if (taskName == maintenanceTaskName) {
       // Unified cycle: health first (cheap), then network-bound work.
       await BackgroundHealthMonitor.restartIfDead();
-      await SyncWorker.pullTasksOnly();
       await SyncWorker.performSync();
       await TaskAlarmService.ensureTodayNotificationsActive();
     } else if (taskName == recurringTaskGenerationTaskName) {
@@ -118,6 +117,26 @@ class SyncWorker {
   static final ApiClient _apiClient = ApiClient.instance;
 
   static bool _isSyncing = false;
+
+  // SQLite coordinates independent Flutter isolates, unlike a static boolean.
+  // A lease also recovers if Android kills an isolate mid-sync.
+  static Future<bool> _acquireSyncLease(AppDatabase db, String owner) async {
+    await db.customStatement(
+      'CREATE TABLE IF NOT EXISTS sync_lease '
+      '(id INTEGER PRIMARY KEY, owner TEXT NOT NULL, expires_at INTEGER NOT NULL)',
+    );
+    final now = DateTime.now().millisecondsSinceEpoch;
+    await db.customStatement(
+      'INSERT INTO sync_lease (id, owner, expires_at) VALUES (1, ?, ?) '
+      'ON CONFLICT(id) DO UPDATE SET owner = excluded.owner, '
+      'expires_at = excluded.expires_at WHERE sync_lease.expires_at < ?',
+      [owner, now + const Duration(minutes: 30).inMilliseconds, now],
+    );
+    final row = await db
+        .customSelect('SELECT owner FROM sync_lease WHERE id = 1')
+        .getSingle();
+    return row.read<String>('owner') == owner;
+  }
 
   /// Trigger immediate sync (call from UI)
   static Future<void> triggerSync() async {
@@ -214,6 +233,8 @@ class SyncWorker {
     _isSyncing = true;
 
     final db = AppDatabase();
+    final leaseOwner = const Uuid().v4();
+    var leaseAcquired = false;
     final syncRepo = SyncRepository(db);
     final placeRepo = PlaceRepository(db);
     final noteRepo = NoteRepository(db);
@@ -225,6 +246,10 @@ class SyncWorker {
     var itemsPulled = 0;
 
     try {
+      leaseAcquired = await _acquireSyncLease(db, leaseOwner);
+      if (!leaseAcquired) {
+        return SyncExecutionResult.error('Sincronização já em andamento');
+      }
       onProgress?.call('Conectando ao PC...', 0.1);
       await _apiClient.restoreSavedBaseUrl();
 
@@ -382,6 +407,14 @@ class SyncWorker {
       print(stack);
       return SyncExecutionResult.error(e.toString());
     } finally {
+      if (leaseAcquired) {
+        try {
+          await db.customStatement(
+            'DELETE FROM sync_lease WHERE id = 1 AND owner = ?',
+            [leaseOwner],
+          );
+        } catch (_) {}
+      }
       _isSyncing = false;
     }
   }
